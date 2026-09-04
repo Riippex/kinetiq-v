@@ -1,0 +1,66 @@
+# Private planning and local agent state
+/documents/
+/AGENTS.local.md
+/CLAUDE.local.md
+/.agents/*
+!/.agents/skills/
+!/.agents/skills/**
+/.claude/*
+!/.claude/skills/
+!/.claude/skills/**
+/.codex/
+/.gemini/
+# Secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+# Graph indexes and generated audits
+.codegraph/
+.gitnexus/
+graphify-out/
+# Build and runtime
+node_modules/
+.next/
+dist/
+build/
+coverage/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.uv-cache/
+.ipynb_checkpoints/
+mlruns/
+mlartifacts/
+# Private media and large model artifacts
+/data/
+/datasets/
+/weights/
+/artifacts/
+*.onnx
+*.pt
+*.pth
+*.tflite
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan-*
+*.tfvars
+!*.tfvars.example
+!.terraform.lock.hcl
+# Local outputs
+/output/
+/tmp/
+*.log
+.DS_Store
+Thumbs.db

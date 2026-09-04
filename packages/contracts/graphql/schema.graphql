@@ -1,0 +1,40 @@
+# Initial product contract v0.1.0. Schema design, not a running API.
+scalar DateTime
+
+enum SessionState { READY ACTIVE PAUSED COMPLETED ABANDONED }
+enum PauseReason { USER_REQUEST VISIBILITY TARGET_AMBIGUOUS CAMERA_DISCONNECTED }
+type Profile { id: ID! displayName: String! timezone: String! }
+type Goal { id: ID! revision: Int! description: String! measure: String baseline: Float target: Float unit: String }
+type Exercise { id: ID! version: Int! name: String! visionSupported: Boolean! }
+type RoutineItem { exercise: Exercise! order: Int! sets: Int! repetitions: Int durationSeconds: Int }
+type Routine { id: ID! version: Int! title: String! rationale: String! items: [RoutineItem!]! accepted: Boolean! }
+type WorkoutSession { id: ID! revision: Int! routine: Routine! state: SessionState! pauseReason: PauseReason confirmedRepetitions: Int! updatedAt: DateTime! }
+type SessionPage { nodes: [WorkoutSession!]! endCursor: String hasNextPage: Boolean! }
+type ProgressSummary { completedSessions: Int! partialSessions: Int! from: DateTime! to: DateTime! }
+input RoutineContext { goalId: ID! minutes: Int! equipment: [String!]! excludedExerciseIds: [ID!]! }
+input SessionCommand { sessionId: ID! expectedRevision: Int! idempotencyKey: String! }
+type DomainError { code: String! message: String! field: String }
+type SessionResult { session: WorkoutSession errors: [DomainError!]! }
+type PairingChallenge { id: ID! userCode: String! expiresAt: DateTime! }
+type PairingResult { approved: Boolean! errors: [DomainError!]! }
+type UploadRequest { photoId: ID! uploadUrl: String! expiresAt: DateTime! }
+type Query {
+  me: Profile!
+  goals: [Goal!]!
+  session(id: ID!): WorkoutSession
+  sessions(first: Int! = 20, after: String): SessionPage!
+  progress(from: DateTime!, to: DateTime!): ProgressSummary!
+}
+type Mutation {
+  suggestRoutine(context: RoutineContext!): Routine!
+  acceptRoutine(id: ID!, version: Int!, idempotencyKey: String!): Routine!
+  startSession(routineId: ID!, routineVersion: Int!, idempotencyKey: String!): SessionResult!
+  pauseSession(command: SessionCommand!): SessionResult!
+  resumeSession(command: SessionCommand!): SessionResult!
+  finishSession(command: SessionCommand!): SessionResult!
+  approveDisplay(userCode: String!, sessionId: ID!): PairingResult!
+  requestProgressPhotoUpload(sessionId: ID!, contentType: String!, byteLength: Int!, idempotencyKey: String!): UploadRequest!
+  finalizeProgressPhoto(photoId: ID!): Boolean!
+  deleteProgressPhoto(photoId: ID!): Boolean!
+}
+type Subscription { sessionUpdated(sessionId: ID!): WorkoutSession! }

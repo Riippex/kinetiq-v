@@ -1,0 +1,13 @@
+documents/
+AGENTS.local.md
+CLAUDE.local.md
+.env*
+.claude/
+.agents/
+.codex/
+data/
+datasets/
+weights/
+artifacts/
+mlruns/
+mlartifacts/
