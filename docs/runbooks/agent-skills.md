@@ -6,7 +6,7 @@ Canonical skills live in .agents/skills/. Byte-identical copies under .claude/sk
 |---|---|
 | kinetiq-architecture | Module, API, event, data ownership or deployment boundaries |
 | kinetiq-graph-tools | Cross-file navigation, diff impact, docs-to-code audits |
-| kinetiq-delivery | Preparing commits and task PRs |
+| kinetiq-delivery | Preparing direct develop commits or task PRs |
 | kinetiq-aws-review | Terraform, IAM, deployment costs and managed MLflow |
 | kinetiq-product-slice | An end-to-end product behavior across client, API and persistence |
 
