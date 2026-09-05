@@ -80,7 +80,10 @@ class SessionConfiguration:
             raise ValueError("Normal mode cannot include Dynamic configuration")
         if self.requested_mode is SessionMode.DYNAMIC and self.dynamic is None:
             raise ValueError("Dynamic mode requires Dynamic configuration")
-        if self.active_mode is SessionMode.DYNAMIC and self.requested_mode is not SessionMode.DYNAMIC:
+        if (
+            self.active_mode is SessionMode.DYNAMIC
+            and self.requested_mode is not SessionMode.DYNAMIC
+        ):
             raise ValueError("Dynamic mode must be selected during preparation")
 
 

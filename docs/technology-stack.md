@@ -1,6 +1,6 @@
 # Technology Stack
 
-Status: architecture baseline approved; application implementation and infrastructure provisioning are pending. Exact runtime and dependency versions are locked after compatibility checks.
+Status: application foundations are installed; feature implementation and infrastructure provisioning are pending. Runtime and dependency versions are locked in `package-lock.json` and `services/backend/uv.lock`.
 
 | Area | Selected direction |
 |---|---|
@@ -16,6 +16,8 @@ Status: architecture baseline approved; application implementation and infrastru
 | Compute | ECR, ECS Fargate and HTTPS load balancing |
 | Asynchronous processing | PostgreSQL outbox, EventBridge, SQS and idempotent workers |
 | Infrastructure/delivery | Terraform modules and environment roots; GitHub Actions with OIDC |
+
+The current development baseline uses Node.js 24.19, Next.js 16.3, React Native 0.86 with Expo SDK 57, Python 3.12 and Django 5.2 LTS. Mobile uses Expo Router. These versions describe the checked-in foundation and can change through reviewed dependency updates.
 
 GraphQL and MCP invoke the same domain services. Next.js manages the browser-facing session and calls the backend; it does not write the database. Photo objects are private and accessed through authorized short-lived operations. Redis is disposable. Vision is a separate REST service with its own model lifecycle.
 

@@ -27,6 +27,9 @@ graphify-out/
 # Build and runtime
 node_modules/
 .next/
+.expo/
+.turbo/
+*.tsbuildinfo
 dist/
 build/
 coverage/
