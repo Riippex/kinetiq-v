@@ -22,6 +22,6 @@ Public documentation lives in docs/. Local private planning belongs in ignored d
 
 Install the JavaScript workspace with `npm install`. Start the browser client with `npm run dev:web` and the Expo mobile client with `npm run dev:mobile`.
 
-Install and run the backend with `uv sync --project services/backend` and `uv run --project services/backend python services/backend/manage.py runserver`. PostgreSQL and Redis endpoints are configured through `DATABASE_URL` and `REDIS_URL`; copy `.env.example` into your local environment without committing secrets.
+Install and run the backend with `uv sync --project services/backend` and `uv run --project services/backend python services/backend/manage.py runserver`. PostgreSQL and Redis endpoints are configured through `DATABASE_URL` and `REDIS_URL`; copy `.env.example` to `.env` and fill local values without committing secrets.
 
 License: [Apache-2.0](LICENSE). Third-party components retain their own terms.

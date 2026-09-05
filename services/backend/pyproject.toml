@@ -10,6 +10,7 @@ dependencies = [
     "django>=5.2,<5.3",
     "django-redis>=6,<7",
     "psycopg[binary]>=3.2,<4",
+    "python-dotenv>=1.2,<2",
     "strawberry-graphql-django>=0.88.0",
     "uvicorn[standard]>=0.35,<1",
 ]

@@ -2,10 +2,13 @@ import os
 from pathlib import Path
 
 import dj_database_url
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parents[3]
+REPOSITORY_ROOT = BASE_DIR.parents[1]
+load_dotenv(REPOSITORY_ROOT / ".env")
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "unsafe-local-development-key")
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY") or "unsafe-local-development-key"
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
 ALLOWED_HOSTS = [
     host.strip()

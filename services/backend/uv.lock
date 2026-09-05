@@ -255,6 +255,7 @@ dependencies = [
     { name = "django" },
     { name = "django-redis" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "python-dotenv" },
     { name = "strawberry-graphql-django" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -277,6 +278,7 @@ requires-dist = [
     { name = "django", specifier = ">=5.2,<5.3" },
     { name = "django-redis", specifier = ">=6,<7" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "python-dotenv", specifier = ">=1.2,<2" },
     { name = "strawberry-graphql-django", specifier = ">=0.88.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35,<1" },
 ]
