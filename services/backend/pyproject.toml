@@ -1,0 +1,12 @@
+[project]
+name = "kinetiq-backend"
+version = "0.1.0"
+description = "Kinetiq V modular product backend"
+requires-python = ">=3.12,<3.13"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kinetiq"]

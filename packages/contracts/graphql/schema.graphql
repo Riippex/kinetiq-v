@@ -3,16 +3,55 @@ scalar DateTime
 
 enum SessionState { READY ACTIVE PAUSED COMPLETED ABANDONED }
 enum PauseReason { USER_REQUEST VISIBILITY TARGET_AMBIGUOUS CAMERA_DISCONNECTED }
+enum SessionMode { NORMAL DYNAMIC }
+enum SessionIntensity { LIGHTER PLANNED CHALLENGING }
+enum CoachingTone { CALM TECHNICAL MOTIVATIONAL EDGY }
+enum DynamicChallengeType { HOLD_POSE MIRROR_POSE QUICK_REPS RECOVERY }
+enum DynamicChallengeFrequency { LOW STANDARD HIGH }
 type Profile { id: ID! displayName: String! timezone: String! }
 type Goal { id: ID! revision: Int! description: String! measure: String baseline: Float target: Float unit: String }
 type Exercise { id: ID! version: Int! name: String! visionSupported: Boolean! }
 type RoutineItem { exercise: Exercise! order: Int! sets: Int! repetitions: Int durationSeconds: Int }
 type Routine { id: ID! version: Int! title: String! rationale: String! items: [RoutineItem!]! accepted: Boolean! }
-type WorkoutSession { id: ID! revision: Int! routine: Routine! state: SessionState! pauseReason: PauseReason confirmedRepetitions: Int! updatedAt: DateTime! }
+type DynamicSessionConfiguration {
+  frequency: DynamicChallengeFrequency!
+  allowedChallengeTypes: [DynamicChallengeType!]!
+  scoringEnabled: Boolean!
+  narrationEnabled: Boolean!
+}
+type SessionConfiguration {
+  requestedMode: SessionMode!
+  activeMode: SessionMode!
+  intensity: SessionIntensity!
+  coachingTone: CoachingTone!
+  captureDeviceId: ID!
+  displayDeviceId: ID
+  promptForProgressPhoto: Boolean!
+  dynamic: DynamicSessionConfiguration
+}
+type WorkoutSession { id: ID! revision: Int! routine: Routine! state: SessionState! configuration: SessionConfiguration! pauseReason: PauseReason confirmedRepetitions: Int! updatedAt: DateTime! }
 type SessionPage { nodes: [WorkoutSession!]! endCursor: String hasNextPage: Boolean! }
 type ProgressSummary { completedSessions: Int! partialSessions: Int! from: DateTime! to: DateTime! }
 input RoutineContext { goalId: ID! minutes: Int! equipment: [String!]! excludedExerciseIds: [ID!]! }
 input SessionCommand { sessionId: ID! expectedRevision: Int! idempotencyKey: String! }
+input DynamicSessionConfigurationInput {
+  frequency: DynamicChallengeFrequency! = STANDARD
+  allowedChallengeTypes: [DynamicChallengeType!]!
+  scoringEnabled: Boolean! = true
+  narrationEnabled: Boolean! = true
+}
+input PrepareSessionInput {
+  routineId: ID!
+  routineVersion: Int!
+  mode: SessionMode!
+  intensity: SessionIntensity! = PLANNED
+  coachingTone: CoachingTone!
+  captureDeviceId: ID!
+  displayDeviceId: ID
+  promptForProgressPhoto: Boolean! = true
+  dynamic: DynamicSessionConfigurationInput
+  idempotencyKey: String!
+}
 type DomainError { code: String! message: String! field: String }
 type SessionResult { session: WorkoutSession errors: [DomainError!]! }
 type PairingChallenge { id: ID! userCode: String! expiresAt: DateTime! }
@@ -28,7 +67,9 @@ type Query {
 type Mutation {
   suggestRoutine(context: RoutineContext!): Routine!
   acceptRoutine(id: ID!, version: Int!, idempotencyKey: String!): Routine!
-  startSession(routineId: ID!, routineVersion: Int!, idempotencyKey: String!): SessionResult!
+  prepareSession(input: PrepareSessionInput!): SessionResult!
+  startSession(command: SessionCommand!): SessionResult!
+  disableDynamicMode(command: SessionCommand!): SessionResult!
   pauseSession(command: SessionCommand!): SessionResult!
   resumeSession(command: SessionCommand!): SessionResult!
   finishSession(command: SessionCommand!): SessionResult!

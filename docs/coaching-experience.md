@@ -15,7 +15,7 @@ Track workout performance and progress toward the goal separately. Completing se
 ## Session and Follow-up Journey
 
 1. **Set context:** capture a goal and enough preferences to suggest an initial routine.
-2. **Prepare:** present the routine and its rationale; let the user accept or adjust it and choose a camera and display.
+2. **Prepare:** use the phone-first preparation flow to review the accepted routine, choose Normal or Dynamic mode, set session-level coaching and intensity, and select a camera and display. The TV offers reduced remote-friendly controls.
 3. **Train:** the phone coordinates capture. Vision returns timestamped movement observations and confidence. Kinetiq V manages the routine, session, displays, and coaching decisions.
 4. **Close:** save completed activity and supported observations; ask for optional effort and session feedback. Keep partial sessions and missing analysis distinguishable from completed, measured activity.
 5. **Capture an optional progress photo:** offer an explicit capture step after each session. Allow skipping, preview, retake, and deletion. Never silently capture or publish an image.
@@ -49,3 +49,5 @@ Next design work: define the initial supported goal and exercise set, routine-se
 At session start, the user selects and confirms their person region in a live preview. This is session-specific tracking, not biometric account verification. Only the selected person's observations contribute to the workout; other people and animals must be excluded and evaluated as distractors.
 
 Vision reports tracking state, evidence freshness, and reason codes. The product preserves confirmed results, explains visibility loss, and pauses affected exercise progression after a short grace interval; ambiguous identity pauses immediately and requires confirmation. Cached state supports continuity but cannot stand in for unseen motion. Following a pause, offer resume after fresh stable evidence. Retain saved results when the tracking context expires. Exact timers are proposed in the Vision repository's docs/session-target-tracking.md and require evaluation. The enrollment preview is separate from the optional post-session photo; it need not be saved.
+
+See [session preparation and Dynamic mode](session-preparation.md) for the pre-session configuration snapshot, bounded challenge behavior, and phone/TV control split.

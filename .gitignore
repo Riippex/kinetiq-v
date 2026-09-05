@@ -37,6 +37,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .uv-cache/
+.uv-tools/
+.uv-python/
 .ipynb_checkpoints/
 mlruns/
 mlartifacts/

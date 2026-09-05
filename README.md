@@ -10,6 +10,7 @@ This repository owns the modular Django product, GraphQL API, clients, PostgreSQ
 - [Architecture](docs/architecture.md)
 - [Coaching experience](docs/coaching-experience.md)
 - [Routine planning](docs/routine-planning.md)
+- [Session preparation and Dynamic mode](docs/session-preparation.md)
 - [GraphQL contract](packages/contracts/graphql/schema.graphql)
 - [Business events](contracts/events/README.md)
 - [Contributor workflow](docs/runbooks/pull-requests.md)
