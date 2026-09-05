@@ -42,4 +42,6 @@ The idempotency key prevents repeated phone or TV requests from creating duplica
 
 ## First Slice Boundaries
 
-The initial executable slice implements the session configuration invariants in the workouts domain and publishes the GraphQL contract. Database adapters, GraphQL resolvers, device discovery, camera readiness, live synchronization, challenge scheduling, and device applications remain subsequent increments until implemented and verified.
+The initial executable slice implements session configuration invariants, PostgreSQL persistence, exact accepted-routine version lookup, authenticated GraphQL preparation, and idempotent request handling. Web and phone expose the detailed configuration flow. Fire OS and Vega foundations expose the reduced TV flow and keep camera setup on the phone.
+
+Routine discovery and acceptance, client authentication bootstrap, device discovery, camera readiness, live synchronization, challenge scheduling, and post-session photo capture remain subsequent increments until implemented and verified. The Vega source template is versioned here, while its generated SDK project and device build must be created and validated on the Ubuntu Vega host.

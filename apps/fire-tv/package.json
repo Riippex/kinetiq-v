@@ -1,0 +1,33 @@
+{
+  "name": "@kinetiq/fire-tv",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "prebuild": "expo prebuild --clean --platform android",
+    "lint": "expo lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kinetiq/session-client": "0.1.0",
+    "expo": "~57.0.20",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.3",
+    "react": "19.2.3",
+    "react-native": "npm:react-native-tvos@0.86-stable"
+  },
+  "devDependencies": {
+    "@react-native-tvos/config-tv": "^0.1.6",
+    "@types/react": "~19.2.2",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "~57.0.2",
+    "typescript": "~6.0.3"
+  },
+  "expo": {
+    "install": {
+      "exclude": ["react-native"]
+    }
+  }
+}

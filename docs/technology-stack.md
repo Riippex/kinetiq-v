@@ -6,7 +6,7 @@ Status: application foundations are installed; feature implementation and infras
 |---|---|
 | Web | Next.js App Router, TypeScript |
 | Mobile | React Native and Expo development builds |
-| TV | Separate Fire OS and Vega applications with compatible shared packages |
+| TV | Expo and react-native-tvos for Fire OS; React Native 0.83 supplied by Vega SDK 0.24 for Vega OS |
 | Product backend | Python, Django, Strawberry GraphQL; modular monolith |
 | Persistence | PostgreSQL on RDS, Django ORM and migrations |
 | Cache and live fan-out | Redis/ElastiCache and Django Channels |

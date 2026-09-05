@@ -2,11 +2,12 @@
 
 A connected home workout coach that creates routines around personal goals, coordinates sessions, and tracks progress across phone, browser, Fire OS, Vega and Alexa+.
 
-**Status:** executable web, mobile and backend foundations; product features and cloud infrastructure are not implemented yet.
+**Status:** executable platform foundations and the first session-preparation slice; live workout, vision integration, Alexa+ and cloud infrastructure remain under construction.
 
 This repository owns the modular Django product, GraphQL API, clients, PostgreSQL records, Redis cache, business events and Alexa+ MCP. [Kinetiq V Vision](https://github.com/Riippex/kinetiq-v-vision) owns perception and movement analysis.
 
 - [Technology stack](docs/technology-stack.md)
+- [Platform clients](docs/platform-clients.md)
 - [Architecture](docs/architecture.md)
 - [Coaching experience](docs/coaching-experience.md)
 - [Routine planning](docs/routine-planning.md)
@@ -20,7 +21,7 @@ Public documentation lives in docs/. Local private planning belongs in ignored d
 
 ## Local development
 
-Install the JavaScript workspace with `npm install`. Start the browser client with `npm run dev:web` and the Expo mobile client with `npm run dev:mobile`.
+Install the JavaScript workspace with `npm install`. Start the browser client with `npm run dev:web`, the Expo mobile client with `npm run dev:mobile`, or the Fire OS client with `npm run dev:fire-tv`. See [Platform clients](docs/platform-clients.md) for native Fire OS and Vega setup.
 
 Install and run the backend with `uv sync --project services/backend` and `uv run --project services/backend python services/backend/manage.py runserver`. PostgreSQL and Redis endpoints are configured through `DATABASE_URL` and `REDIS_URL`; copy `.env.example` to `.env` and fill local values without committing secrets.
 

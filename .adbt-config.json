@@ -1,0 +1,11 @@
+{
+  "project": {
+    "identifier": "kinetiq-v"
+  },
+  "platform": {
+    "paths": {
+      "fire_os": "apps/fire-tv",
+      "vega_os": "apps/vega"
+    }
+  }
+}

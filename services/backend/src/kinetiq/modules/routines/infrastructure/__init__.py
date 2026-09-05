@@ -1,0 +1,1 @@
+"""Django routine persistence adapters."""

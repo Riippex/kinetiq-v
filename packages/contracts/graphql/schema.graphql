@@ -1,4 +1,4 @@
-# Initial product contract v0.1.0. Schema design, not a running API.
+# Product contract v0.1.0. Fields land incrementally in the executable API.
 scalar DateTime
 
 enum SessionState { READY ACTIVE PAUSED COMPLETED ABANDONED }
@@ -57,7 +57,9 @@ type SessionResult { session: WorkoutSession errors: [DomainError!]! }
 type PairingChallenge { id: ID! userCode: String! expiresAt: DateTime! }
 type PairingResult { approved: Boolean! errors: [DomainError!]! }
 type UploadRequest { photoId: ID! uploadUrl: String! expiresAt: DateTime! }
+type ServiceStatus { name: String! version: String! ready: Boolean! }
 type Query {
+  serviceStatus: ServiceStatus!
   me: Profile!
   goals: [Goal!]!
   session(id: ID!): WorkoutSession

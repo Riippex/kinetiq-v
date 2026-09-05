@@ -1,0 +1,8 @@
+.expo/
+.gradle/
+android/
+build/
+dist/
+node_modules/
+*.jks
+*.keystore

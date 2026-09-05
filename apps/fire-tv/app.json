@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Kinetiq V Fire TV",
+    "slug": "kinetiq-v-fire-tv",
+    "version": "0.1.0",
+    "orientation": "landscape",
+    "userInterfaceStyle": "dark",
+    "icon": "./assets/icon.png",
+    "android": {
+      "package": "com.riippex.kinetiqv.firetv",
+      "versionCode": 1
+    },
+    "plugins": [
+      [
+        "@react-native-tvos/config-tv",
+        {
+          "isTV": true
+        }
+      ]
+    ]
+  }
+}

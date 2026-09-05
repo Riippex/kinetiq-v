@@ -4,11 +4,19 @@
   "private": true,
   "packageManager": "npm@11.17.0",
   "engines": { "node": ">=24.0.0 <25" },
-  "workspaces": ["apps/*"],
+  "workspaces": [
+    "apps/web",
+    "apps/mobile",
+    "apps/fire-tv",
+    "packages/*"
+  ],
   "scripts": {
     "dev:web": "npm run dev --workspace=@kinetiq/web",
     "dev:mobile": "npm run start --workspace=@kinetiq/mobile",
+    "dev:fire-tv": "npm run start --workspace=@kinetiq/fire-tv",
     "android": "npm run android --workspace=@kinetiq/mobile",
+    "android:fire-tv": "npm run android --workspace=@kinetiq/fire-tv",
+    "prebuild:fire-tv": "npm run prebuild --workspace=@kinetiq/fire-tv",
     "build:web": "npm run build --workspace=@kinetiq/web",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"

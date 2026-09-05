@@ -1,3 +1,5 @@
+import { SessionPreparationDialog } from "@/features/session-preparation/SessionPreparationDialog";
+
 const surfaces = [
   ["Phone", "Camera and session control"],
   ["TV", "Guidance, timing and game events"],
@@ -27,6 +29,9 @@ export default function Home() {
             progress with live vision feedback and a coach that learns how to
             motivate you.
           </p>
+          <div className="mt-8">
+            <SessionPreparationDialog />
+          </div>
         </section>
 
         <section className="grid gap-3 md:grid-cols-3">

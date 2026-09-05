@@ -1,0 +1,1 @@
+"""Django workout persistence adapters."""

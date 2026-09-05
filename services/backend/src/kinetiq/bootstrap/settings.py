@@ -23,6 +23,9 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "channels",
+    "kinetiq.modules.identity.infrastructure.apps.IdentityConfig",
+    "kinetiq.modules.routines.infrastructure.apps.RoutinesConfig",
+    "kinetiq.modules.workouts.infrastructure.apps.WorkoutsConfig",
 ]
 
 MIDDLEWARE = [
@@ -84,3 +87,4 @@ USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+AUTH_USER_MODEL = "kinetiq_identity.User"
