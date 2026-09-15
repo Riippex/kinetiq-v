@@ -76,4 +76,4 @@ Derived progress summaries should be reproducible from source records. Finishing
 
 ## Next Design Decisions
 
-Select the initial exercise catalog and templates, define the product–Vision contract, and choose the backend and persistence services against these records and access patterns. Phone operating system and model are still unknown. Validate other device paths with documented test environments and label simulated versus real behavior in demo evidence.
+Select the initial exercise catalog and templates and define the product–Vision contract against these records and access patterns. The confirmed development phone is a Samsung Galaxy S26 Ultra running Android; its exact Android release and capture behavior still require verification. Validate other device paths with documented test environments and label simulated versus real behavior in demo evidence.

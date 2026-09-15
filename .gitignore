@@ -2,6 +2,7 @@
 /documents/
 /AGENTS.local.md
 /CLAUDE.local.md
+/GEMINI.md
 /.agents/*
 !/.agents/skills/
 !/.agents/skills/**
