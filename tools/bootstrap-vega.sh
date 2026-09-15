@@ -14,24 +14,24 @@ command -v npm >/dev/null 2>&1 || {
   exit 1
 }
 
-if [[ ! -f "$target/package.json" ]]; then
-  if [[ -e "$target" ]]; then
-    echo "$target already exists but is not a generated Vega project." >&2
-    exit 1
-  fi
+command -v node >/dev/null 2>&1 || {
+  echo "Node.js is required." >&2
+  exit 1
+}
 
-  vega project generate \
-    --template helloWorld \
-    --name kinetiqv \
-    --packageId com.riippex.kinetiqv.vega \
-    --outputDir "$target"
+node_major="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
+if [[ ! "$node_major" =~ ^[0-9]+$ ]] || ((node_major < 18)); then
+  echo "Vega SDK 0.24 requires Node.js 18 or later." >&2
+  exit 1
 fi
 
-cp "$repo_root/platforms/vega/App.tsx" "$target/src/App.tsx"
+[[ -f "$target/package.json" && -f "$target/manifest.toml" ]] || {
+  echo "$target is missing. Restore the versioned Vega application from Git." >&2
+  exit 1
+}
 
 cd "$target"
-vega project install --fix --os-min 1.2 --os-version 1.2
-npm install
+npm ci
 vega project doctor
 
 echo "Vega project is ready at $target. Run npm run build:app to produce VPKG artifacts."

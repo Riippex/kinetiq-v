@@ -21,7 +21,9 @@ Public documentation lives in docs/. Local private planning belongs in ignored d
 
 ## Local development
 
-Install the JavaScript workspace with `npm install`. Start the browser client with `npm run dev:web`, the Expo mobile client with `npm run dev:mobile`, or the Fire OS client with `npm run dev:fire-tv`. See [Platform clients](docs/platform-clients.md) for native Fire OS and Vega setup.
+Install the root JavaScript workspace with `npm install`. Start the browser client with `npm run dev:web`, the Expo mobile client with `npm run dev:mobile`, or the Fire OS client with `npm run dev:fire-tv`.
+
+The checked-in Vega OS application lives in `apps/vega` and intentionally does not participate in the root npm workspace. On a native Ubuntu host with Vega SDK 0.24 configured, run `bash tools/bootstrap-vega.sh`, then run `npm run build:app` from `apps/vega`. See [Platform clients](docs/platform-clients.md) for SDK installation, emulator validation, real-device authentication, and the boundaries between those checks.
 
 Install and run the backend with `uv sync --project services/backend` and `uv run --project services/backend python services/backend/manage.py runserver`. PostgreSQL and Redis endpoints are configured through `DATABASE_URL` and `REDIS_URL`; copy `.env.example` to `.env` and fill local values without committing secrets.
 
