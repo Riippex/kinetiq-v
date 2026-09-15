@@ -1,4 +1,5 @@
 import { SessionPreparationDialog } from "@/features/session-preparation/SessionPreparationDialog";
+import { OnboardingCard } from "@/features/onboarding/OnboardingCard";
 
 const surfaces = [
   ["Phone", "Camera and session control"],
@@ -17,7 +18,7 @@ export default function Home() {
           </span>
         </nav>
 
-        <section className="max-w-3xl py-20">
+        <section className="max-w-3xl py-12">
           <p className="mb-5 text-sm font-semibold uppercase tracking-[0.24em] text-[var(--accent)]">
             Move. Play. Progress.
           </p>
@@ -29,7 +30,8 @@ export default function Home() {
             progress with live vision feedback and a coach that learns how to
             motivate you.
           </p>
-          <div className="mt-8">
+          <div className="mt-8 space-y-6">
+            <OnboardingCard />
             <SessionPreparationDialog />
           </div>
         </section>

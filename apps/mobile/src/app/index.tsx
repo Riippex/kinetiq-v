@@ -1,17 +1,22 @@
 import {
   coachingTones,
+  fetchActiveGoal,
+  fetchProfile,
   prepareSession,
   sessionIntensities,
   sessionModes,
   type CoachingTone,
+  type Goal,
+  type Profile,
   type SessionIntensity,
   type SessionMode,
 } from '@kinetiq/session-client';
-import {useState} from 'react';
+import {useEffect, useState} from 'react';
 import {Pressable, ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
+import {OnboardingModal} from '../features/onboarding/OnboardingModal';
 
-const endpoint = process.env.EXPO_PUBLIC_KINETIQ_GRAPHQL_URL;
+const endpoint = process.env.EXPO_PUBLIC_KINETIQ_GRAPHQL_URL ?? '';
 const routineId = process.env.EXPO_PUBLIC_KINETIQ_DEMO_ROUTINE_ID;
 
 export default function HomeScreen() {
@@ -21,6 +26,28 @@ export default function HomeScreen() {
   const [photo, setPhoto] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  // Athlete context & onboarding
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [athleteProfile, setAthleteProfile] = useState<Profile | null>(null);
+  const [activeGoal, setActiveGoal] = useState<Goal | null>(null);
+
+  useEffect(() => {
+    if (!endpoint) return;
+    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint)])
+      .then(([pRes, gRes]) => {
+        if (pRes.profile) {
+          setAthleteProfile(pRes.profile);
+          if (pRes.profile.coachingTone) {
+            setTone(pRes.profile.coachingTone);
+          }
+        }
+        if (gRes.goal) {
+          setActiveGoal(gRes.goal);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   async function submit() {
     if (!endpoint || !routineId) {
@@ -65,6 +92,47 @@ export default function HomeScreen() {
           <Text style={styles.status}>SESSION SETUP</Text>
         </View>
 
+        {/* Athlete Context & Onboarding Section */}
+        <View style={styles.athleteSection}>
+          <View style={styles.athleteHeader}>
+            <Text style={styles.athleteEyebrow}>ATHLETE CONTEXT</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setShowOnboarding(true)}
+              style={styles.athleteEditBtn}
+            >
+              <Text style={styles.athleteEditBtnText}>
+                {activeGoal || athleteProfile ? 'Edit Context' : 'Set Up'}
+              </Text>
+            </Pressable>
+          </View>
+          <Text style={styles.athleteGoalText}>
+            {activeGoal?.description ?? 'Consistency goal not configured yet'}
+          </Text>
+          <View style={styles.athleteMetaRow}>
+            {activeGoal?.target ? (
+              <View style={styles.athleteTag}>
+                <Text style={styles.athleteTagText}>{activeGoal.target} sessions/wk</Text>
+              </View>
+            ) : null}
+            {athleteProfile?.experienceLevel ? (
+              <View style={styles.athleteTag}>
+                <Text style={styles.athleteTagText}>{athleteProfile.experienceLevel.toLowerCase()}</Text>
+              </View>
+            ) : null}
+            {athleteProfile?.coachingTone ? (
+              <View style={styles.athleteTag}>
+                <Text style={styles.athleteTagText}>coach: {athleteProfile.coachingTone.toLowerCase()}</Text>
+              </View>
+            ) : null}
+            {athleteProfile?.targetSessionMinutes ? (
+              <View style={styles.athleteTag}>
+                <Text style={styles.athleteTagText}>{athleteProfile.targetSessionMinutes} min</Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+
         <Text style={styles.eyebrow}>ACCEPTED ROUTINE</Text>
         <Text style={styles.title}>Full body foundation</Text>
         <Text style={styles.description}>30 min · Galaxy camera · choose a display later</Text>
@@ -86,6 +154,19 @@ export default function HomeScreen() {
           <Text style={styles.buttonText}>{submitting ? 'Preparing…' : 'Confirm and prepare'}</Text>
         </Pressable>
       </ScrollView>
+
+      <OnboardingModal
+        visible={showOnboarding}
+        endpoint={endpoint}
+        onClose={() => setShowOnboarding(false)}
+        onSaved={(prof, goal) => {
+          setAthleteProfile(prof);
+          setActiveGoal(goal);
+          if (prof.coachingTone) {
+            setTone(prof.coachingTone);
+          }
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -108,9 +189,65 @@ function OptionGroup({label, options, value, onChange}: {label: string; options:
 const styles = StyleSheet.create({
   safeArea: {flex: 1, backgroundColor: '#070B14'},
   content: {paddingHorizontal: 24, paddingVertical: 20, paddingBottom: 40},
-  header: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 50},
+  header: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24},
   brand: {color: '#F4F7FB', fontSize: 20, fontWeight: '700'},
   status: {color: '#A3FF12', fontSize: 10, fontWeight: '800', letterSpacing: 1.5},
+  athleteSection: {
+    backgroundColor: '#111827',
+    borderColor: '#293244',
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: 28,
+  },
+  athleteHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  athleteEyebrow: {
+    color: '#A3FF12',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  athleteEditBtn: {
+    backgroundColor: '#1E293B',
+    borderColor: '#334155',
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  athleteEditBtnText: {
+    color: '#F4F7FB',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  athleteGoalText: {
+    color: '#F4F7FB',
+    fontSize: 15,
+    fontWeight: '600',
+    lineHeight: 20,
+  },
+  athleteMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  athleteTag: {
+    backgroundColor: '#1E293B',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  athleteTagText: {
+    color: '#9CA3AF',
+    fontSize: 11,
+    fontWeight: '600',
+  },
   eyebrow: {color: '#A3FF12', fontSize: 11, fontWeight: '800', letterSpacing: 2},
   title: {color: '#F4F7FB', fontSize: 38, fontWeight: '700', letterSpacing: -1.5, marginTop: 12},
   description: {color: '#9CA3AF', fontSize: 16, lineHeight: 24, marginTop: 12},
