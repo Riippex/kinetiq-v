@@ -24,6 +24,8 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "channels",
     "kinetiq.modules.identity.infrastructure.apps.IdentityConfig",
+    "kinetiq.modules.profiles.infrastructure.apps.ProfilesConfig",
+    "kinetiq.modules.goals.infrastructure.apps.GoalsConfig",
     "kinetiq.modules.catalog.infrastructure.apps.CatalogConfig",
     "kinetiq.modules.routines.infrastructure.apps.RoutinesConfig",
     "kinetiq.modules.workouts.infrastructure.apps.WorkoutsConfig",

@@ -6,7 +6,18 @@ from uuid import UUID
 import strawberry
 from strawberry.types import Info
 
-from kinetiq.bootstrap.container import prepare_workout_session
+from kinetiq.bootstrap.container import (
+    get_active_goal,
+    get_profile,
+    list_goal_revisions,
+    prepare_workout_session,
+    set_goal,
+    update_profile,
+)
+from kinetiq.modules.goals.application import SetGoalCommand
+from kinetiq.modules.goals.domain import GoalRevision
+from kinetiq.modules.profiles.application import UpdateProfileCommand
+from kinetiq.modules.profiles.domain import ExperienceLevel, UserProfile
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application import (
     IdempotencyConflict,
@@ -21,6 +32,13 @@ from kinetiq.modules.workouts.domain import (
     SessionMode,
 )
 from kinetiq.modules.workouts.infrastructure.models import WorkoutSessionRecord
+
+
+@strawberry.enum(name="ExperienceLevel")
+class ExperienceLevelType(Enum):
+    STARTING = "STARTING"
+    RETURNING = "RETURNING"
+    REGULAR = "REGULAR"
 
 
 @strawberry.enum(name="SessionMode")
@@ -81,6 +99,35 @@ class ServiceStatus:
     name: str
     version: str
     ready: bool
+
+
+@strawberry.type(name="Profile")
+class ProfileType:
+    id: strawberry.ID
+    display_name: str
+    timezone: str
+    experience_level: ExperienceLevelType
+    availability_days_per_week: int
+    target_session_minutes: int
+    available_equipment: list[str]
+    workout_space: str
+    preferences: list[str]
+    exclusions: list[str]
+    limitations: list[str]
+    coaching_tone: CoachingToneType
+    updated_at: datetime
+
+
+@strawberry.type(name="Goal")
+class GoalType:
+    id: strawberry.ID
+    revision: int
+    description: str
+    measure: str | None
+    baseline: float | None
+    target: float | None
+    unit: str | None
+    created_at: datetime
 
 
 @strawberry.type(name="RoutineItem")
@@ -149,10 +196,47 @@ class DomainError:
     field: str | None = None
 
 
+@strawberry.type(name="ProfileResult")
+class ProfileResultType:
+    profile: ProfileType | None
+    errors: list[DomainError]
+
+
+@strawberry.type(name="GoalResult")
+class GoalResultType:
+    goal: GoalType | None
+    errors: list[DomainError]
+
+
 @strawberry.type(name="SessionResult")
 class SessionResultType:
     session: WorkoutSessionType | None
     errors: list[DomainError]
+
+
+@strawberry.input
+class UpdateProfileInput:
+    display_name: str | None = None
+    timezone: str | None = None
+    experience_level: ExperienceLevelType | None = None
+    availability_days_per_week: int | None = None
+    target_session_minutes: int | None = None
+    available_equipment: list[str] | None = None
+    workout_space: str | None = None
+    preferences: list[str] | None = None
+    exclusions: list[str] | None = None
+    limitations: list[str] | None = None
+    coaching_tone: CoachingToneType | None = None
+
+
+@strawberry.input
+class SetGoalInput:
+    description: str
+    goal_id: strawberry.ID | None = None
+    measure: str | None = None
+    baseline: float | None = None
+    target: float | None = None
+    unit: str | None = None
 
 
 @strawberry.input
@@ -183,9 +267,115 @@ class Query:
     def service_status(self) -> ServiceStatus:
         return ServiceStatus(name="kinetiq-backend", version="0.1.0", ready=True)
 
+    @strawberry.field
+    def me(self, info: Info[Any, None]) -> ProfileType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing profile")
+        profile = get_profile().execute(owner_id)
+        return _to_profile_graphql(profile)
+
+    @strawberry.field
+    def goals(self, info: Info[Any, None]) -> list[GoalType]:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing goals")
+        revisions = list_goal_revisions().execute(owner_id)
+        return [_to_goal_graphql(rev) for rev in revisions]
+
+    @strawberry.field
+    def active_goal(self, info: Info[Any, None]) -> GoalType | None:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing active goal")
+        goal = get_active_goal().execute(owner_id)
+        if goal is None:
+            return None
+        return _to_goal_graphql(goal)
+
 
 @strawberry.type
 class Mutation:
+    @strawberry.mutation
+    def update_profile(
+        self, info: Info[Any, None], input: UpdateProfileInput
+    ) -> ProfileResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return ProfileResultType(
+                profile=None,
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before updating profile",
+                    )
+                ],
+            )
+        try:
+            command = UpdateProfileCommand(
+                display_name=input.display_name,
+                timezone_name=input.timezone,
+                experience_level=(
+                    ExperienceLevel(input.experience_level.value)
+                    if input.experience_level is not None
+                    else None
+                ),
+                availability_days_per_week=input.availability_days_per_week,
+                target_session_minutes=input.target_session_minutes,
+                available_equipment=(
+                    tuple(input.available_equipment)
+                    if input.available_equipment is not None
+                    else None
+                ),
+                workout_space=input.workout_space,
+                preferences=tuple(input.preferences) if input.preferences is not None else None,
+                exclusions=tuple(input.exclusions) if input.exclusions is not None else None,
+                limitations=tuple(input.limitations) if input.limitations is not None else None,
+                coaching_tone=(
+                    CoachingTone(input.coaching_tone.value)
+                    if input.coaching_tone is not None
+                    else None
+                ),
+            )
+            profile = update_profile().execute(owner_id, command)
+            return ProfileResultType(profile=_to_profile_graphql(profile), errors=[])
+        except (ValueError, TypeError) as error:
+            return ProfileResultType(
+                profile=None,
+                errors=[DomainError(code="INVALID_PROFILE", message=str(error))],
+            )
+
+    @strawberry.mutation
+    def set_goal(self, info: Info[Any, None], input: SetGoalInput) -> GoalResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return GoalResultType(
+                goal=None,
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before setting a goal",
+                    )
+                ],
+            )
+        try:
+            goal_uuid = UUID(str(input.goal_id)) if input.goal_id else None
+            command = SetGoalCommand(
+                goal_id=goal_uuid,
+                description=input.description,
+                measure=input.measure,
+                baseline=input.baseline,
+                target=input.target,
+                unit=input.unit,
+            )
+            goal = set_goal().execute(owner_id, command)
+            return GoalResultType(goal=_to_goal_graphql(goal), errors=[])
+        except (ValueError, TypeError) as error:
+            return GoalResultType(
+                goal=None,
+                errors=[DomainError(code="INVALID_GOAL", message=str(error))],
+            )
+
     @strawberry.mutation
     def prepare_session(
         self, info: Info[Any, None], input: PrepareSessionInput
@@ -214,6 +404,37 @@ def _authenticated_owner_id(info: Info[Any, None]) -> UUID | None:
     if user is None or not user.is_authenticated or not isinstance(user.pk, UUID):
         return None
     return user.pk
+
+
+def _to_profile_graphql(profile: UserProfile) -> ProfileType:
+    return ProfileType(
+        id=strawberry.ID(str(profile.owner_id)),
+        display_name=profile.display_name,
+        timezone=profile.timezone,
+        experience_level=ExperienceLevelType(profile.experience_level.value),
+        availability_days_per_week=profile.availability_days_per_week,
+        target_session_minutes=profile.target_session_minutes,
+        available_equipment=list(profile.available_equipment),
+        workout_space=profile.workout_space,
+        preferences=list(profile.preferences),
+        exclusions=list(profile.exclusions),
+        limitations=list(profile.limitations),
+        coaching_tone=CoachingToneType(profile.coaching_tone.value),
+        updated_at=profile.updated_at,
+    )
+
+
+def _to_goal_graphql(goal: GoalRevision) -> GoalType:
+    return GoalType(
+        id=strawberry.ID(str(goal.goal_id)),
+        revision=goal.revision,
+        description=goal.description,
+        measure=goal.measure,
+        baseline=goal.baseline,
+        target=goal.target,
+        unit=goal.unit,
+        created_at=goal.created_at,
+    )
 
 
 def _to_command(value: PrepareSessionInput) -> PrepareSessionCommand:

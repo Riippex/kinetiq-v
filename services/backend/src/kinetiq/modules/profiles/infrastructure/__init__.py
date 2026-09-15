@@ -1,0 +1,1 @@
+"""Django profiles persistence adapters."""

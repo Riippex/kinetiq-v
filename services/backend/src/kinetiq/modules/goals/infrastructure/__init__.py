@@ -1,0 +1,1 @@
+"""Django goals persistence adapters."""
