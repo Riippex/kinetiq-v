@@ -1,0 +1,1 @@
+"""Django catalog persistence adapters."""

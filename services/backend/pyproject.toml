@@ -46,9 +46,11 @@ django_settings_module = "kinetiq.bootstrap.settings"
 [dependency-groups]
 dev = [
     "django-stubs>=6.1.0",
+    "jsonschema>=4.23.0",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-django>=4.14.0",
     "ruff>=0.16.6",
     "types-channels>=4.3.0.20260518",
+    "types-jsonschema>=4.23.0",
 ]

@@ -1,0 +1,63 @@
+{
+  "service": "kinetiq-v-vision",
+  "contract_version": "1.0.0",
+  "supported_target_modes": ["SINGLE_PERSON_CONFIRMED"],
+  "supported_camera_perspectives": [
+    "FRONTAL",
+    "SAGITTAL_LEFT",
+    "SAGITTAL_RIGHT",
+    "FLOOR_MAT"
+  ],
+  "supported_exercises": [
+    {
+      "exercise_key": "bodyweight_squat",
+      "version": 1,
+      "name": "Bodyweight Squat",
+      "analysis_type": "REPETITION_COUNT",
+      "supported_metrics": [
+        "repetition_count",
+        "depth_percentage",
+        "knee_valgus_detected",
+        "cadence_seconds"
+      ],
+      "required_visibility": "FULL_BODY"
+    },
+    {
+      "exercise_key": "push_up",
+      "version": 1,
+      "name": "Push-Up",
+      "analysis_type": "REPETITION_COUNT",
+      "supported_metrics": [
+        "repetition_count",
+        "elbow_flexion_degrees",
+        "hip_sag_detected",
+        "cadence_seconds"
+      ],
+      "required_visibility": "FLOOR_FULL"
+    },
+    {
+      "exercise_key": "plank",
+      "version": 1,
+      "name": "Plank",
+      "analysis_type": "HOLD_DURATION",
+      "supported_metrics": [
+        "elapsed_seconds",
+        "spine_neutral_alignment",
+        "tremor_stability"
+      ],
+      "required_visibility": "FLOOR_FULL"
+    },
+    {
+      "exercise_key": "glute_bridge",
+      "version": 1,
+      "name": "Glute Bridge",
+      "analysis_type": "REPETITION_COUNT",
+      "supported_metrics": [
+        "repetition_count",
+        "hip_extension_degrees",
+        "hold_at_top_seconds"
+      ],
+      "required_visibility": "FLOOR_FULL"
+    }
+  ]
+}

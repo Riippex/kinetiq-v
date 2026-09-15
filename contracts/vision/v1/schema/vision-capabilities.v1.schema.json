@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kinetiq.ai/schemas/vision/v1/capabilities.json",
+  "title": "VisionCapabilitiesV1",
+  "description": "Declaration of supported exercises and analysis features provided by the Vision service",
+  "type": "object",
+  "required": [
+    "service",
+    "contract_version",
+    "supported_target_modes",
+    "supported_camera_perspectives",
+    "supported_exercises"
+  ],
+  "properties": {
+    "service": {
+      "type": "string",
+      "const": "kinetiq-v-vision"
+    },
+    "contract_version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "supported_target_modes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["SINGLE_PERSON_CONFIRMED"]
+      },
+      "minItems": 1
+    },
+    "supported_camera_perspectives": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["FRONTAL", "SAGITTAL_LEFT", "SAGITTAL_RIGHT", "FLOOR_MAT"]
+      },
+      "minItems": 1
+    },
+    "supported_exercises": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "exercise_key",
+          "version",
+          "name",
+          "analysis_type",
+          "supported_metrics",
+          "required_visibility"
+        ],
+        "properties": {
+          "exercise_key": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "analysis_type": {
+            "type": "string",
+            "enum": ["REPETITION_COUNT", "HOLD_DURATION"]
+          },
+          "supported_metrics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "required_visibility": {
+            "type": "string",
+            "enum": ["FULL_BODY", "UPPER_BODY", "FLOOR_FULL"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false
+}
