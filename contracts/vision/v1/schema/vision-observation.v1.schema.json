@@ -2,11 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://kinetiq.ai/schemas/vision/v1/observation.json",
   "title": "VisionObservationV1",
-  "description": "Timestamped movement, tracking, and repetition observation event from the Vision service",
+  "description": "Timestamped movement, tracking, sequence, and repetition observation event from the Vision service",
   "type": "object",
   "required": [
     "session_id",
     "epoch",
+    "sequence",
     "timestamp_utc",
     "target_person_id",
     "exercise_key",
@@ -21,6 +22,10 @@
       "format": "uuid"
     },
     "epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sequence": {
       "type": "integer",
       "minimum": 1
     },
@@ -42,11 +47,21 @@
     },
     "tracking_state": {
       "type": "string",
-      "enum": ["CONFIRMED", "SEARCHING", "AMBIGUOUS", "LOST"]
+      "enum": [
+        "CONFIRMED",
+        "SEARCHING",
+        "AMBIGUOUS",
+        "LOST"
+      ]
     },
     "visibility_state": {
       "type": "string",
-      "enum": ["FULL", "PARTIAL", "OCCLUDED", "ABSENT"]
+      "enum": [
+        "FULL",
+        "PARTIAL",
+        "OCCLUDED",
+        "ABSENT"
+      ]
     },
     "reason_code": {
       "type": "string",
