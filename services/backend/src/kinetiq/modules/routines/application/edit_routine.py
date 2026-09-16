@@ -7,10 +7,15 @@ from uuid import UUID, uuid4
 from kinetiq.modules.catalog.application.ports import CatalogRepository
 from kinetiq.modules.profiles.application.ports import ProfileRepository
 from kinetiq.modules.routines.application.ports import RoutineRepository
-from kinetiq.modules.routines.domain.entities import Routine
+from kinetiq.modules.routines.domain.entities import Routine, RoutineEligibilityCriteria
 from kinetiq.modules.routines.domain.errors import (
     InvalidRoutineEditError,
     RoutineNotFoundError,
+    UnsupportedLimitationError,
+)
+from kinetiq.modules.routines.domain.filtering import (
+    normalize_excluded_exercise_codes,
+    template_satisfies_non_item_constraints,
 )
 
 
@@ -76,21 +81,80 @@ class EditRoutineUseCase:
         if len(orders) != len(set(orders)):
             raise InvalidRoutineEditError("Exercise items must have unique order positions")
 
-        # 3. Fetch athlete profile for equipment constraints
+        # 3. Fetch athlete profile and normalize the same eligibility constraints
+        # applied during proposal generation (equipment, exclusions, limitations,
+        # workout space, and experience level), not equipment validation alone.
         profile = self._profile_repo.get_by_owner_id(athlete_id)
+        known_exercise_codes = {ex.code for ex in self._catalog_repo.list_exercises()}
         available_equipment = (
             {eq.upper() for eq in profile.available_equipment} | {"NONE"}
             if profile is not None
             else {"NONE"}
         )
+        excluded_exercise_codes = normalize_excluded_exercise_codes(
+            profile.exclusions if profile is not None else (), known_exercise_codes
+        )
+        limitations = frozenset(
+            limitation.strip()
+            for limitation in (profile.limitations if profile is not None else ())
+            if limitation.strip()
+        )
 
-        # 4. Revalidate each exercise against catalog and equipment
+        # 3a. Self-reported limitations must never be silently ignored here either:
+        # if the routine's own template has no explicit adaptation for a reported
+        # limitation, refuse the edit rather than persist an unsafe revision.
+        template_code = base_routine.prescription.get("templateCode")
+        base_template = (
+            self._catalog_repo.get_routine_template(template_code)
+            if isinstance(template_code, str)
+            else None
+        )
+        if limitations and (
+            base_template is None
+            or not limitations.issubset(base_template.supported_limitation_adaptations)
+        ):
+            raise UnsupportedLimitationError(
+                "No catalog template provides a supported adaptation for "
+                f"limitation(s) {sorted(limitations)}; a safe routine cannot be edited "
+                f"for athlete {athlete_id}"
+            )
+
+        # 3b. Reapply workout-space and experience-level eligibility against the
+        # routine's own template, in case the athlete's profile changed since proposal.
+        if base_template is not None:
+            raw_duration = base_routine.prescription.get("estimatedDurationMinutes")
+            target_duration_minutes = (
+                raw_duration if isinstance(raw_duration, int) and raw_duration > 0 else 15
+            )
+            criteria = RoutineEligibilityCriteria(
+                available_equipment=frozenset(available_equipment),
+                target_duration_minutes=target_duration_minutes,
+                experience_level=(
+                    profile.experience_level.value if profile is not None else "RETURNING"
+                ),
+                workout_space=profile.workout_space if profile is not None else None,
+                excluded_exercise_codes=excluded_exercise_codes,
+                limitations=limitations,
+            )
+            if not template_satisfies_non_item_constraints(base_template, criteria):
+                raise InvalidRoutineEditError(
+                    "This routine's template no longer matches the athlete's current "
+                    "workout space or experience level"
+                )
+
+        # 4. Revalidate each exercise against catalog, exclusions, and equipment
         validated_items_data: list[dict[str, object]] = []
         for item in sorted(command.items, key=lambda x: x.order):
             exercise = self._catalog_repo.get_exercise(item.exercise_id)
             if exercise is None:
                 raise InvalidRoutineEditError(
                     f"Exercise '{item.exercise_id}' does not exist in catalog"
+                )
+
+            if item.exercise_id in excluded_exercise_codes:
+                raise InvalidRoutineEditError(
+                    f"Exercise '{exercise.name}' is excluded in the athlete's profile "
+                    "and cannot be included in a routine"
                 )
 
             if exercise.equipment.upper() not in available_equipment:

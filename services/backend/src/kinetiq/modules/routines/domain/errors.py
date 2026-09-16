@@ -9,6 +9,11 @@ class NoEligibleRoutineTemplatesError(RoutineDomainError):
     """Raised when no catalog templates meet the athlete's eligibility constraints."""
 
 
+class UnsupportedLimitationError(RoutineDomainError):
+    """Raised when the catalog has no explicitly supported adaptation for a
+    self-reported athlete limitation, so no safe routine can be proposed or edited."""
+
+
 class InvalidCoachingOutputError(RoutineDomainError):
     """Raised when a coaching provider returns an unapproved template or invalid format."""
 

@@ -14,6 +14,8 @@ class RoutineEligibilityCriteria:
     experience_level: str
     target_goal_code: str | None = None
     workout_space: str | None = None
+    excluded_exercise_codes: frozenset[str] = frozenset()
+    limitations: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.target_duration_minutes < 1:

@@ -15,8 +15,12 @@ from kinetiq.modules.routines.domain.entities import (
 )
 from kinetiq.modules.routines.domain.errors import (
     NoEligibleRoutineTemplatesError,
+    UnsupportedLimitationError,
 )
-from kinetiq.modules.routines.domain.filtering import filter_eligible_templates
+from kinetiq.modules.routines.domain.filtering import (
+    filter_eligible_templates,
+    normalize_excluded_exercise_codes,
+)
 from kinetiq.modules.routines.domain.provider import (
     DeterministicCoachingProvider,
     RoutineCoachingProvider,
@@ -82,30 +86,59 @@ class ProposeRoutineUseCase:
             if target_goal_code is None and catalog_goals:
                 target_goal_code = catalog_goals[0].code
 
-        # 3. Build criteria
+        # 3. Fetch catalog templates and exercises
+        templates = self._catalog_repo.list_routine_templates()
+        exercises = self._catalog_repo.list_exercises()
+        exercises_by_code = {ex.code: ex for ex in exercises}
+
+        # 4. Normalize profile constraints against stable catalog identifiers.
+        # Exclusions are matched exactly against known exercise codes only;
+        # no free-text or fuzzy matching, and no medical inference is performed.
+        excluded_exercise_codes = normalize_excluded_exercise_codes(
+            profile.exclusions, set(exercises_by_code)
+        )
+        limitations = frozenset(
+            limitation.strip() for limitation in profile.limitations if limitation.strip()
+        )
+
+        # 5. Self-reported limitations must never be silently ignored: if the
+        # catalog has no template with an explicit adaptation for a reported
+        # limitation, refuse to propose rather than silently drop the limitation.
+        if limitations:
+            all_supported_adaptations: frozenset[str] = frozenset().union(
+                *(t.supported_limitation_adaptations for t in templates)
+            ) if templates else frozenset()
+            unsupported = sorted(limitations - all_supported_adaptations)
+            if unsupported:
+                raise UnsupportedLimitationError(
+                    "No catalog template provides a supported adaptation for "
+                    f"limitation(s) {unsupported}; a safe routine cannot be proposed "
+                    f"for athlete {athlete_id}"
+                )
+
+        # 6. Build criteria
         criteria = RoutineEligibilityCriteria(
             available_equipment=frozenset(profile.available_equipment),
             target_duration_minutes=profile.target_session_minutes,
             experience_level=profile.experience_level.value,
             target_goal_code=target_goal_code,
             workout_space=profile.workout_space,
+            excluded_exercise_codes=excluded_exercise_codes,
+            limitations=limitations,
         )
 
-        # 4. Fetch catalog templates and exercises
-        templates = self._catalog_repo.list_routine_templates()
-        exercises = self._catalog_repo.list_exercises()
-        exercises_by_code = {ex.code: ex for ex in exercises}
-
-        # 5. Deterministic eligibility filtering
+        # 7. Deterministic eligibility filtering
         eligible_templates = filter_eligible_templates(templates, exercises_by_code, criteria)
         if not eligible_templates:
             raise NoEligibleRoutineTemplatesError(
                 f"No catalog templates match criteria for athlete {athlete_id} "
                 f"(equipment={sorted(criteria.available_equipment)}, "
-                f"target_duration={criteria.target_duration_minutes}m)"
+                f"target_duration={criteria.target_duration_minutes}m, "
+                f"excluded_exercises={sorted(excluded_exercise_codes)}, "
+                f"limitations={sorted(limitations)})"
             )
 
-        # 6. Constrained provider ranking & explanation with strict validation and safe fallback
+        # 8. Constrained provider ranking & explanation with strict validation and safe fallback
         chosen_output = None
         if self._coaching_provider is not None:
             try:
@@ -117,7 +150,7 @@ class ProposeRoutineUseCase:
         if chosen_output is None:
             chosen_output = self._fallback_provider.rank_and_explain(eligible_templates, criteria)
 
-        # 7. Find selected template
+        # 9. Find selected template
         selected_template = next(
             t for t in eligible_templates if t.code == chosen_output.recommended_template_code
         )

@@ -118,6 +118,8 @@ CANONICAL_TEMPLATES: tuple[RoutineTemplate, ...] = (
         ),
         target_goal_code="goal-habit-consistency-v1",
         estimated_duration_minutes=15,
+        supported_workout_spaces=frozenset({"LIVING_ROOM", "BEDROOM", "OUTDOOR"}),
+        supported_experience_levels=frozenset({"STARTING", "RETURNING", "REGULAR"}),
         items=(
             RoutineTemplateItem(
                 exercise_code="exercise-bodyweight-squat-v1",

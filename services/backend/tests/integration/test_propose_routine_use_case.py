@@ -26,7 +26,10 @@ from kinetiq.modules.profiles.application.update_profile import (
 from kinetiq.modules.profiles.infrastructure.repositories import DjangoProfileRepository
 from kinetiq.modules.routines.application.propose_routine import ProposeRoutineUseCase
 from kinetiq.modules.routines.domain.entities import RoutineEligibilityCriteria
-from kinetiq.modules.routines.domain.errors import NoEligibleRoutineTemplatesError
+from kinetiq.modules.routines.domain.errors import (
+    NoEligibleRoutineTemplatesError,
+    UnsupportedLimitationError,
+)
 from kinetiq.modules.routines.domain.provider import (
     CoachingProposalOutput,
 )
@@ -222,3 +225,102 @@ def test_propose_routine_raises_when_no_templates_eligible(
     with pytest.raises(NoEligibleRoutineTemplatesError) as exc:
         use_case.execute(athlete_id)
     assert "No catalog templates match criteria" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_propose_routine_excludes_templates_with_excluded_exercise(
+    catalog_seeded: DjangoCatalogRepository,
+) -> None:
+    """Regression test: an athlete's explicit exclusion must prevent the
+    excluded catalog exercise from appearing in a proposed routine."""
+    profile_repo = DjangoProfileRepository()
+    goal_repo = DjangoGoalRepository()
+
+    user = User.objects.create_user(
+        email=f"athlete-{uuid4()}@example.com",
+        username=f"athlete-{uuid4()}",
+    )
+    athlete_id = user.id
+    GetProfileUseCase(profile_repo).execute(athlete_id)
+
+    # The only canonical template includes push-up; excluding it must leave
+    # no eligible template rather than silently including the exercise.
+    UpdateProfileUseCase(profile_repo).execute(
+        owner_id=athlete_id,
+        command=UpdateProfileCommand(exclusions=("exercise-push-up-v1",)),
+    )
+
+    use_case = ProposeRoutineUseCase(
+        catalog_repo=catalog_seeded,
+        profile_repo=profile_repo,
+        goal_repo=goal_repo,
+    )
+
+    with pytest.raises(NoEligibleRoutineTemplatesError) as exc:
+        use_case.execute(athlete_id)
+    assert "exercise-push-up-v1" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_propose_routine_free_text_exclusion_is_never_inferred(
+    catalog_seeded: DjangoCatalogRepository,
+) -> None:
+    """Exclusions are normalized against stable catalog identifiers only: a
+    free-text medical description must not be matched to any exercise, so the
+    proposal proceeds unaffected instead of guessing at intent."""
+    profile_repo = DjangoProfileRepository()
+    goal_repo = DjangoGoalRepository()
+
+    user = User.objects.create_user(
+        email=f"athlete-{uuid4()}@example.com",
+        username=f"athlete-{uuid4()}",
+    )
+    athlete_id = user.id
+    GetProfileUseCase(profile_repo).execute(athlete_id)
+
+    UpdateProfileUseCase(profile_repo).execute(
+        owner_id=athlete_id,
+        command=UpdateProfileCommand(exclusions=("no push ups because of my shoulder",)),
+    )
+
+    use_case = ProposeRoutineUseCase(
+        catalog_repo=catalog_seeded,
+        profile_repo=profile_repo,
+        goal_repo=goal_repo,
+    )
+
+    proposal = use_case.execute(athlete_id)
+    assert proposal.template_code == "template-full-body-foundation-v1"
+
+
+@pytest.mark.django_db
+def test_propose_routine_raises_unsupported_limitation_error(
+    catalog_seeded: DjangoCatalogRepository,
+) -> None:
+    """Regression test: a self-reported limitation must never be silently
+    ignored. With no catalog template declaring an adaptation for it, the
+    domain must raise a clear, distinct error rather than proceed unsafely."""
+    profile_repo = DjangoProfileRepository()
+    goal_repo = DjangoGoalRepository()
+
+    user = User.objects.create_user(
+        email=f"athlete-{uuid4()}@example.com",
+        username=f"athlete-{uuid4()}",
+    )
+    athlete_id = user.id
+    GetProfileUseCase(profile_repo).execute(athlete_id)
+
+    UpdateProfileUseCase(profile_repo).execute(
+        owner_id=athlete_id,
+        command=UpdateProfileCommand(limitations=("KNEE_PAIN",)),
+    )
+
+    use_case = ProposeRoutineUseCase(
+        catalog_repo=catalog_seeded,
+        profile_repo=profile_repo,
+        goal_repo=goal_repo,
+    )
+
+    with pytest.raises(UnsupportedLimitationError) as exc:
+        use_case.execute(athlete_id)
+    assert "KNEE_PAIN" in str(exc.value)

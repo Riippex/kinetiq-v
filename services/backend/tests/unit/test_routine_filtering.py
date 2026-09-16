@@ -8,7 +8,10 @@ from kinetiq.modules.catalog.domain.entities import (
     RoutineTemplateItem,
 )
 from kinetiq.modules.routines.domain.entities import RoutineEligibilityCriteria
-from kinetiq.modules.routines.domain.filtering import filter_eligible_templates
+from kinetiq.modules.routines.domain.filtering import (
+    filter_eligible_templates,
+    normalize_excluded_exercise_codes,
+)
 
 
 @pytest.fixture
@@ -210,3 +213,220 @@ def test_filters_out_template_with_missing_catalog_exercise(
 
     eligible = filter_eligible_templates([corrupted_template], catalog_exercises, criteria)
     assert eligible == []
+
+
+def test_excludes_template_containing_an_excluded_exercise(
+    sample_templates: list[RoutineTemplate],
+    catalog_exercises: dict[str, Exercise],
+) -> None:
+    """A profile exclusion must remove any template proposing that exercise,
+    even when equipment and goal otherwise match."""
+    criteria = RoutineEligibilityCriteria(
+        available_equipment=frozenset({"NONE", "PULL_UP_BAR"}),
+        target_duration_minutes=15,
+        experience_level="RETURNING",
+        target_goal_code="goal-habit-consistency",
+        excluded_exercise_codes=frozenset({"ex-push-up"}),
+    )
+
+    eligible = filter_eligible_templates(sample_templates, catalog_exercises, criteria)
+
+    # Both remaining goal-matching templates include ex-push-up, so neither is eligible.
+    assert eligible == []
+
+
+def test_excluded_exercise_does_not_affect_templates_without_it(
+    catalog_exercises: dict[str, Exercise],
+) -> None:
+    squat_only_template = RoutineTemplate(
+        code="template-squat-only",
+        version=1,
+        title="Squat Only",
+        description="Just squats",
+        target_goal_code="goal-habit",
+        estimated_duration_minutes=15,
+        items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
+    )
+    criteria = RoutineEligibilityCriteria(
+        available_equipment=frozenset({"NONE"}),
+        target_duration_minutes=15,
+        experience_level="RETURNING",
+        target_goal_code="goal-habit",
+        excluded_exercise_codes=frozenset({"ex-push-up"}),
+    )
+
+    eligible = filter_eligible_templates([squat_only_template], catalog_exercises, criteria)
+    assert len(eligible) == 1
+
+
+def test_filters_out_template_that_does_not_support_workout_space(
+    catalog_exercises: dict[str, Exercise],
+) -> None:
+    gym_only_template = RoutineTemplate(
+        code="template-gym-only",
+        version=1,
+        title="Gym Only",
+        description="Requires the gym",
+        target_goal_code="goal-habit",
+        estimated_duration_minutes=15,
+        items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
+        supported_workout_spaces=frozenset({"GYM"}),
+    )
+    criteria = RoutineEligibilityCriteria(
+        available_equipment=frozenset({"NONE"}),
+        target_duration_minutes=15,
+        experience_level="RETURNING",
+        target_goal_code="goal-habit",
+        workout_space="LIVING_ROOM",
+    )
+
+    eligible = filter_eligible_templates([gym_only_template], catalog_exercises, criteria)
+    assert eligible == []
+
+
+def test_includes_template_when_workout_space_matches(
+    catalog_exercises: dict[str, Exercise],
+) -> None:
+    gym_only_template = RoutineTemplate(
+        code="template-gym-only",
+        version=1,
+        title="Gym Only",
+        description="Requires the gym",
+        target_goal_code="goal-habit",
+        estimated_duration_minutes=15,
+        items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
+        supported_workout_spaces=frozenset({"GYM"}),
+    )
+    criteria = RoutineEligibilityCriteria(
+        available_equipment=frozenset({"NONE"}),
+        target_duration_minutes=15,
+        experience_level="RETURNING",
+        target_goal_code="goal-habit",
+        workout_space="gym",  # Case-insensitive match
+    )
+
+    eligible = filter_eligible_templates([gym_only_template], catalog_exercises, criteria)
+    assert len(eligible) == 1
+
+
+def test_template_with_no_declared_workout_spaces_applies_everywhere(
+    catalog_exercises: dict[str, Exercise],
+) -> None:
+    universal_template = RoutineTemplate(
+        code="template-universal",
+        version=1,
+        title="Universal",
+        description="No explicit space restriction",
+        target_goal_code="goal-habit",
+        estimated_duration_minutes=15,
+        items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
+    )
+    criteria = RoutineEligibilityCriteria(
+        available_equipment=frozenset({"NONE"}),
+        target_duration_minutes=15,
+        experience_level="RETURNING",
+        target_goal_code="goal-habit",
+        workout_space="ANY_UNUSUAL_SPACE",
+    )
+
+    eligible = filter_eligible_templates([universal_template], catalog_exercises, criteria)
+    assert len(eligible) == 1
+
+
+def test_filters_out_template_that_does_not_support_experience_level(
+    catalog_exercises: dict[str, Exercise],
+) -> None:
+    advanced_template = RoutineTemplate(
+        code="template-advanced",
+        version=1,
+        title="Advanced",
+        description="Regulars only",
+        target_goal_code="goal-habit",
+        estimated_duration_minutes=15,
+        items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
+        supported_experience_levels=frozenset({"REGULAR"}),
+    )
+    criteria = RoutineEligibilityCriteria(
+        available_equipment=frozenset({"NONE"}),
+        target_duration_minutes=15,
+        experience_level="STARTING",
+        target_goal_code="goal-habit",
+    )
+
+    eligible = filter_eligible_templates([advanced_template], catalog_exercises, criteria)
+    assert eligible == []
+
+
+def test_filters_out_template_without_supported_adaptation_for_limitation(
+    catalog_exercises: dict[str, Exercise],
+) -> None:
+    """A template with no declared adaptation for a reported limitation must
+    never be eligible, even though it matches every other constraint."""
+    plain_template = RoutineTemplate(
+        code="template-plain",
+        version=1,
+        title="Plain",
+        description="No limitation adaptations declared",
+        target_goal_code="goal-habit",
+        estimated_duration_minutes=15,
+        items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
+    )
+    criteria = RoutineEligibilityCriteria(
+        available_equipment=frozenset({"NONE"}),
+        target_duration_minutes=15,
+        experience_level="RETURNING",
+        target_goal_code="goal-habit",
+        limitations=frozenset({"KNEE_PAIN"}),
+    )
+
+    eligible = filter_eligible_templates([plain_template], catalog_exercises, criteria)
+    assert eligible == []
+
+
+def test_includes_template_with_matching_limitation_adaptation(
+    catalog_exercises: dict[str, Exercise],
+) -> None:
+    adapted_template = RoutineTemplate(
+        code="template-adapted",
+        version=1,
+        title="Knee-Friendly",
+        description="Explicit knee pain adaptation",
+        target_goal_code="goal-habit",
+        estimated_duration_minutes=15,
+        items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
+        supported_limitation_adaptations=frozenset({"KNEE_PAIN", "WRIST_PAIN"}),
+    )
+    criteria = RoutineEligibilityCriteria(
+        available_equipment=frozenset({"NONE"}),
+        target_duration_minutes=15,
+        experience_level="RETURNING",
+        target_goal_code="goal-habit",
+        limitations=frozenset({"KNEE_PAIN"}),
+    )
+
+    eligible = filter_eligible_templates([adapted_template], catalog_exercises, criteria)
+    assert len(eligible) == 1
+
+
+def test_normalize_excluded_exercise_codes_keeps_only_known_catalog_codes() -> None:
+    known_codes = {"ex-squat", "ex-push-up"}
+
+    normalized = normalize_excluded_exercise_codes(
+        ["ex-squat", " ex-push-up ", "not-a-real-exercise", "", "  "],
+        known_codes,
+    )
+
+    assert normalized == frozenset({"ex-squat", "ex-push-up"})
+
+
+def test_normalize_excluded_exercise_codes_never_infers_from_free_text() -> None:
+    """Free-text medical descriptions must never be matched against catalog
+    codes by inference; only exact, stable identifier matches are honored."""
+    known_codes = {"ex-squat"}
+
+    normalized = normalize_excluded_exercise_codes(
+        ["no squats because of my knee", "squat"],
+        known_codes,
+    )
+
+    assert normalized == frozenset()

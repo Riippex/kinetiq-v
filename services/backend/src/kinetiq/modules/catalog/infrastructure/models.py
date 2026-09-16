@@ -53,6 +53,9 @@ class RoutineTemplateRecord(models.Model):
     target_goal_code = models.CharField(max_length=80)
     estimated_duration_minutes = models.PositiveIntegerField()
     items = models.JSONField(default=list)
+    supported_workout_spaces = models.JSONField(default=list)
+    supported_experience_levels = models.JSONField(default=list)
+    supported_limitation_adaptations = models.JSONField(default=list)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

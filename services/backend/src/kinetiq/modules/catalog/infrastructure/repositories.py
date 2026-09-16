@@ -102,6 +102,11 @@ class DjangoCatalogRepository(CatalogRepository):
                 "target_goal_code": template.target_goal_code,
                 "estimated_duration_minutes": template.estimated_duration_minutes,
                 "items": items_data,
+                "supported_workout_spaces": sorted(template.supported_workout_spaces),
+                "supported_experience_levels": sorted(template.supported_experience_levels),
+                "supported_limitation_adaptations": sorted(
+                    template.supported_limitation_adaptations
+                ),
             },
         )
 
@@ -172,4 +177,9 @@ class DjangoCatalogRepository(CatalogRepository):
             target_goal_code=record.target_goal_code,
             estimated_duration_minutes=record.estimated_duration_minutes,
             items=items,
+            supported_workout_spaces=frozenset(record.supported_workout_spaces),
+            supported_experience_levels=frozenset(record.supported_experience_levels),
+            supported_limitation_adaptations=frozenset(
+                record.supported_limitation_adaptations
+            ),
         )

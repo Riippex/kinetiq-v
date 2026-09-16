@@ -116,6 +116,17 @@ class RoutineTemplate:
     target_goal_code: str
     estimated_duration_minutes: int
     items: tuple[RoutineTemplateItem, ...]
+    # Explicit workout-space and experience-level constraints. An empty set means
+    # the template is applicable to every space or experience level; a non-empty
+    # set restricts eligibility to exactly the declared values. These must be
+    # populated from real catalog metadata, never inferred, before being used
+    # to filter proposals.
+    supported_workout_spaces: frozenset[str] = frozenset()
+    supported_experience_levels: frozenset[str] = frozenset()
+    # Self-reported athlete limitations (e.g. "KNEE_PAIN") for which this template
+    # has an explicit, catalog-authored adaptation. A template with no declared
+    # adaptation for a limitation is never eligible for an athlete reporting it.
+    supported_limitation_adaptations: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.code.strip():

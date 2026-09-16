@@ -29,6 +29,7 @@ from kinetiq.modules.routines.domain.errors import (
     InvalidRoutineEditError,
     NoEligibleRoutineTemplatesError,
     RoutineNotFoundError,
+    UnsupportedLimitationError,
 )
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application import (
@@ -460,6 +461,11 @@ class Mutation:
                     ],
                 )
             return RoutineResultType(routine=_to_routine_graphql(routine), errors=[])
+        except UnsupportedLimitationError as error:
+            return RoutineResultType(
+                routine=None,
+                errors=[DomainError(code="UNSUPPORTED_LIMITATION", message=str(error))],
+            )
         except NoEligibleRoutineTemplatesError as error:
             return RoutineResultType(
                 routine=None,
@@ -508,6 +514,11 @@ class Mutation:
             return RoutineResultType(
                 routine=None,
                 errors=[DomainError(code="ROUTINE_NOT_FOUND", message=str(error))],
+            )
+        except UnsupportedLimitationError as error:
+            return RoutineResultType(
+                routine=None,
+                errors=[DomainError(code="UNSUPPORTED_LIMITATION", message=str(error))],
             )
         except InvalidRoutineEditError as error:
             return RoutineResultType(

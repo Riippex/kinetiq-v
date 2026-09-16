@@ -16,7 +16,11 @@ from kinetiq.modules.catalog.infrastructure.vision_contract_adapter import (
 from kinetiq.modules.goals.application import SetGoalCommand, SetGoalUseCase
 from kinetiq.modules.goals.infrastructure.repositories import DjangoGoalRepository
 from kinetiq.modules.identity.infrastructure.models import User
-from kinetiq.modules.profiles.application import GetProfileUseCase
+from kinetiq.modules.profiles.application import (
+    GetProfileUseCase,
+    UpdateProfileCommand,
+    UpdateProfileUseCase,
+)
 from kinetiq.modules.profiles.infrastructure.repositories import DjangoProfileRepository
 
 PROPOSE_ROUTINE_MUTATION = """
@@ -416,3 +420,74 @@ def test_cross_user_isolation(athlete_user: User) -> None:
     edit_data = edit_res.json()["data"]["editRoutine"]
     assert edit_data["routine"] is None
     assert edit_data["errors"][0]["code"] == "ROUTINE_NOT_FOUND"
+
+
+@pytest.mark.django_db
+def test_propose_routine_returns_structured_error_when_limitation_unsupported(
+    athlete_user: User,
+) -> None:
+    """Regression test: a self-reported limitation with no catalog adaptation
+    must surface as a structured, client-usable GraphQL error rather than an
+    unhandled exception or a silently accepted unsafe routine."""
+    UpdateProfileUseCase(DjangoProfileRepository()).execute(
+        owner_id=athlete_user.id,
+        command=UpdateProfileCommand(limitations=("KNEE_PAIN",)),
+    )
+
+    client = Client()
+    client.force_login(athlete_user)
+
+    response = client.post(
+        "/graphql/",
+        {"query": PROPOSE_ROUTINE_MUTATION},
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]["proposeRoutine"]
+    assert data["routine"] is None
+    assert len(data["errors"]) == 1
+    assert data["errors"][0]["code"] == "UNSUPPORTED_LIMITATION"
+    assert "KNEE_PAIN" in data["errors"][0]["message"]
+
+
+@pytest.mark.django_db
+def test_edit_routine_rejects_excluded_exercise_with_structured_error(
+    athlete_user: User,
+) -> None:
+    """Regression test: an excluded exercise must never enter an accepted
+    routine through the edit mutation, surfaced as a structured GraphQL error."""
+    client = Client()
+    client.force_login(athlete_user)
+
+    prop_res = client.post(
+        "/graphql/",
+        {"query": PROPOSE_ROUTINE_MUTATION},
+        content_type="application/json",
+    )
+    routine_id = prop_res.json()["data"]["proposeRoutine"]["routine"]["id"]
+
+    UpdateProfileUseCase(DjangoProfileRepository()).execute(
+        owner_id=athlete_user.id,
+        command=UpdateProfileCommand(exclusions=("exercise-push-up-v1",)),
+    )
+
+    edit_input = {
+        "routineId": routine_id,
+        "items": [
+            {
+                "exerciseId": "exercise-push-up-v1",
+                "order": 1,
+                "sets": 3,
+                "repetitions": 8,
+            }
+        ],
+    }
+    edit_res = client.post(
+        "/graphql/",
+        {"query": EDIT_ROUTINE_MUTATION, "variables": {"input": edit_input}},
+        content_type="application/json",
+    )
+    edit_data = edit_res.json()["data"]["editRoutine"]
+    assert edit_data["routine"] is None
+    assert edit_data["errors"][0]["code"] == "INVALID_ROUTINE_EDIT"
+    assert "excluded" in edit_data["errors"][0]["message"]
