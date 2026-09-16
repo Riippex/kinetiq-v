@@ -1,5 +1,9 @@
 # Kinetiq V
 
+<p align="center">
+  <img src="docs/assets/branding/kinetiq-v-logo.png" alt="Kinetiq V" width="760">
+</p>
+
 A connected home workout coach that creates routines around personal goals, coordinates sessions, and tracks progress across phone, browser, Fire OS, Vega and Alexa+.
 
 **Status:** executable platform foundations and the first session-preparation slice; live workout, vision integration, Alexa+ and cloud infrastructure remain under construction.
