@@ -116,6 +116,7 @@ type Mutation {
   pauseSession(command: SessionCommand!): SessionResult!
   resumeSession(command: SessionCommand!): SessionResult!
   finishSession(command: SessionCommand!): SessionResult!
+  abandonSession(command: SessionCommand!): SessionResult!
   approveDisplay(userCode: String!, sessionId: ID!): PairingResult!
   requestProgressPhotoUpload(sessionId: ID!, contentType: String!, byteLength: Int!, idempotencyKey: String!): UploadRequest!
   finalizeProgressPhoto(photoId: ID!): Boolean!

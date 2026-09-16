@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
@@ -6,11 +7,13 @@ from django.db import IntegrityError, transaction
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application.ports import AcceptedRoutine
 from kinetiq.modules.workouts.application.prepare_session import IdempotencyConflict
+from kinetiq.modules.workouts.application.session_lifecycle import RevisionConflict, SessionNotFound
 from kinetiq.modules.workouts.domain import (
     CoachingTone,
     DynamicChallengeFrequency,
     DynamicChallengeType,
     DynamicSessionConfiguration,
+    PauseReason,
     SessionConfiguration,
     SessionIntensity,
     SessionMode,
@@ -94,6 +97,98 @@ class DjangoSessionPreparationRepository:
         return _to_domain(receipt.session)
 
 
+class DjangoSessionLifecycleRepository:
+    def get_session(self, *, owner_id: UUID, session_id: UUID) -> WorkoutSession | None:
+        record = (
+            WorkoutSessionRecord.objects.select_related("routine")
+            .filter(id=session_id, owner_id=owner_id)
+            .first()
+        )
+        if record is None:
+            return None
+        return _to_domain(record)
+
+    def apply_transition(
+        self,
+        *,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_revision: int,
+        operation: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+        transition: Callable[[WorkoutSession], WorkoutSession],
+    ) -> WorkoutSession:
+        existing = self._find_receipt(owner_id, operation, idempotency_key)
+        if existing is not None:
+            return self._resolve_receipt(existing, request_fingerprint)
+
+        try:
+            with transaction.atomic():
+                record = (
+                    WorkoutSessionRecord.objects.select_for_update()
+                    .select_related("routine")
+                    .filter(id=session_id, owner_id=owner_id)
+                    .first()
+                )
+                if record is None:
+                    raise SessionNotFound(f"Workout session {session_id} not found")
+
+                if record.revision != expected_revision:
+                    raise RevisionConflict(
+                        f"Session revision conflict: expected {expected_revision}, "
+                        f"current is {record.revision}"
+                    )
+
+                current_session = _to_domain(record)
+                updated_session = transition(current_session)
+
+                record.state = updated_session.state.value
+                record.revision = updated_session.revision
+                record.pause_reason = (
+                    updated_session.pause_reason.value if updated_session.pause_reason else None
+                )
+                record.configuration = _serialize_configuration(updated_session.configuration)
+                record.save(
+                    update_fields=[
+                        "state",
+                        "revision",
+                        "pause_reason",
+                        "configuration",
+                        "updated_at",
+                    ]
+                )
+
+                IdempotencyReceipt.objects.create(
+                    owner_id=owner_id,
+                    operation=operation,
+                    key=idempotency_key,
+                    request_fingerprint=request_fingerprint,
+                    session=record,
+                )
+
+                return updated_session
+        except IntegrityError:
+            receipt = self._find_receipt(owner_id, operation, idempotency_key)
+            if receipt is None:
+                raise
+            return self._resolve_receipt(receipt, request_fingerprint)
+
+    @staticmethod
+    def _find_receipt(owner_id: UUID, operation: str, key: str) -> IdempotencyReceipt | None:
+        return (
+            IdempotencyReceipt.objects.select_related("session", "session__routine")
+            .filter(owner_id=owner_id, operation=operation, key=key)
+            .first()
+        )
+
+    @staticmethod
+    def _resolve_receipt(receipt: IdempotencyReceipt, request_fingerprint: str) -> WorkoutSession:
+        if receipt.request_fingerprint != request_fingerprint:
+            raise IdempotencyConflict("The idempotency key was already used for another command")
+        return _to_domain(receipt.session)
+
+
 def _serialize_configuration(configuration: SessionConfiguration) -> dict[str, Any]:
     dynamic = None
     if configuration.dynamic is not None:
@@ -149,4 +244,6 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
             prompt_for_progress_photo=data["prompt_for_progress_photo"],
             dynamic=dynamic,
         ),
+        pause_reason=PauseReason(record.pause_reason) if record.pause_reason else None,
     )
+

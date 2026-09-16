@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
@@ -25,3 +26,23 @@ class SessionPreparationRepository(Protocol):
         idempotency_key: str,
         request_fingerprint: str,
     ) -> WorkoutSession: ...
+
+
+class SessionLifecycleRepository(Protocol):
+    def get_session(
+        self, *, owner_id: UUID, session_id: UUID
+    ) -> WorkoutSession | None: ...
+
+    def apply_transition(
+        self,
+        *,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_revision: int,
+        operation: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+        transition: Callable[[WorkoutSession], WorkoutSession],
+    ) -> WorkoutSession: ...
+
+

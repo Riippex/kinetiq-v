@@ -84,10 +84,21 @@ export interface PreparedSession {
   state: 'READY' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ABANDONED';
 }
 
+export interface SessionCommand {
+  sessionId: string;
+  expectedRevision: number;
+  idempotencyKey: string;
+}
+
 export interface DomainError {
   code: string;
   message: string;
   field?: string | null;
+}
+
+export interface SessionResult {
+  session: PreparedSession | null;
+  errors: DomainError[];
 }
 
 export interface RoutineExercise {
@@ -239,6 +250,60 @@ const setGoalMutation = `
 const prepareSessionMutation = `
   mutation PrepareSession($input: PrepareSessionInput!) {
     prepareSession(input: $input) {
+      session { id revision state }
+      errors { code message field }
+    }
+  }
+`;
+
+const startSessionMutation = `
+  mutation StartSession($command: SessionCommand!) {
+    startSession(command: $command) {
+      session { id revision state }
+      errors { code message field }
+    }
+  }
+`;
+
+const pauseSessionMutation = `
+  mutation PauseSession($command: SessionCommand!) {
+    pauseSession(command: $command) {
+      session { id revision state }
+      errors { code message field }
+    }
+  }
+`;
+
+const resumeSessionMutation = `
+  mutation ResumeSession($command: SessionCommand!) {
+    resumeSession(command: $command) {
+      session { id revision state }
+      errors { code message field }
+    }
+  }
+`;
+
+const disableDynamicModeMutation = `
+  mutation DisableDynamicMode($command: SessionCommand!) {
+    disableDynamicMode(command: $command) {
+      session { id revision state }
+      errors { code message field }
+    }
+  }
+`;
+
+const finishSessionMutation = `
+  mutation FinishSession($command: SessionCommand!) {
+    finishSession(command: $command) {
+      session { id revision state }
+      errors { code message field }
+    }
+  }
+`;
+
+const abandonSessionMutation = `
+  mutation AbandonSession($command: SessionCommand!) {
+    abandonSession(command: $command) {
       session { id revision state }
       errors { code message field }
     }
@@ -653,3 +718,106 @@ export async function acceptRoutine(
     errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
   };
 }
+
+export async function startSession(
+  endpoint: string,
+  command: SessionCommand,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{
+    startSession: SessionResult;
+  }>(endpoint, startSessionMutation, { command }, authorization);
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return result.data?.startSession ?? {
+    session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function pauseSession(
+  endpoint: string,
+  command: SessionCommand,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{
+    pauseSession: SessionResult;
+  }>(endpoint, pauseSessionMutation, { command }, authorization);
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return result.data?.pauseSession ?? {
+    session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function resumeSession(
+  endpoint: string,
+  command: SessionCommand,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{
+    resumeSession: SessionResult;
+  }>(endpoint, resumeSessionMutation, { command }, authorization);
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return result.data?.resumeSession ?? {
+    session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function disableDynamicMode(
+  endpoint: string,
+  command: SessionCommand,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{
+    disableDynamicMode: SessionResult;
+  }>(endpoint, disableDynamicModeMutation, { command }, authorization);
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return result.data?.disableDynamicMode ?? {
+    session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function finishSession(
+  endpoint: string,
+  command: SessionCommand,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{
+    finishSession: SessionResult;
+  }>(endpoint, finishSessionMutation, { command }, authorization);
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return result.data?.finishSession ?? {
+    session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function abandonSession(
+  endpoint: string,
+  command: SessionCommand,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{
+    abandonSession: SessionResult;
+  }>(endpoint, abandonSessionMutation, { command }, authorization);
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return result.data?.abandonSession ?? {
+    session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+

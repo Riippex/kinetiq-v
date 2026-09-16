@@ -16,12 +16,48 @@ from kinetiq.modules.routines.application import (
     ProposeRoutineUseCase,
 )
 from kinetiq.modules.routines.infrastructure.repositories import DjangoRoutineRepository
-from kinetiq.modules.workouts.application import PrepareWorkoutSession
-from kinetiq.modules.workouts.infrastructure.repositories import DjangoSessionPreparationRepository
+from kinetiq.modules.workouts.application import (
+    AbandonWorkoutSessionUseCase,
+    DisableDynamicModeUseCase,
+    FinishWorkoutSessionUseCase,
+    PauseWorkoutSessionUseCase,
+    PrepareWorkoutSession,
+    ResumeWorkoutSessionUseCase,
+    StartWorkoutSessionUseCase,
+)
+from kinetiq.modules.workouts.infrastructure.repositories import (
+    DjangoSessionLifecycleRepository,
+    DjangoSessionPreparationRepository,
+)
 
 
 def prepare_workout_session() -> PrepareWorkoutSession:
     return PrepareWorkoutSession(DjangoSessionPreparationRepository())
+
+
+def start_workout_session() -> StartWorkoutSessionUseCase:
+    return StartWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
+
+
+def pause_workout_session() -> PauseWorkoutSessionUseCase:
+    return PauseWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
+
+
+def resume_workout_session() -> ResumeWorkoutSessionUseCase:
+    return ResumeWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
+
+
+def disable_dynamic_mode() -> DisableDynamicModeUseCase:
+    return DisableDynamicModeUseCase(DjangoSessionLifecycleRepository())
+
+
+def finish_workout_session() -> FinishWorkoutSessionUseCase:
+    return FinishWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
+
+
+def abandon_workout_session() -> AbandonWorkoutSessionUseCase:
+    return AbandonWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
+
 
 
 def list_catalog_exercises() -> list[Exercise]:

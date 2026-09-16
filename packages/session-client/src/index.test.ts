@@ -2,14 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  abandonSession,
+  disableDynamicMode,
   fetchExercises,
   fetchProfile,
+  finishSession,
   formatLimitationsInput,
   isUnsupportedLimitationError,
   parseLimitationsInput,
+  pauseSession,
+  resumeSession,
+  startSession,
   toggleExclusion,
   updateProfile,
   type DomainError,
+  type SessionCommand,
 } from './index.ts';
 
 // --- toggleExclusion -------------------------------------------------------
@@ -203,6 +210,213 @@ test('fetchProfile reloads persisted exclusions and limitations', async () => {
     const result = await fetchProfile('/api/graphql');
     assert.deepEqual(result.profile?.exclusions, ['exercise-pull-up-v1']);
     assert.deepEqual(result.profile?.limitations, ['KNEE_PAIN']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// --- Session lifecycle mutations --------------------------------------------
+
+const testCommand: SessionCommand = {
+  sessionId: 'session-123',
+  expectedRevision: 1,
+  idempotencyKey: 'cmd-key-1',
+};
+
+test('startSession submits mutation with command and returns session', async () => {
+  const calls: Array<{ url: string; body: { query: string; variables: { command: SessionCommand } } }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(init.body as string) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          startSession: {
+            session: { id: 'session-123', revision: 2, state: 'ACTIVE' },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await startSession('/api/graphql', testCommand);
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.state, 'ACTIVE');
+    assert.equal(result.session?.revision, 2);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].body.query, /mutation StartSession/);
+    assert.deepEqual(calls[0].body.variables.command, testCommand);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('pauseSession submits mutation with command and returns session', async () => {
+  const calls: Array<{ url: string; body: { query: string; variables: { command: SessionCommand } } }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(init.body as string) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          pauseSession: {
+            session: { id: 'session-123', revision: 3, state: 'PAUSED' },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await pauseSession('/api/graphql', { ...testCommand, expectedRevision: 2 });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.state, 'PAUSED');
+    assert.equal(result.session?.revision, 3);
+    assert.match(calls[0].body.query, /mutation PauseSession/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('resumeSession submits mutation with command and returns session', async () => {
+  const calls: Array<{ url: string; body: { query: string; variables: { command: SessionCommand } } }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(init.body as string) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          resumeSession: {
+            session: { id: 'session-123', revision: 4, state: 'ACTIVE' },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await resumeSession('/api/graphql', { ...testCommand, expectedRevision: 3 });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.state, 'ACTIVE');
+    assert.equal(result.session?.revision, 4);
+    assert.match(calls[0].body.query, /mutation ResumeSession/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('disableDynamicMode submits mutation with command and returns session', async () => {
+  const calls: Array<{ url: string; body: { query: string; variables: { command: SessionCommand } } }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(init.body as string) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          disableDynamicMode: {
+            session: { id: 'session-123', revision: 5, state: 'ACTIVE' },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await disableDynamicMode('/api/graphql', { ...testCommand, expectedRevision: 4 });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.revision, 5);
+    assert.match(calls[0].body.query, /mutation DisableDynamicMode/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('finishSession submits mutation with command and returns session', async () => {
+  const calls: Array<{ url: string; body: { query: string; variables: { command: SessionCommand } } }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(init.body as string) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          finishSession: {
+            session: { id: 'session-123', revision: 6, state: 'COMPLETED' },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await finishSession('/api/graphql', { ...testCommand, expectedRevision: 5 });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.state, 'COMPLETED');
+    assert.equal(result.session?.revision, 6);
+    assert.match(calls[0].body.query, /mutation FinishSession/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('abandonSession submits mutation with command and returns session', async () => {
+  const calls: Array<{ url: string; body: { query: string; variables: { command: SessionCommand } } }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(init.body as string) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          abandonSession: {
+            session: { id: 'session-123', revision: 2, state: 'ABANDONED' },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await abandonSession('/api/graphql', testCommand);
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.state, 'ABANDONED');
+    assert.equal(result.session?.revision, 2);
+    assert.match(calls[0].body.query, /mutation AbandonSession/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('startSession surfaces domain error when revision conflict occurs', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      data: {
+        startSession: {
+          session: null,
+          errors: [{ code: 'REVISION_CONFLICT', message: 'Session revision conflict', field: 'expectedRevision' }],
+        },
+      },
+    }),
+  }) as Response) as typeof fetch;
+
+  try {
+    const result = await startSession('/api/graphql', testCommand);
+    assert.equal(result.session, null);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].code, 'REVISION_CONFLICT');
   } finally {
     globalThis.fetch = originalFetch;
   }

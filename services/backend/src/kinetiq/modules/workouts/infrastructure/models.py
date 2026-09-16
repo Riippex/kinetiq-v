@@ -12,6 +12,7 @@ class WorkoutSessionRecord(models.Model):
     routine = models.ForeignKey(RoutineRecord, on_delete=models.PROTECT)
     revision = models.PositiveIntegerField()
     state = models.CharField(max_length=24)
+    pause_reason = models.CharField(max_length=32, null=True, blank=True)
     configuration = models.JSONField()
     confirmed_repetitions = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -27,7 +28,11 @@ class IdempotencyReceipt(models.Model):
     operation = models.CharField(max_length=80)
     key = models.CharField(max_length=160)
     request_fingerprint = models.CharField(max_length=64)
-    session = models.OneToOneField(WorkoutSessionRecord, on_delete=models.CASCADE)
+    session = models.ForeignKey(
+        WorkoutSessionRecord,
+        on_delete=models.CASCADE,
+        related_name="idempotency_receipts",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -87,6 +87,17 @@ class SessionConfiguration:
             raise ValueError("Dynamic mode must be selected during preparation")
 
 
+class PauseReason(StrEnum):
+    USER_REQUEST = "USER_REQUEST"
+    VISIBILITY = "VISIBILITY"
+    TARGET_AMBIGUOUS = "TARGET_AMBIGUOUS"
+    CAMERA_DISCONNECTED = "CAMERA_DISCONNECTED"
+
+
+class InvalidSessionStateTransition(ValueError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class WorkoutSession:
     id: UUID
@@ -96,6 +107,7 @@ class WorkoutSession:
     revision: int
     state: SessionState
     configuration: SessionConfiguration
+    pause_reason: PauseReason | None = None
 
     def __post_init__(self) -> None:
         if self.routine_version < 1:
@@ -123,17 +135,67 @@ class WorkoutSession:
             revision=1,
             state=SessionState.READY,
             configuration=configuration,
+            pause_reason=None,
         )
 
     def start(self) -> WorkoutSession:
         if self.state is not SessionState.READY:
-            raise ValueError("Only a ready session can start")
-        return replace(self, state=SessionState.ACTIVE, revision=self.revision + 1)
+            raise InvalidSessionStateTransition("Only a ready session can start")
+        return replace(
+            self,
+            state=SessionState.ACTIVE,
+            revision=self.revision + 1,
+            pause_reason=None,
+        )
+
+    def pause(self, reason: PauseReason = PauseReason.USER_REQUEST) -> WorkoutSession:
+        if self.state is not SessionState.ACTIVE:
+            raise InvalidSessionStateTransition("Only an active session can be paused")
+        return replace(
+            self,
+            state=SessionState.PAUSED,
+            revision=self.revision + 1,
+            pause_reason=reason,
+        )
+
+    def resume(self) -> WorkoutSession:
+        if self.state is not SessionState.PAUSED:
+            raise InvalidSessionStateTransition("Only a paused session can be resumed")
+        return replace(
+            self,
+            state=SessionState.ACTIVE,
+            revision=self.revision + 1,
+            pause_reason=None,
+        )
 
     def disable_dynamic_mode(self) -> WorkoutSession:
         if self.state not in (SessionState.ACTIVE, SessionState.PAUSED):
-            raise ValueError("Dynamic mode can only be disabled during a session")
+            raise InvalidSessionStateTransition(
+                "Dynamic mode can only be disabled during a session"
+            )
         if self.configuration.active_mode is not SessionMode.DYNAMIC:
             return self
         configuration = replace(self.configuration, active_mode=SessionMode.NORMAL)
         return replace(self, configuration=configuration, revision=self.revision + 1)
+
+    def finish(self) -> WorkoutSession:
+        if self.state not in (SessionState.ACTIVE, SessionState.PAUSED):
+            raise InvalidSessionStateTransition("Only an active or paused session can be finished")
+        return replace(
+            self,
+            state=SessionState.COMPLETED,
+            revision=self.revision + 1,
+            pause_reason=None,
+        )
+
+    def abandon(self) -> WorkoutSession:
+        if self.state not in (SessionState.READY, SessionState.ACTIVE, SessionState.PAUSED):
+            raise InvalidSessionStateTransition(
+                "Cannot abandon a completed or already abandoned session"
+            )
+        return replace(
+            self,
+            state=SessionState.ABANDONED,
+            revision=self.revision + 1,
+            pause_reason=None,
+        )

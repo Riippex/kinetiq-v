@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -7,17 +8,23 @@ import strawberry
 from strawberry.types import Info
 
 from kinetiq.bootstrap.container import (
+    abandon_workout_session,
     accept_routine,
+    disable_dynamic_mode,
     edit_routine,
+    finish_workout_session,
     get_active_goal,
     get_current_routine,
     get_profile,
     get_routine_version,
     list_catalog_exercises,
     list_goal_revisions,
+    pause_workout_session,
     prepare_workout_session,
     propose_routine,
+    resume_workout_session,
     set_goal,
+    start_workout_session,
     update_profile,
 )
 from kinetiq.modules.catalog.domain.entities import Exercise
@@ -37,12 +44,16 @@ from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application import (
     IdempotencyConflict,
     PrepareSessionCommand,
+    RevisionConflict,
     RoutineUnavailable,
+    SessionLifecycleCommand,
+    SessionNotFound,
 )
 from kinetiq.modules.workouts.domain import (
     CoachingTone,
     DynamicChallengeFrequency,
     DynamicChallengeType,
+    InvalidSessionStateTransition,
     SessionIntensity,
     SessionMode,
 )
@@ -297,6 +308,13 @@ class PrepareSessionInput:
     display_device_id: strawberry.ID | None = None
     prompt_for_progress_photo: bool = True
     dynamic: DynamicSessionConfigurationInput | None = None
+
+
+@strawberry.input
+class SessionCommandInput:
+    session_id: strawberry.ID
+    expected_revision: int
+    idempotency_key: str
 
 
 @strawberry.type
@@ -592,6 +610,101 @@ class Mutation:
         except (ValueError, TypeError) as error:
             return _failure("INVALID_SESSION_CONFIGURATION", str(error))
 
+    @strawberry.mutation
+    def start_session(
+        self, info: Info[Any, None], command: SessionCommandInput
+    ) -> SessionResultType:
+        return _handle_session_lifecycle(
+            info,
+            command,
+            lambda owner_id, cmd: start_workout_session().execute(owner_id=owner_id, command=cmd),
+        )
+
+    @strawberry.mutation
+    def pause_session(
+        self, info: Info[Any, None], command: SessionCommandInput
+    ) -> SessionResultType:
+        return _handle_session_lifecycle(
+            info,
+            command,
+            lambda owner_id, cmd: pause_workout_session().execute(owner_id=owner_id, command=cmd),
+        )
+
+    @strawberry.mutation
+    def resume_session(
+        self, info: Info[Any, None], command: SessionCommandInput
+    ) -> SessionResultType:
+        return _handle_session_lifecycle(
+            info,
+            command,
+            lambda owner_id, cmd: resume_workout_session().execute(owner_id=owner_id, command=cmd),
+        )
+
+    @strawberry.mutation
+    def disable_dynamic_mode(
+        self, info: Info[Any, None], command: SessionCommandInput
+    ) -> SessionResultType:
+        return _handle_session_lifecycle(
+            info,
+            command,
+            lambda owner_id, cmd: disable_dynamic_mode().execute(owner_id=owner_id, command=cmd),
+        )
+
+    @strawberry.mutation
+    def finish_session(
+        self, info: Info[Any, None], command: SessionCommandInput
+    ) -> SessionResultType:
+        return _handle_session_lifecycle(
+            info,
+            command,
+            lambda owner_id, cmd: finish_workout_session().execute(owner_id=owner_id, command=cmd),
+        )
+
+    @strawberry.mutation
+    def abandon_session(
+        self, info: Info[Any, None], command: SessionCommandInput
+    ) -> SessionResultType:
+        return _handle_session_lifecycle(
+            info,
+            command,
+            lambda owner_id, cmd: abandon_workout_session().execute(owner_id=owner_id, command=cmd),
+        )
+
+
+def _handle_session_lifecycle(
+    info: Info[Any, None],
+    command: SessionCommandInput,
+    action: Callable[[UUID, SessionLifecycleCommand], Any],
+) -> SessionResultType:
+    owner_id = _authenticated_owner_id(info)
+    if owner_id is None:
+        return _failure("AUTHENTICATION_REQUIRED", "Sign in before modifying a session")
+
+    try:
+        session_uuid = UUID(str(command.session_id))
+    except (ValueError, TypeError) as error:
+        return _failure("INVALID_INPUT", f"Invalid session ID: {error}", "sessionId")
+
+    try:
+        cmd = SessionLifecycleCommand(
+            session_id=session_uuid,
+            expected_revision=command.expected_revision,
+            idempotency_key=command.idempotency_key,
+        )
+        session = action(owner_id, cmd)
+        record = WorkoutSessionRecord.objects.select_related("routine").get(pk=session.id)
+        return SessionResultType(session=_to_graphql(record), errors=[])
+    except SessionNotFound as error:
+        return _failure("SESSION_NOT_FOUND", str(error), "sessionId")
+    except RevisionConflict as error:
+        return _failure("REVISION_CONFLICT", str(error), "expectedRevision")
+    except IdempotencyConflict as error:
+        return _failure("IDEMPOTENCY_CONFLICT", str(error), "idempotencyKey")
+    except InvalidSessionStateTransition as error:
+        return _failure("INVALID_SESSION_STATE", str(error))
+    except (ValueError, TypeError) as error:
+        return _failure("INVALID_INPUT", str(error))
+
 
 def _authenticated_owner_id(info: Info[Any, None]) -> UUID | None:
     context = info.context
@@ -726,7 +839,9 @@ def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
             prompt_for_progress_photo=data["prompt_for_progress_photo"],
             dynamic=dynamic,
         ),
-        pause_reason=None,
+        pause_reason=(
+            PauseReasonType(record.pause_reason) if record.pause_reason else None
+        ),
         confirmed_repetitions=record.confirmed_repetitions,
         updated_at=record.updated_at,
     )
