@@ -1,13 +1,17 @@
 import {
+  acceptRoutine,
   coachingTones,
   fetchActiveGoal,
+  fetchCurrentRoutine,
   fetchProfile,
   prepareSession,
+  proposeRoutine,
   sessionIntensities,
   sessionModes,
   type CoachingTone,
   type Goal,
   type Profile,
+  type Routine,
   type SessionIntensity,
   type SessionMode,
 } from '@kinetiq/session-client';
@@ -17,7 +21,7 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 import {OnboardingModal} from '../features/onboarding/OnboardingModal';
 
 const endpoint = process.env.EXPO_PUBLIC_KINETIQ_GRAPHQL_URL ?? '';
-const routineId = process.env.EXPO_PUBLIC_KINETIQ_DEMO_ROUTINE_ID;
+const defaultRoutineId = process.env.EXPO_PUBLIC_KINETIQ_DEMO_ROUTINE_ID;
 
 export default function HomeScreen() {
   const [mode, setMode] = useState<SessionMode>('NORMAL');
@@ -32,10 +36,14 @@ export default function HomeScreen() {
   const [athleteProfile, setAthleteProfile] = useState<Profile | null>(null);
   const [activeGoal, setActiveGoal] = useState<Goal | null>(null);
 
+  // Routine flow
+  const [currentRoutine, setCurrentRoutine] = useState<Routine | null>(null);
+  const [routineLoading, setRoutineLoading] = useState(false);
+
   useEffect(() => {
     if (!endpoint) return;
-    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint)])
-      .then(([pRes, gRes]) => {
+    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint), fetchCurrentRoutine(endpoint)])
+      .then(([pRes, gRes, rRes]) => {
         if (pRes.profile) {
           setAthleteProfile(pRes.profile);
           if (pRes.profile.coachingTone) {
@@ -45,21 +53,67 @@ export default function HomeScreen() {
         if (gRes.goal) {
           setActiveGoal(gRes.goal);
         }
+        if (rRes.routine) {
+          setCurrentRoutine(rRes.routine);
+        }
       })
       .catch(() => {});
   }, []);
 
+  async function handleProposeRoutine() {
+    if (!endpoint) return;
+    setRoutineLoading(true);
+    setMessage(null);
+    try {
+      const res = await proposeRoutine(endpoint);
+      if (res.errors.length) {
+        setMessage(res.errors[0].message);
+      } else if (res.routine) {
+        setCurrentRoutine(res.routine);
+      }
+    } catch {
+      setMessage('Failed to propose routine.');
+    } finally {
+      setRoutineLoading(false);
+    }
+  }
+
+  async function handleAcceptRoutine() {
+    if (!endpoint || !currentRoutine) return;
+    setRoutineLoading(true);
+    setMessage(null);
+    try {
+      const res = await acceptRoutine(endpoint, currentRoutine.id, currentRoutine.version);
+      if (res.errors.length) {
+        setMessage(res.errors[0].message);
+      } else if (res.routine) {
+        setCurrentRoutine(res.routine);
+      }
+    } catch {
+      setMessage('Failed to accept routine.');
+    } finally {
+      setRoutineLoading(false);
+    }
+  }
+
   async function submit() {
-    if (!endpoint || !routineId) {
+    const effectiveRoutineId = currentRoutine?.id ?? defaultRoutineId;
+    const effectiveRoutineVersion = currentRoutine?.version ?? 1;
+
+    if (!endpoint || !effectiveRoutineId) {
       setMessage('Choose an accepted routine before preparing the session.');
+      return;
+    }
+    if (currentRoutine && !currentRoutine.accepted) {
+      setMessage('Routine must be accepted before session preparation.');
       return;
     }
 
     setSubmitting(true);
     setMessage(null);
     const result = await prepareSession(endpoint, {
-      routineId,
-      routineVersion: 1,
+      routineId: effectiveRoutineId,
+      routineVersion: effectiveRoutineVersion,
       mode,
       intensity,
       coachingTone: tone,
@@ -133,9 +187,94 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        <Text style={styles.eyebrow}>ACCEPTED ROUTINE</Text>
-        <Text style={styles.title}>Full body foundation</Text>
-        <Text style={styles.description}>30 min · Galaxy camera · choose a display later</Text>
+        {/* Prescribed Routine Section */}
+        <View style={styles.routineSection}>
+          <View style={styles.athleteHeader}>
+            <Text style={styles.athleteEyebrow}>PRESCRIBED ROUTINE</Text>
+            {currentRoutine ? (
+              <View
+                style={[
+                  styles.routineBadge,
+                  currentRoutine.accepted ? styles.routineBadgeAccepted : styles.routineBadgeDraft,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.routineBadgeText,
+                    currentRoutine.accepted
+                      ? styles.routineBadgeTextAccepted
+                      : styles.routineBadgeTextDraft,
+                  ]}
+                >
+                  {currentRoutine.accepted
+                    ? `ACCEPTED · V${currentRoutine.version}`
+                    : `DRAFT · V${currentRoutine.version}`}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          {currentRoutine ? (
+            <>
+              <Text style={styles.title}>{currentRoutine.title}</Text>
+              <View style={styles.rationaleBox}>
+                <Text style={styles.rationaleLabel}>COACH RATIONALE</Text>
+                <Text style={styles.routineRationale}>{currentRoutine.rationale}</Text>
+              </View>
+
+              <View style={styles.exerciseList}>
+                {currentRoutine.items.map((item) => (
+                  <View key={item.order} style={styles.exerciseRow}>
+                    <Text style={styles.exerciseName}>
+                      {item.order}. {item.exercise.name}
+                    </Text>
+                    <Text style={styles.exercisePrescription}>
+                      {item.sets} sets
+                      {item.repetitions ? ` × ${item.repetitions} reps` : ` · ${item.durationSeconds ?? 30}s`}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+
+              {!currentRoutine.accepted ? (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={routineLoading}
+                  onPress={handleAcceptRoutine}
+                  style={({ pressed }) => [
+                    styles.acceptButton,
+                    pressed && styles.buttonPressed,
+                    routineLoading && styles.buttonDisabled,
+                  ]}
+                >
+                  <Text style={styles.acceptButtonText}>
+                    {routineLoading ? 'Accepting…' : `Accept Routine (v${currentRoutine.version})`}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </>
+          ) : (
+            <View style={styles.emptyRoutineBox}>
+              <Text style={styles.emptyRoutineText}>
+                No routine proposed yet. Generate an explained routine based on your athlete profile.
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                disabled={routineLoading}
+                onPress={handleProposeRoutine}
+                style={({ pressed }) => [
+                  styles.proposeButton,
+                  pressed && styles.buttonPressed,
+                  routineLoading && styles.buttonDisabled,
+                ]}
+              >
+                <Text style={styles.proposeButtonText}>
+                  {routineLoading ? 'Proposing…' : 'Propose Routine'}
+                </Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
 
         <OptionGroup label="Mode" options={sessionModes} value={mode} onChange={value => setMode(value as SessionMode)} />
         <OptionGroup label="Intensity" options={sessionIntensities} value={intensity} onChange={value => setIntensity(value as SessionIntensity)} />
@@ -150,8 +289,28 @@ export default function HomeScreen() {
         </View>
 
         {message && <Text style={styles.message}>{message}</Text>}
-        <Pressable accessibilityRole="button" disabled={submitting} onPress={submit} style={({pressed}) => [styles.button, pressed && styles.buttonPressed, submitting && styles.buttonDisabled]}>
-          <Text style={styles.buttonText}>{submitting ? 'Preparing…' : 'Confirm and prepare'}</Text>
+        {currentRoutine && !currentRoutine.accepted && (
+          <Text style={styles.routineWarningText}>
+            ⚠️ You must accept the routine above before preparing a workout session.
+          </Text>
+        )}
+        <Pressable
+          accessibilityRole="button"
+          disabled={submitting || (currentRoutine !== null && !currentRoutine.accepted)}
+          onPress={submit}
+          style={({pressed}) => [
+            styles.button,
+            pressed && styles.buttonPressed,
+            (submitting || (currentRoutine !== null && !currentRoutine.accepted)) && styles.buttonDisabled,
+          ]}
+        >
+          <Text style={styles.buttonText}>
+            {submitting
+              ? 'Preparing…'
+              : currentRoutine && !currentRoutine.accepted
+                ? 'Accept routine first'
+                : 'Confirm and prepare'}
+          </Text>
         </Pressable>
       </ScrollView>
 
@@ -263,6 +422,125 @@ const styles = StyleSheet.create({
   toggleTitle: {color: '#F4F7FB', fontSize: 15, fontWeight: '700'},
   optionHelp: {color: '#9CA3AF', fontSize: 13, lineHeight: 19, marginTop: 4},
   message: {backgroundColor: '#111827', borderRadius: 14, color: '#D1D5DB', marginTop: 20, padding: 14},
+  routineSection: {
+    backgroundColor: '#111827',
+    borderColor: '#293244',
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: 28,
+  },
+  routineBadge: {
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  routineBadgeAccepted: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+    borderWidth: 1,
+  },
+  routineBadgeDraft: {
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+    borderWidth: 1,
+  },
+  routineBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  routineBadgeTextAccepted: {
+    color: '#34D399',
+  },
+  routineBadgeTextDraft: {
+    color: '#FBBF24',
+  },
+  rationaleBox: {
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderColor: '#1E293B',
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 12,
+    padding: 12,
+  },
+  rationaleLabel: {
+    color: '#A3FF12',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    marginBottom: 4,
+  },
+  routineRationale: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  exerciseList: {
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    borderColor: '#1E293B',
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 14,
+    padding: 8,
+  },
+  exerciseRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  exerciseName: {
+    color: '#F4F7FB',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  exercisePrescription: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  acceptButton: {
+    alignItems: 'center',
+    backgroundColor: '#34D399',
+    borderRadius: 12,
+    marginTop: 14,
+    padding: 12,
+  },
+  acceptButtonText: {
+    color: '#070B14',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  emptyRoutineBox: {
+    alignItems: 'center',
+    marginTop: 12,
+    padding: 12,
+  },
+  emptyRoutineText: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  proposeButton: {
+    alignItems: 'center',
+    backgroundColor: '#A3FF12',
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  proposeButtonText: {
+    color: '#070B14',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  routineWarningText: {
+    color: '#FBBF24',
+    fontSize: 12,
+    marginTop: 12,
+    textAlign: 'center',
+  },
   button: {alignItems: 'center', backgroundColor: '#A3FF12', borderRadius: 18, marginTop: 24, padding: 18},
   buttonPressed: {opacity: 0.85},
   buttonDisabled: {opacity: 0.55},

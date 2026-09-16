@@ -4,7 +4,6 @@ from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import ValidationError
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 CONTRACTS_DIR = REPOSITORY_ROOT / 'contracts' / 'vision' / 'v1'
@@ -96,7 +95,9 @@ def test_negative_fixtures_fail_schema_validation(
     validator = Draft202012Validator(observation_schema)
     errors = list(validator.iter_errors(payload))
     assert errors, f'Expected validation failure for {fixture_name}, but passed successfully'
-    error_messages = ' '.join([e.message for e in errors]) + ' ' + ' '.join([str(e.validator) for e in errors])
+    error_messages = (
+        " ".join([e.message for e in errors]) + " " + " ".join([str(e.validator) for e in errors])
+    )
     assert expected_error_substr.lower() in error_messages.lower(), (
         f'Expected \'{expected_error_substr}\' in error messages, got: {error_messages}'
     )

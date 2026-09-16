@@ -90,6 +90,45 @@ export interface DomainError {
   field?: string | null;
 }
 
+export interface RoutineExercise {
+  id: string;
+  name: string;
+  version?: number;
+  visionSupported?: boolean;
+}
+
+export interface RoutineItem {
+  exercise: RoutineExercise;
+  order: number;
+  sets: number;
+  repetitions?: number | null;
+  durationSeconds?: number | null;
+}
+
+export interface Routine {
+  id: string;
+  version: number;
+  title: string;
+  rationale: string;
+  items: RoutineItem[];
+  accepted: boolean;
+}
+
+export interface RoutineEditItemInput {
+  exerciseId: string;
+  order: number;
+  sets: number;
+  repetitions?: number | null;
+  durationSeconds?: number | null;
+}
+
+export interface EditRoutineInput {
+  routineId: string;
+  items: RoutineEditItemInput[];
+  title?: string;
+  baseVersion?: number;
+}
+
 const meQuery = `
   query Me {
     me {
@@ -186,6 +225,147 @@ const prepareSessionMutation = `
     prepareSession(input: $input) {
       session { id revision state }
       errors { code message field }
+    }
+  }
+`;
+
+const currentRoutineQuery = `
+  query CurrentRoutine {
+    currentRoutine {
+      id
+      version
+      title
+      rationale
+      accepted
+      items {
+        order
+        sets
+        repetitions
+        durationSeconds
+        exercise {
+          id
+          version
+          name
+          visionSupported
+        }
+      }
+    }
+  }
+`;
+
+const routineVersionQuery = `
+  query RoutineVersion($id: ID!, $version: Int!) {
+    routine(id: $id, version: $version) {
+      id
+      version
+      title
+      rationale
+      accepted
+      items {
+        order
+        sets
+        repetitions
+        durationSeconds
+        exercise {
+          id
+          version
+          name
+          visionSupported
+        }
+      }
+    }
+  }
+`;
+
+const proposeRoutineMutation = `
+  mutation ProposeRoutine {
+    proposeRoutine {
+      routine {
+        id
+        version
+        title
+        rationale
+        accepted
+        items {
+          order
+          sets
+          repetitions
+          durationSeconds
+          exercise {
+            id
+            version
+            name
+            visionSupported
+          }
+        }
+      }
+      errors {
+        code
+        message
+        field
+      }
+    }
+  }
+`;
+
+const editRoutineMutation = `
+  mutation EditRoutine($input: EditRoutineInput!) {
+    editRoutine(input: $input) {
+      routine {
+        id
+        version
+        title
+        rationale
+        accepted
+        items {
+          order
+          sets
+          repetitions
+          durationSeconds
+          exercise {
+            id
+            version
+            name
+            visionSupported
+          }
+        }
+      }
+      errors {
+        code
+        message
+        field
+      }
+    }
+  }
+`;
+
+const acceptRoutineMutation = `
+  mutation AcceptRoutine($routineId: ID!, $version: Int!) {
+    acceptRoutine(routineId: $routineId, version: $version) {
+      routine {
+        id
+        version
+        title
+        rationale
+        accepted
+        items {
+          order
+          sets
+          repetitions
+          durationSeconds
+          exercise {
+            id
+            version
+            name
+            visionSupported
+          }
+        }
+      }
+      errors {
+        code
+        message
+        field
+      }
     }
   }
 `;
@@ -310,6 +490,91 @@ export async function prepareSession(
   }
   return result.data?.prepareSession ?? {
     session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function fetchCurrentRoutine(
+  endpoint: string,
+  authorization?: string,
+): Promise<{ routine: Routine | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ currentRoutine: Routine | null }>(
+    endpoint,
+    currentRoutineQuery,
+    {},
+    authorization,
+  );
+  if (result.errors) {
+    return { routine: null, errors: result.errors };
+  }
+  return { routine: result.data?.currentRoutine ?? null, errors: [] };
+}
+
+export async function fetchRoutineVersion(
+  endpoint: string,
+  routineId: string,
+  version: number,
+  authorization?: string,
+): Promise<{ routine: Routine | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ routine: Routine | null }>(
+    endpoint,
+    routineVersionQuery,
+    { id: routineId, version },
+    authorization,
+  );
+  if (result.errors) {
+    return { routine: null, errors: result.errors };
+  }
+  return { routine: result.data?.routine ?? null, errors: [] };
+}
+
+export async function proposeRoutine(
+  endpoint: string,
+  authorization?: string,
+): Promise<{ routine: Routine | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{
+    proposeRoutine: { routine: Routine | null; errors: DomainError[] };
+  }>(endpoint, proposeRoutineMutation, {}, authorization);
+  if (result.errors) {
+    return { routine: null, errors: result.errors };
+  }
+  return result.data?.proposeRoutine ?? {
+    routine: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function editRoutine(
+  endpoint: string,
+  input: EditRoutineInput,
+  authorization?: string,
+): Promise<{ routine: Routine | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{
+    editRoutine: { routine: Routine | null; errors: DomainError[] };
+  }>(endpoint, editRoutineMutation, { input }, authorization);
+  if (result.errors) {
+    return { routine: null, errors: result.errors };
+  }
+  return result.data?.editRoutine ?? {
+    routine: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function acceptRoutine(
+  endpoint: string,
+  routineId: string,
+  version: number,
+  authorization?: string,
+): Promise<{ routine: Routine | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{
+    acceptRoutine: { routine: Routine | null; errors: DomainError[] };
+  }>(endpoint, acceptRoutineMutation, { routineId, version }, authorization);
+  if (result.errors) {
+    return { routine: null, errors: result.errors };
+  }
+  return result.data?.acceptRoutine ?? {
+    routine: null,
     errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
   };
 }

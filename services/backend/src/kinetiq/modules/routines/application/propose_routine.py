@@ -7,7 +7,9 @@ from kinetiq.modules.catalog.application.ports import CatalogRepository
 from kinetiq.modules.goals.application.ports import GoalRepository
 from kinetiq.modules.profiles.application.ports import ProfileRepository
 from kinetiq.modules.profiles.domain.entities import ExperienceLevel, UserProfile
+from kinetiq.modules.routines.application.ports import RoutineRepository
 from kinetiq.modules.routines.domain.entities import (
+    Routine,
     RoutineEligibilityCriteria,
     RoutineProposal,
 )
@@ -37,11 +39,13 @@ class ProposeRoutineUseCase:
         catalog_repo: CatalogRepository,
         profile_repo: ProfileRepository,
         goal_repo: GoalRepository,
+        routine_repo: RoutineRepository | None = None,
         coaching_provider: RoutineCoachingProvider | None = None,
     ) -> None:
         self._catalog_repo = catalog_repo
         self._profile_repo = profile_repo
         self._goal_repo = goal_repo
+        self._routine_repo = routine_repo
         self._coaching_provider = coaching_provider
         self._fallback_provider = DeterministicCoachingProvider()
 
@@ -118,6 +122,41 @@ class ProposeRoutineUseCase:
             t for t in eligible_templates if t.code == chosen_output.recommended_template_code
         )
 
+        routine_id = uuid4()
+        prescription: dict[str, object] = {
+            "templateCode": selected_template.code,
+            "templateVersion": selected_template.version,
+            "estimatedDurationMinutes": selected_template.estimated_duration_minutes,
+            "items": [
+                {
+                    "exerciseId": ex.code,
+                    "exerciseVersion": ex.version,
+                    "name": ex.name,
+                    "visionSupported": ex.vision_supported,
+                    "order": item.order,
+                    "sets": item.sets,
+                    "repetitions": item.repetitions,
+                    "durationSeconds": item.duration_seconds,
+                }
+                for item in selected_template.items
+                for ex in [exercises_by_code[item.exercise_code]]
+            ],
+        }
+
+        if self._routine_repo is not None:
+            routine = Routine(
+                id=uuid4(),
+                routine_id=routine_id,
+                owner_id=athlete_id,
+                version=1,
+                title=selected_template.title,
+                rationale=chosen_output.rationale,
+                prescription=prescription,
+                accepted=False,
+                created_at=datetime.now(UTC),
+            )
+            self._routine_repo.save(routine)
+
         return RoutineProposal(
             proposal_id=uuid4(),
             athlete_id=athlete_id,
@@ -129,4 +168,7 @@ class ProposeRoutineUseCase:
             items=selected_template.items,
             rationale=chosen_output.rationale,
             created_at=datetime.now(UTC),
+            routine_id=routine_id,
+            version=1,
+            accepted=False,
         )

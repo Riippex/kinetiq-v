@@ -34,6 +34,9 @@ class RoutineProposal:
     items: tuple[RoutineTemplateItem, ...]
     rationale: str
     created_at: datetime
+    routine_id: UUID | None = None
+    version: int = 1
+    accepted: bool = False
 
     def __post_init__(self) -> None:
         if not self.template_code.strip():
@@ -48,3 +51,25 @@ class RoutineProposal:
             raise ValueError("Routine proposal must include at least one item")
         if not self.rationale.strip():
             raise ValueError("Proposal rationale cannot be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class Routine:
+    id: UUID
+    routine_id: UUID
+    owner_id: UUID
+    version: int
+    title: str
+    rationale: str
+    prescription: dict[str, object]
+    accepted: bool
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.version < 1:
+            raise ValueError("Routine version must be positive")
+        if not self.title.strip():
+            raise ValueError("Title cannot be empty")
+        if not self.prescription:
+            raise ValueError("Prescription cannot be empty")
+

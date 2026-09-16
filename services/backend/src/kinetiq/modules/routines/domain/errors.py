@@ -11,3 +11,12 @@ class NoEligibleRoutineTemplatesError(RoutineDomainError):
 
 class InvalidCoachingOutputError(RoutineDomainError):
     """Raised when a coaching provider returns an unapproved template or invalid format."""
+
+
+class RoutineNotFoundError(RoutineDomainError):
+    """Raised when a requested routine or version does not exist for the athlete."""
+
+
+class InvalidRoutineEditError(RoutineDomainError):
+    """Raised when editing a routine violates catalog invariants or constraints."""
+

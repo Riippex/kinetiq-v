@@ -7,10 +7,15 @@ import strawberry
 from strawberry.types import Info
 
 from kinetiq.bootstrap.container import (
+    accept_routine,
+    edit_routine,
     get_active_goal,
+    get_current_routine,
     get_profile,
+    get_routine_version,
     list_goal_revisions,
     prepare_workout_session,
+    propose_routine,
     set_goal,
     update_profile,
 )
@@ -18,6 +23,13 @@ from kinetiq.modules.goals.application import SetGoalCommand
 from kinetiq.modules.goals.domain import GoalRevision
 from kinetiq.modules.profiles.application import UpdateProfileCommand
 from kinetiq.modules.profiles.domain import ExperienceLevel, UserProfile
+from kinetiq.modules.routines.application import EditRoutineCommand, RoutineEditItem
+from kinetiq.modules.routines.domain.entities import Routine
+from kinetiq.modules.routines.domain.errors import (
+    InvalidRoutineEditError,
+    NoEligibleRoutineTemplatesError,
+    RoutineNotFoundError,
+)
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application import (
     IdempotencyConflict,
@@ -214,6 +226,29 @@ class SessionResultType:
     errors: list[DomainError]
 
 
+@strawberry.type(name="RoutineResult")
+class RoutineResultType:
+    routine: RoutineType | None
+    errors: list[DomainError]
+
+
+@strawberry.input
+class RoutineEditItemInput:
+    exercise_id: strawberry.ID
+    order: int
+    sets: int
+    repetitions: int | None = None
+    duration_seconds: int | None = None
+
+
+@strawberry.input
+class EditRoutineInput:
+    routine_id: strawberry.ID
+    items: list[RoutineEditItemInput]
+    title: str | None = None
+    base_version: int | None = None
+
+
 @strawberry.input
 class UpdateProfileInput:
     display_name: str | None = None
@@ -292,6 +327,28 @@ class Query:
         if goal is None:
             return None
         return _to_goal_graphql(goal)
+
+    @strawberry.field
+    def current_routine(self, info: Info[Any, None]) -> RoutineType | None:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing routines")
+        routine = get_current_routine().execute(owner_id)
+        if routine is None:
+            return None
+        return _to_routine_graphql(routine)
+
+    @strawberry.field
+    def routine(
+        self, info: Info[Any, None], id: strawberry.ID, version: int
+    ) -> RoutineType | None:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing routines")
+        routine = get_routine_version().execute(owner_id, UUID(str(id)), version)
+        if routine is None:
+            return None
+        return _to_routine_graphql(routine)
 
 
 @strawberry.type
@@ -374,6 +431,122 @@ class Mutation:
             return GoalResultType(
                 goal=None,
                 errors=[DomainError(code="INVALID_GOAL", message=str(error))],
+            )
+
+    @strawberry.mutation
+    def propose_routine(self, info: Info[Any, None]) -> RoutineResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return RoutineResultType(
+                routine=None,
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before proposing a routine",
+                    )
+                ],
+            )
+        try:
+            propose_routine().execute(owner_id)
+            routine = get_current_routine().execute(owner_id)
+            if routine is None:
+                return RoutineResultType(
+                    routine=None,
+                    errors=[
+                        DomainError(
+                            code="ROUTINE_PROPOSAL_FAILED",
+                            message="Failed to generate routine proposal",
+                        )
+                    ],
+                )
+            return RoutineResultType(routine=_to_routine_graphql(routine), errors=[])
+        except NoEligibleRoutineTemplatesError as error:
+            return RoutineResultType(
+                routine=None,
+                errors=[DomainError(code="NO_ELIGIBLE_TEMPLATES", message=str(error))],
+            )
+        except (ValueError, TypeError) as error:
+            return RoutineResultType(
+                routine=None,
+                errors=[DomainError(code="INVALID_ROUTINE_REQUEST", message=str(error))],
+            )
+
+    @strawberry.mutation
+    def edit_routine(
+        self, info: Info[Any, None], input: EditRoutineInput
+    ) -> RoutineResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return RoutineResultType(
+                routine=None,
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before editing a routine",
+                    )
+                ],
+            )
+        try:
+            command = EditRoutineCommand(
+                routine_id=UUID(str(input.routine_id)),
+                title=input.title,
+                base_version=input.base_version,
+                items=tuple(
+                    RoutineEditItem(
+                        exercise_id=str(item.exercise_id),
+                        order=item.order,
+                        sets=item.sets,
+                        repetitions=item.repetitions,
+                        duration_seconds=item.duration_seconds,
+                    )
+                    for item in input.items
+                ),
+            )
+            routine = edit_routine().execute(owner_id, command)
+            return RoutineResultType(routine=_to_routine_graphql(routine), errors=[])
+        except RoutineNotFoundError as error:
+            return RoutineResultType(
+                routine=None,
+                errors=[DomainError(code="ROUTINE_NOT_FOUND", message=str(error))],
+            )
+        except InvalidRoutineEditError as error:
+            return RoutineResultType(
+                routine=None,
+                errors=[DomainError(code="INVALID_ROUTINE_EDIT", message=str(error))],
+            )
+        except (ValueError, TypeError) as error:
+            return RoutineResultType(
+                routine=None,
+                errors=[DomainError(code="INVALID_INPUT", message=str(error))],
+            )
+
+    @strawberry.mutation
+    def accept_routine(
+        self, info: Info[Any, None], routine_id: strawberry.ID, version: int
+    ) -> RoutineResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return RoutineResultType(
+                routine=None,
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before accepting a routine",
+                    )
+                ],
+            )
+        try:
+            routine = accept_routine().execute(owner_id, UUID(str(routine_id)), version)
+            return RoutineResultType(routine=_to_routine_graphql(routine), errors=[])
+        except RoutineNotFoundError as error:
+            return RoutineResultType(
+                routine=None,
+                errors=[DomainError(code="ROUTINE_NOT_FOUND", message=str(error))],
+            )
+        except (ValueError, TypeError) as error:
+            return RoutineResultType(
+                routine=None,
+                errors=[DomainError(code="INVALID_INPUT", message=str(error))],
             )
 
     @strawberry.mutation
@@ -462,20 +635,10 @@ def _to_command(value: PrepareSessionInput) -> PrepareSessionCommand:
     )
 
 
-def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
-    data = record.configuration
-    dynamic_data = data.get("dynamic")
-    dynamic = None
-    if dynamic_data is not None:
-        dynamic = DynamicSessionConfigurationType(
-            frequency=DynamicChallengeFrequencyType(dynamic_data["frequency"]),
-            allowed_challenge_types=[
-                DynamicChallengeTypeType(value) for value in dynamic_data["allowed_challenge_types"]
-            ],
-            scoring_enabled=dynamic_data["scoring_enabled"],
-            narration_enabled=dynamic_data["narration_enabled"],
-        )
-    routine: RoutineRecord = record.routine
+def _to_routine_graphql(routine: Routine | RoutineRecord) -> RoutineType:
+    prescription = routine.prescription
+    raw_items = prescription.get("items") if isinstance(prescription, dict) else None
+    items_list: list[dict[str, Any]] = raw_items if isinstance(raw_items, list) else []
     items = [
         RoutineItemType(
             exercise=ExerciseType(
@@ -489,19 +652,35 @@ def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
             repetitions=item.get("repetitions"),
             duration_seconds=item.get("durationSeconds"),
         )
-        for item in routine.prescription.get("items", [])
+        for item in items_list
     ]
+    return RoutineType(
+        id=strawberry.ID(str(routine.routine_id)),
+        version=routine.version,
+        title=routine.title,
+        rationale=routine.rationale,
+        items=items,
+        accepted=routine.accepted,
+    )
+
+
+def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
+    data = record.configuration
+    dynamic_data = data.get("dynamic")
+    dynamic = None
+    if dynamic_data is not None:
+        dynamic = DynamicSessionConfigurationType(
+            frequency=DynamicChallengeFrequencyType(dynamic_data["frequency"]),
+            allowed_challenge_types=[
+                DynamicChallengeTypeType(value) for value in dynamic_data["allowed_challenge_types"]
+            ],
+            scoring_enabled=dynamic_data["scoring_enabled"],
+            narration_enabled=dynamic_data["narration_enabled"],
+        )
     return WorkoutSessionType(
         id=strawberry.ID(str(record.id)),
         revision=record.revision,
-        routine=RoutineType(
-            id=strawberry.ID(str(routine.routine_id)),
-            version=routine.version,
-            title=routine.title,
-            rationale=routine.rationale,
-            items=items,
-            accepted=routine.accepted,
-        ),
+        routine=_to_routine_graphql(record.routine),
         state=SessionStateType(record.state),
         configuration=SessionConfigurationType(
             requested_mode=SessionModeType(data["requested_mode"]),

@@ -6,14 +6,19 @@ import {
   sessionIntensities,
   sessionModes,
   type CoachingTone,
+  type Routine,
   type SessionIntensity,
   type SessionMode,
 } from "@kinetiq/session-client";
 import { useState, type FormEvent } from "react";
 
-const routineId = process.env.NEXT_PUBLIC_KINETIQ_DEMO_ROUTINE_ID;
+const fallbackRoutineId = process.env.NEXT_PUBLIC_KINETIQ_DEMO_ROUTINE_ID;
 
-export function SessionPreparationDialog() {
+interface SessionPreparationDialogProps {
+  acceptedRoutine?: Routine | null;
+}
+
+export function SessionPreparationDialog({ acceptedRoutine }: SessionPreparationDialogProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<SessionMode>("NORMAL");
   const [intensity, setIntensity] = useState<SessionIntensity>("PLANNED");
@@ -22,18 +27,26 @@ export function SessionPreparationDialog() {
   const [message, setMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const activeRoutineId = acceptedRoutine?.id ?? fallbackRoutineId;
+  const activeRoutineVersion = acceptedRoutine?.version ?? 1;
+  const isAccepted = acceptedRoutine ? acceptedRoutine.accepted : Boolean(fallbackRoutineId);
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!routineId) {
+    if (!activeRoutineId) {
       setMessage("Choose an accepted routine before preparing the session.");
+      return;
+    }
+    if (acceptedRoutine && !acceptedRoutine.accepted) {
+      setMessage("Routine must be accepted before session preparation.");
       return;
     }
 
     setSubmitting(true);
     setMessage(null);
     const result = await prepareSession("/api/graphql", {
-      routineId,
-      routineVersion: 1,
+      routineId: activeRoutineId,
+      routineVersion: activeRoutineVersion,
       mode,
       intensity,
       coachingTone: tone,
@@ -78,8 +91,12 @@ export function SessionPreparationDialog() {
             <div className="flex items-start justify-between gap-5">
               <div>
                 <p className="text-xs font-semibold tracking-[0.2em] text-[var(--accent)]">SESSION SETUP</p>
-                <h2 className="mt-2 text-3xl font-semibold">Full body foundation</h2>
-                <p className="mt-2 text-sm text-[var(--muted)]">30 min · phone camera · browser display</p>
+                <h2 className="mt-2 text-3xl font-semibold">{acceptedRoutine?.title ?? "Full body foundation"}</h2>
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  {acceptedRoutine
+                    ? `Version ${acceptedRoutine.version} · ${acceptedRoutine.accepted ? "Accepted" : "Unaccepted"} · phone camera · browser display`
+                    : "30 min · phone camera · browser display"}
+                </p>
               </div>
               <button aria-label="Close" className="text-2xl text-[var(--muted)]" onClick={() => setOpen(false)} type="button">×</button>
             </div>
@@ -97,8 +114,17 @@ export function SessionPreparationDialog() {
             </label>
 
             {message && <p className="mt-5 rounded-xl bg-white/[0.06] p-3 text-sm">{message}</p>}
-            <button className="mt-6 w-full rounded-2xl bg-[var(--accent)] p-4 font-bold text-[#070b14] disabled:opacity-50" disabled={submitting} type="submit">
-              {submitting ? "Preparing…" : "Confirm and prepare"}
+            {!isAccepted && (
+              <p className="mt-3 text-xs text-amber-300">
+                ⚠️ You must accept the prescribed routine version above before preparing a session.
+              </p>
+            )}
+            <button
+              className="mt-6 w-full rounded-2xl bg-[var(--accent)] p-4 font-bold text-[#070b14] disabled:opacity-50"
+              disabled={submitting || !isAccepted}
+              type="submit"
+            >
+              {submitting ? "Preparing…" : isAccepted ? "Confirm and prepare" : "Accept routine first"}
             </button>
           </form>
         </div>

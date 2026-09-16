@@ -1,5 +1,10 @@
+"use client";
+
+import { useState } from "react";
+import { type Routine } from "@kinetiq/session-client";
 import { SessionPreparationDialog } from "@/features/session-preparation/SessionPreparationDialog";
 import { OnboardingCard } from "@/features/onboarding/OnboardingCard";
+import { RoutinePlanningCard } from "@/features/routines/RoutinePlanningCard";
 
 const surfaces = [
   ["Phone", "Camera and session control"],
@@ -8,6 +13,8 @@ const surfaces = [
 ] as const;
 
 export default function Home() {
+  const [acceptedRoutine, setAcceptedRoutine] = useState<Routine | null>(null);
+
   return (
     <main className="min-h-screen px-6 py-10 sm:px-12 lg:px-20">
       <div className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-6xl flex-col justify-between rounded-[2rem] border border-white/10 bg-[radial-gradient(circle_at_top_right,_rgba(163,255,18,0.14),_transparent_40%),linear-gradient(145deg,#111827,#090d16)] p-8 shadow-2xl sm:p-12">
@@ -32,7 +39,8 @@ export default function Home() {
           </p>
           <div className="mt-8 space-y-6">
             <OnboardingCard />
-            <SessionPreparationDialog />
+            <RoutinePlanningCard onRoutineAccepted={setAcceptedRoutine} />
+            <SessionPreparationDialog acceptedRoutine={acceptedRoutine} />
           </div>
         </section>
 
