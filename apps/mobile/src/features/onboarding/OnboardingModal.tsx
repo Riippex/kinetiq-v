@@ -2,9 +2,14 @@ import {
   coachingTones,
   experienceLevels,
   fetchActiveGoal,
+  fetchExercises,
   fetchProfile,
+  formatLimitationsInput,
+  parseLimitationsInput,
   setGoal,
+  toggleExclusion,
   updateProfile,
+  type CatalogExercise,
   type CoachingTone,
   type ExperienceLevel,
   type Goal,
@@ -56,6 +61,9 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
   const [equipment, setEquipment] = useState<string[]>(['NONE']);
   const [space, setSpace] = useState('LIVING_ROOM');
   const [tone, setTone] = useState<CoachingTone>('CALM');
+  const [exclusions, setExclusions] = useState<string[]>([]);
+  const [limitationsText, setLimitationsText] = useState('');
+  const [exercises, setExercises] = useState<CatalogExercise[]>([]);
 
   // Goal fields
   const [goalDescription, setGoalDescription] = useState('Build consistency with home bodyweight movement');
@@ -73,6 +81,8 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
       );
       setSpace(profile.workoutSpace || 'LIVING_ROOM');
       setTone(profile.coachingTone || 'CALM');
+      setExclusions(profile.exclusions);
+      setLimitationsText(formatLimitationsInput(profile.limitations));
     }
     if (goal) {
       setGoalDescription(goal.description);
@@ -84,12 +94,13 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
     if (!endpoint) return;
     setLoading(true);
     setErrorMessage(null);
-    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint)])
-      .then(([profileRes, goalRes]) => {
+    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint), fetchExercises(endpoint)])
+      .then(([profileRes, goalRes, exercisesRes]) => {
         if (profileRes.errors.length && profileRes.errors[0].code !== 'AUTHENTICATION_REQUIRED') {
           setErrorMessage(profileRes.errors[0].message);
         } else {
           applyData(profileRes.profile, goalRes.goal);
+          setExercises(exercisesRes.exercises);
         }
         setLoading(false);
       })
@@ -103,13 +114,14 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
     if (!visible || !endpoint) return;
     let active = true;
 
-    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint)])
-      .then(([profileRes, goalRes]) => {
+    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint), fetchExercises(endpoint)])
+      .then(([profileRes, goalRes, exercisesRes]) => {
         if (!active) return;
         if (profileRes.errors.length && profileRes.errors[0].code !== 'AUTHENTICATION_REQUIRED') {
           setErrorMessage(profileRes.errors[0].message);
         } else {
           applyData(profileRes.profile, goalRes.goal);
+          setExercises(exercisesRes.exercises);
         }
         setLoading(false);
       })
@@ -138,6 +150,10 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
     }
   }
 
+  function toggleExclusionSelection(exerciseId: string) {
+    setExclusions(current => toggleExclusion(current, exerciseId));
+  }
+
   async function handleSave() {
     setSaving(true);
     setErrorMessage(null);
@@ -149,6 +165,8 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
         availableEquipment: equipment,
         workoutSpace: space,
         coachingTone: tone,
+        exclusions,
+        limitations: parseLimitationsInput(limitationsText),
       });
 
       if (profRes.errors.length) {
@@ -340,6 +358,52 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
               </View>
             </View>
 
+            {/* Exercise Exclusions (catalog-backed, submitted as stable exercise IDs) */}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>EXERCISE EXCLUSIONS</Text>
+              <Text style={styles.sectionHelp}>
+                Excluded exercises never appear in a proposed or edited routine.
+              </Text>
+              <View style={[styles.chipRow, styles.chipRowSpaced]}>
+                {exercises.length === 0 ? (
+                  <Text style={styles.sectionHelp}>No catalog exercises available.</Text>
+                ) : (
+                  exercises.map(ex => {
+                    const selected = exclusions.includes(ex.id);
+                    return (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{selected}}
+                        key={ex.id}
+                        onPress={() => toggleExclusionSelection(ex.id)}
+                        style={[styles.chip, selected && styles.chipExcluded]}
+                      >
+                        <Text style={[styles.chipText, selected && styles.chipTextExcluded]}>
+                          {selected ? `Excluded: ${ex.name}` : ex.name}
+                        </Text>
+                      </Pressable>
+                    );
+                  })
+                )}
+              </View>
+            </View>
+
+            {/* Self-reported limitations (free text; no catalog vocabulary) */}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>SELF-REPORTED LIMITATIONS</Text>
+              <Text style={styles.sectionHelp}>
+                Comma-separated (e.g. KNEE_PAIN, WRIST_PAIN). A routine is only proposed when the
+                catalog has a supported adaptation for every listed limitation.
+              </Text>
+              <TextInput
+                style={styles.textInput}
+                value={limitationsText}
+                onChangeText={setLimitationsText}
+                placeholder="e.g. KNEE_PAIN, WRIST_PAIN"
+                placeholderTextColor="#6B7280"
+              />
+            </View>
+
             <Pressable
               accessibilityRole="button"
               disabled={saving}
@@ -389,6 +453,7 @@ const styles = StyleSheet.create({
   retryBtnText: {color: '#FFFFFF', fontWeight: '700', fontSize: 13, textDecorationLine: 'underline'},
   section: {marginBottom: 24},
   sectionLabel: {color: '#9CA3AF', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, marginBottom: 10},
+  sectionHelp: {color: '#9CA3AF', fontSize: 12, lineHeight: 17, marginTop: -4, marginBottom: 10},
   textInput: {
     backgroundColor: '#111827',
     borderColor: '#293244',
@@ -400,6 +465,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   chipRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
+  chipRowSpaced: {marginTop: 10},
   chip: {
     borderColor: '#293244',
     borderRadius: 999,
@@ -408,8 +474,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   chipActive: {backgroundColor: '#A3FF12', borderColor: '#A3FF12'},
+  chipExcluded: {backgroundColor: '#451A1A', borderColor: '#7F1D1D'},
   chipText: {color: '#D1D5DB', fontSize: 13, fontWeight: '600', textTransform: 'capitalize'},
   chipTextActive: {color: '#070B14'},
+  chipTextExcluded: {color: '#FCA5A5'},
   saveBtn: {
     backgroundColor: '#A3FF12',
     borderRadius: 16,

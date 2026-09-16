@@ -97,6 +97,12 @@ export interface RoutineExercise {
   visionSupported?: boolean;
 }
 
+export interface CatalogExercise {
+  id: string;
+  name: string;
+  visionSupported: boolean;
+}
+
 export interface RoutineItem {
   exercise: RoutineExercise;
   order: number;
@@ -168,6 +174,16 @@ const updateProfileMutation = `
         updatedAt
       }
       errors { code message field }
+    }
+  }
+`;
+
+const exercisesQuery = `
+  query Exercises {
+    exercises {
+      id
+      name
+      visionSupported
     }
   }
 `;
@@ -370,6 +386,49 @@ const acceptRoutineMutation = `
   }
 `;
 
+/**
+ * Toggle a catalog exercise id in a profile's exclusion list.
+ * Pure and dedupe-safe: exclusions must be stable catalog exercise IDs.
+ */
+export function toggleExclusion(current: string[], exerciseId: string): string[] {
+  if (current.includes(exerciseId)) {
+    return current.filter((id) => id !== exerciseId);
+  }
+  return [...current, exerciseId];
+}
+
+/**
+ * Parse a free-text, comma-separated limitations field into a normalized,
+ * deduplicated list. Limitations are self-reported strings (e.g. "KNEE_PAIN"),
+ * not catalog identifiers, so no catalog validation happens client-side.
+ */
+export function parseLimitationsInput(raw: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const part of raw.split(',')) {
+    const trimmed = part.trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      result.push(trimmed);
+    }
+  }
+  return result;
+}
+
+/** Format a limitations list back into the comma-separated text a field displays. */
+export function formatLimitationsInput(limitations: string[]): string {
+  return limitations.join(', ');
+}
+
+/**
+ * Identify the structured UNSUPPORTED_LIMITATION domain error so clients can
+ * render it distinctly from a generic failure (e.g. explaining that the
+ * catalog has no adaptation for the reported limitation yet).
+ */
+export function isUnsupportedLimitationError(errors: DomainError[]): boolean {
+  return errors.some((error) => error.code === 'UNSUPPORTED_LIMITATION');
+}
+
 async function executeGraphQL<T>(
   endpoint: string,
   query: string,
@@ -431,6 +490,22 @@ export async function updateProfile(
     profile: null,
     errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
   };
+}
+
+export async function fetchExercises(
+  endpoint: string,
+  authorization?: string,
+): Promise<{ exercises: CatalogExercise[]; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ exercises: CatalogExercise[] }>(
+    endpoint,
+    exercisesQuery,
+    {},
+    authorization,
+  );
+  if (result.errors) {
+    return { exercises: [], errors: result.errors };
+  }
+  return { exercises: result.data?.exercises ?? [], errors: [] };
 }
 
 export async function fetchActiveGoal(

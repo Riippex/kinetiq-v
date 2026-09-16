@@ -4,6 +4,7 @@ import {
   fetchActiveGoal,
   fetchCurrentRoutine,
   fetchProfile,
+  isUnsupportedLimitationError,
   prepareSession,
   proposeRoutine,
   sessionIntensities,
@@ -30,6 +31,7 @@ export default function HomeScreen() {
   const [photo, setPhoto] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [unsupportedLimitation, setUnsupportedLimitation] = useState(false);
 
   // Athlete context & onboarding
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -64,10 +66,12 @@ export default function HomeScreen() {
     if (!endpoint) return;
     setRoutineLoading(true);
     setMessage(null);
+    setUnsupportedLimitation(false);
     try {
       const res = await proposeRoutine(endpoint);
       if (res.errors.length) {
         setMessage(res.errors[0].message);
+        setUnsupportedLimitation(isUnsupportedLimitationError(res.errors));
       } else if (res.routine) {
         setCurrentRoutine(res.routine);
       }
@@ -82,6 +86,7 @@ export default function HomeScreen() {
     if (!endpoint || !currentRoutine) return;
     setRoutineLoading(true);
     setMessage(null);
+    setUnsupportedLimitation(false);
     try {
       const res = await acceptRoutine(endpoint, currentRoutine.id, currentRoutine.version);
       if (res.errors.length) {
@@ -111,6 +116,7 @@ export default function HomeScreen() {
 
     setSubmitting(true);
     setMessage(null);
+    setUnsupportedLimitation(false);
     const result = await prepareSession(endpoint, {
       routineId: effectiveRoutineId,
       routineVersion: effectiveRoutineVersion,
@@ -288,7 +294,13 @@ export default function HomeScreen() {
           <Switch onValueChange={setPhoto} trackColor={{false: '#293244', true: '#6D9F16'}} thumbColor={photo ? '#A3FF12' : '#D1D5DB'} value={photo} />
         </View>
 
-        {message && <Text style={styles.message}>{message}</Text>}
+        {message && unsupportedLimitation && (
+          <View style={styles.limitationBox}>
+            <Text style={styles.limitationLabel}>LIMITATION NOT YET SUPPORTED</Text>
+            <Text style={styles.limitationText}>{message}</Text>
+          </View>
+        )}
+        {message && !unsupportedLimitation && <Text style={styles.message}>{message}</Text>}
         {currentRoutine && !currentRoutine.accepted && (
           <Text style={styles.routineWarningText}>
             ⚠️ You must accept the routine above before preparing a workout session.
@@ -422,6 +434,16 @@ const styles = StyleSheet.create({
   toggleTitle: {color: '#F4F7FB', fontSize: 15, fontWeight: '700'},
   optionHelp: {color: '#9CA3AF', fontSize: 13, lineHeight: 19, marginTop: 4},
   message: {backgroundColor: '#111827', borderRadius: 14, color: '#D1D5DB', marginTop: 20, padding: 14},
+  limitationBox: {
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+    borderWidth: 1,
+    borderRadius: 14,
+    marginTop: 20,
+    padding: 14,
+  },
+  limitationLabel: {color: '#FBBF24', fontSize: 10, fontWeight: '800', letterSpacing: 1.2},
+  limitationText: {color: '#FDE68A', fontSize: 13, lineHeight: 18, marginTop: 6},
   routineSection: {
     backgroundColor: '#111827',
     borderColor: '#293244',

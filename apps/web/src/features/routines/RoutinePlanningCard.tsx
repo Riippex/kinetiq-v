@@ -4,6 +4,7 @@ import {
   acceptRoutine,
   editRoutine,
   fetchCurrentRoutine,
+  isUnsupportedLimitationError,
   proposeRoutine,
   type Routine,
   type RoutineEditItemInput,
@@ -21,6 +22,7 @@ export function RoutinePlanningCard({ onRoutineAccepted }: RoutinePlanningCardPr
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [unsupportedLimitation, setUnsupportedLimitation] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editableItems, setEditableItems] = useState<RoutineEditItemInput[]>([]);
   const [routineTitle, setRoutineTitle] = useState("");
@@ -50,6 +52,7 @@ export function RoutinePlanningCard({ onRoutineAccepted }: RoutinePlanningCardPr
   const loadRoutine = useCallback(async () => {
     setLoading(true);
     setErrorMessage(null);
+    setUnsupportedLimitation(false);
     try {
       const res = await fetchCurrentRoutine(endpoint);
       if (res.errors.length && res.errors[0].code !== "AUTHENTICATION_REQUIRED") {
@@ -90,10 +93,12 @@ export function RoutinePlanningCard({ onRoutineAccepted }: RoutinePlanningCardPr
   async function handlePropose() {
     setActionLoading(true);
     setErrorMessage(null);
+    setUnsupportedLimitation(false);
     try {
       const res = await proposeRoutine(endpoint);
       if (res.errors.length) {
         setErrorMessage(res.errors[0].message);
+        setUnsupportedLimitation(isUnsupportedLimitationError(res.errors));
       } else if (res.routine) {
         setRoutine(res.routine);
         setRoutineTitle(res.routine.title);
@@ -119,6 +124,7 @@ export function RoutinePlanningCard({ onRoutineAccepted }: RoutinePlanningCardPr
     if (!routine) return;
     setActionLoading(true);
     setErrorMessage(null);
+    setUnsupportedLimitation(false);
     try {
       const res = await acceptRoutine(endpoint, routine.id, routine.version);
       if (res.errors.length) {
@@ -139,6 +145,7 @@ export function RoutinePlanningCard({ onRoutineAccepted }: RoutinePlanningCardPr
     if (!routine) return;
     setActionLoading(true);
     setErrorMessage(null);
+    setUnsupportedLimitation(false);
     try {
       const res = await editRoutine(endpoint, {
         routineId: routine.id,
@@ -148,6 +155,7 @@ export function RoutinePlanningCard({ onRoutineAccepted }: RoutinePlanningCardPr
       });
       if (res.errors.length) {
         setErrorMessage(res.errors[0].message);
+        setUnsupportedLimitation(isUnsupportedLimitationError(res.errors));
       } else if (res.routine) {
         setRoutine(res.routine);
         setIsEditing(false);
@@ -214,7 +222,16 @@ export function RoutinePlanningCard({ onRoutineAccepted }: RoutinePlanningCardPr
         )}
       </div>
 
-      {errorMessage && (
+      {errorMessage && unsupportedLimitation && (
+        <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-950/40 p-3.5 text-xs text-amber-200">
+          <span className="block text-[10px] font-bold uppercase tracking-wider text-amber-300">
+            Limitation Not Yet Supported
+          </span>
+          <p className="mt-1.5 leading-relaxed">{errorMessage}</p>
+        </div>
+      )}
+
+      {errorMessage && !unsupportedLimitation && (
         <div className="mt-4 flex items-center justify-between rounded-xl border border-red-500/30 bg-red-950/40 p-3.5 text-xs text-red-200">
           <span>{errorMessage}</span>
           <button

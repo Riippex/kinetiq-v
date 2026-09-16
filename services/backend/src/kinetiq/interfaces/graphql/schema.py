@@ -13,12 +13,14 @@ from kinetiq.bootstrap.container import (
     get_current_routine,
     get_profile,
     get_routine_version,
+    list_catalog_exercises,
     list_goal_revisions,
     prepare_workout_session,
     propose_routine,
     set_goal,
     update_profile,
 )
+from kinetiq.modules.catalog.domain.entities import Exercise
 from kinetiq.modules.goals.application import SetGoalCommand
 from kinetiq.modules.goals.domain import GoalRevision
 from kinetiq.modules.profiles.application import UpdateProfileCommand
@@ -351,6 +353,16 @@ class Query:
             return None
         return _to_routine_graphql(routine)
 
+    @strawberry.field
+    def exercises(self, info: Info[Any, None]) -> list[ExerciseType]:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError(
+                "AUTHENTICATION_REQUIRED: Sign in before accessing the exercise catalog"
+            )
+        catalog_exercises = list_catalog_exercises()
+        return [_to_exercise_graphql(ex) for ex in catalog_exercises]
+
 
 @strawberry.type
 class Mutation:
@@ -588,6 +600,15 @@ def _authenticated_owner_id(info: Info[Any, None]) -> UUID | None:
     if user is None or not user.is_authenticated or not isinstance(user.pk, UUID):
         return None
     return user.pk
+
+
+def _to_exercise_graphql(exercise: Exercise) -> ExerciseType:
+    return ExerciseType(
+        id=strawberry.ID(exercise.code),
+        version=exercise.version,
+        name=exercise.name,
+        vision_supported=exercise.vision_supported,
+    )
 
 
 def _to_profile_graphql(profile: UserProfile) -> ProfileType:

@@ -1,3 +1,4 @@
+from kinetiq.modules.catalog.domain.entities import Exercise
 from kinetiq.modules.catalog.infrastructure.repositories import DjangoCatalogRepository
 from kinetiq.modules.goals.application import (
     GetActiveGoalUseCase,
@@ -21,6 +22,10 @@ from kinetiq.modules.workouts.infrastructure.repositories import DjangoSessionPr
 
 def prepare_workout_session() -> PrepareWorkoutSession:
     return PrepareWorkoutSession(DjangoSessionPreparationRepository())
+
+
+def list_catalog_exercises() -> list[Exercise]:
+    return DjangoCatalogRepository().list_exercises()
 
 
 def get_profile() -> GetProfileUseCase:

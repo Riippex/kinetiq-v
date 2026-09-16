@@ -4,9 +4,14 @@ import {
   coachingTones,
   experienceLevels,
   fetchActiveGoal,
+  fetchExercises,
   fetchProfile,
+  formatLimitationsInput,
+  parseLimitationsInput,
   setGoal,
+  toggleExclusion,
   updateProfile,
+  type CatalogExercise,
   type CoachingTone,
   type ExperienceLevel,
   type Goal,
@@ -33,6 +38,7 @@ const spaceOptions = [
 export function OnboardingCard() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [activeGoal, setActiveGoal] = useState<Goal | null>(null);
+  const [exercises, setExercises] = useState<CatalogExercise[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -47,6 +53,8 @@ export function OnboardingCard() {
   const [selectedEquipment, setSelectedEquipment] = useState<string[]>(["NONE"]);
   const [selectedSpace, setSelectedSpace] = useState("LIVING_ROOM");
   const [selectedTone, setSelectedTone] = useState<CoachingTone>("CALM");
+  const [selectedExclusions, setSelectedExclusions] = useState<string[]>([]);
+  const [limitationsText, setLimitationsText] = useState("");
 
   const applyData = useCallback((prof: Profile | null, goal: Goal | null) => {
     if (prof) {
@@ -57,6 +65,8 @@ export function OnboardingCard() {
       setSelectedEquipment(prof.availableEquipment.length ? prof.availableEquipment : ["NONE"]);
       setSelectedSpace(prof.workoutSpace || "LIVING_ROOM");
       setSelectedTone(prof.coachingTone || "CALM");
+      setSelectedExclusions(prof.exclusions);
+      setLimitationsText(formatLimitationsInput(prof.limitations));
     }
     if (goal) {
       setActiveGoal(goal);
@@ -70,12 +80,13 @@ export function OnboardingCard() {
   const reload = useCallback(() => {
     setLoading(true);
     setErrorMessage(null);
-    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint)])
-      .then(([profileRes, goalRes]) => {
+    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint), fetchExercises(endpoint)])
+      .then(([profileRes, goalRes, exercisesRes]) => {
         if (profileRes.errors.length && profileRes.errors[0].code !== "AUTHENTICATION_REQUIRED") {
           setErrorMessage(profileRes.errors[0].message);
         } else {
           applyData(profileRes.profile, goalRes.goal);
+          setExercises(exercisesRes.exercises);
         }
         setLoading(false);
       })
@@ -87,13 +98,14 @@ export function OnboardingCard() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint)])
-      .then(([profileRes, goalRes]) => {
+    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint), fetchExercises(endpoint)])
+      .then(([profileRes, goalRes, exercisesRes]) => {
         if (!active) return;
         if (profileRes.errors.length && profileRes.errors[0].code !== "AUTHENTICATION_REQUIRED") {
           setErrorMessage(profileRes.errors[0].message);
         } else {
           applyData(profileRes.profile, goalRes.goal);
+          setExercises(exercisesRes.exercises);
         }
         setLoading(false);
       })
@@ -122,6 +134,10 @@ export function OnboardingCard() {
     }
   }
 
+  function toggleExclusionSelection(exerciseId: string) {
+    setSelectedExclusions((current) => toggleExclusion(current, exerciseId));
+  }
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -136,6 +152,8 @@ export function OnboardingCard() {
         availableEquipment: selectedEquipment,
         workoutSpace: selectedSpace,
         coachingTone: selectedTone,
+        exclusions: selectedExclusions,
+        limitations: parseLimitationsInput(limitationsText),
       });
 
       if (profRes.errors.length) {
@@ -245,6 +263,22 @@ export function OnboardingCard() {
             <div className="rounded-xl border border-white/5 bg-black/20 p-3">
               <span className="block text-white/40 uppercase tracking-wider text-[10px]">Coach Tone</span>
               <span className="mt-1 font-medium text-white">{profile?.coachingTone ?? "CALM"}</span>
+            </div>
+            <div className="rounded-xl border border-white/5 bg-black/20 p-3">
+              <span className="block text-white/40 uppercase tracking-wider text-[10px]">Exclusions</span>
+              <span className="mt-1 font-medium text-white">
+                {profile?.exclusions?.length
+                  ? profile.exclusions
+                      .map((id) => exercises.find((ex) => ex.id === id)?.name ?? id)
+                      .join(", ")
+                  : "None"}
+              </span>
+            </div>
+            <div className="rounded-xl border border-white/5 bg-black/20 p-3">
+              <span className="block text-white/40 uppercase tracking-wider text-[10px]">Limitations</span>
+              <span className="mt-1 font-medium text-white">
+                {profile?.limitations?.length ? profile.limitations.join(", ") : "None"}
+              </span>
             </div>
           </div>
         </div>
@@ -407,6 +441,60 @@ export function OnboardingCard() {
                 ))}
               </div>
             </div>
+          </div>
+
+          {/* Exercise Exclusions (catalog-backed, submitted as stable exercise IDs) */}
+          <div>
+            <label className="block text-xs font-medium text-white/70">
+              Exercise Exclusions
+            </label>
+            <p className="mt-1 text-[11px] text-white/40">
+              Excluded exercises never appear in a proposed or edited routine.
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {exercises.length === 0 ? (
+                <span className="text-xs text-white/40">No catalog exercises available.</span>
+              ) : (
+                exercises.map((ex) => {
+                  const active = selectedExclusions.includes(ex.id);
+                  return (
+                    <button
+                      key={ex.id}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => toggleExclusionSelection(ex.id)}
+                      className={`rounded-lg border px-3 py-1 text-xs transition ${
+                        active
+                          ? "border-red-500/50 bg-red-950/40 text-red-200"
+                          : "border-white/10 bg-white/5 text-white/60 hover:bg-white/10"
+                      }`}
+                    >
+                      {active ? "Excluded: " : ""}
+                      {ex.name}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Self-reported limitations (free text; no catalog vocabulary) */}
+          <div>
+            <label htmlFor="limitations-input" className="block text-xs font-medium text-white/70">
+              Self-Reported Limitations
+            </label>
+            <p className="mt-1 text-[11px] text-white/40">
+              Comma-separated (e.g. KNEE_PAIN, WRIST_PAIN). A routine is only proposed when the
+              catalog has a supported adaptation for every listed limitation.
+            </p>
+            <input
+              id="limitations-input"
+              type="text"
+              value={limitationsText}
+              onChange={(e) => setLimitationsText(e.target.value)}
+              placeholder="e.g. KNEE_PAIN, WRIST_PAIN"
+              className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2 text-white placeholder-white/30 focus:border-[var(--accent)] focus:outline-none"
+            />
           </div>
 
           {/* Action buttons */}
