@@ -11,6 +11,7 @@ import {
   isUnsupportedLimitationError,
   parseLimitationsInput,
   pauseSession,
+  recordSessionFeedback,
   resumeSession,
   startSession,
   toggleExclusion,
@@ -364,6 +365,118 @@ test('finishSession submits mutation with command and returns session', async ()
     assert.equal(result.session?.state, 'COMPLETED');
     assert.equal(result.session?.revision, 6);
     assert.match(calls[0].body.query, /mutation FinishSession/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('finishSession submits mutation with activity payload and returns completed session details', async () => {
+  const calls: Array<{
+    url: string;
+    body: {
+      query: string;
+      variables: {
+        command: SessionCommand;
+        performedSets?: Array<{ exerciseId: string; setOrder: number; repetitions?: number }>;
+        observationCoverage?: { coverageRatio: number; trackedSeconds: number; totalSeconds: number };
+        feedback?: { perceivedEffort?: number; comments?: string };
+      };
+    };
+  }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(init.body as string) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          finishSession: {
+            session: {
+              id: 'session-123',
+              revision: 6,
+              state: 'COMPLETED',
+              confirmedRepetitions: 25,
+              performedSets: [{ exerciseId: 'exercise-push-up-v1', setOrder: 1, repetitions: 25, durationSeconds: null }],
+              observationCoverage: {
+                coverageRatio: 0.95,
+                trackedSeconds: 57,
+                totalSeconds: 60,
+                fullyVisibleRatio: 1.0,
+                untrackedReasons: [],
+              },
+              feedback: {
+                perceivedEffort: 8,
+                comments: 'Great workout',
+              },
+            },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const activity = {
+      performedSets: [{ exerciseId: 'exercise-push-up-v1', setOrder: 1, repetitions: 25 }],
+      observationCoverage: { coverageRatio: 0.95, trackedSeconds: 57, totalSeconds: 60 },
+      feedback: { perceivedEffort: 8, comments: 'Great workout' },
+    };
+    const result = await finishSession('/api/graphql', { ...testCommand, expectedRevision: 5 }, activity);
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.state, 'COMPLETED');
+    assert.equal(result.session?.confirmedRepetitions, 25);
+    assert.equal(result.session?.performedSets?.length, 1);
+    assert.equal(result.session?.observationCoverage?.coverageRatio, 0.95);
+    assert.equal(result.session?.feedback?.perceivedEffort, 8);
+    assert.equal(calls[0].body.variables.performedSets?.[0]?.exerciseId, 'exercise-push-up-v1');
+    assert.equal(calls[0].body.variables.feedback?.perceivedEffort, 8);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('recordSessionFeedback submits mutation with command and feedback', async () => {
+  const calls: Array<{
+    url: string;
+    body: {
+      query: string;
+      variables: { command: SessionCommand; feedback: { perceivedEffort?: number; comments?: string } };
+    };
+  }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(init.body as string) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          recordSessionFeedback: {
+            session: {
+              id: 'session-123',
+              revision: 7,
+              state: 'COMPLETED',
+              feedback: { perceivedEffort: 7, comments: 'Follow-up comment' },
+            },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await recordSessionFeedback(
+      '/api/graphql',
+      { ...testCommand, expectedRevision: 6 },
+      { perceivedEffort: 7, comments: 'Follow-up comment' },
+    );
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.revision, 7);
+    assert.equal(result.session?.feedback?.perceivedEffort, 7);
+    assert.equal(result.session?.feedback?.comments, 'Follow-up comment');
+    assert.match(calls[0].body.query, /mutation RecordSessionFeedback/);
+    assert.deepEqual(calls[0].body.variables.feedback, { perceivedEffort: 7, comments: 'Follow-up comment' });
   } finally {
     globalThis.fetch = originalFetch;
   }

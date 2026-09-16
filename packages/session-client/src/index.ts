@@ -78,10 +78,54 @@ export interface SessionPreparation {
   };
 }
 
+export interface PerformedSet {
+  exerciseId: string;
+  setOrder: number;
+  repetitions?: number | null;
+  durationSeconds?: number | null;
+}
+
+export interface ObservationCoverage {
+  coverageRatio: number;
+  trackedSeconds: number;
+  totalSeconds: number;
+  fullyVisibleRatio: number;
+  untrackedReasons: string[];
+}
+
+export interface SessionFeedback {
+  perceivedEffort?: number | null;
+  comments?: string | null;
+}
+
+export interface PerformedSetInput {
+  exerciseId: string;
+  setOrder: number;
+  repetitions?: number | null;
+  durationSeconds?: number | null;
+}
+
+export interface ObservationCoverageInput {
+  coverageRatio: number;
+  trackedSeconds: number;
+  totalSeconds: number;
+  fullyVisibleRatio?: number;
+  untrackedReasons?: string[];
+}
+
+export interface SessionFeedbackInput {
+  perceivedEffort?: number | null;
+  comments?: string | null;
+}
+
 export interface PreparedSession {
   id: string;
   revision: number;
   state: 'READY' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ABANDONED';
+  confirmedRepetitions?: number;
+  performedSets?: PerformedSet[];
+  observationCoverage?: ObservationCoverage | null;
+  feedback?: SessionFeedback | null;
 }
 
 export interface SessionCommand {
@@ -293,9 +337,78 @@ const disableDynamicModeMutation = `
 `;
 
 const finishSessionMutation = `
-  mutation FinishSession($command: SessionCommand!) {
-    finishSession(command: $command) {
-      session { id revision state }
+  mutation FinishSession(
+    $command: SessionCommand!
+    $performedSets: [PerformedSetInput!]
+    $observationCoverage: ObservationCoverageInput
+    $feedback: SessionFeedbackInput
+  ) {
+    finishSession(
+      command: $command
+      performedSets: $performedSets
+      observationCoverage: $observationCoverage
+      feedback: $feedback
+    ) {
+      session {
+        id
+        revision
+        state
+        confirmedRepetitions
+        performedSets {
+          exerciseId
+          setOrder
+          repetitions
+          durationSeconds
+        }
+        observationCoverage {
+          coverageRatio
+          trackedSeconds
+          totalSeconds
+          fullyVisibleRatio
+          untrackedReasons
+        }
+        feedback {
+          perceivedEffort
+          comments
+        }
+      }
+      errors { code message field }
+    }
+  }
+`;
+
+const recordSessionFeedbackMutation = `
+  mutation RecordSessionFeedback(
+    $command: SessionCommand!
+    $feedback: SessionFeedbackInput!
+  ) {
+    recordSessionFeedback(
+      command: $command
+      feedback: $feedback
+    ) {
+      session {
+        id
+        revision
+        state
+        confirmedRepetitions
+        performedSets {
+          exerciseId
+          setOrder
+          repetitions
+          durationSeconds
+        }
+        observationCoverage {
+          coverageRatio
+          trackedSeconds
+          totalSeconds
+          fullyVisibleRatio
+          untrackedReasons
+        }
+        feedback {
+          perceivedEffort
+          comments
+        }
+      }
       errors { code message field }
     }
   }
@@ -787,18 +900,62 @@ export async function disableDynamicMode(
   };
 }
 
+export interface FinishSessionActivityInput {
+  performedSets?: PerformedSetInput[];
+  observationCoverage?: ObservationCoverageInput;
+  feedback?: SessionFeedbackInput;
+}
+
 export async function finishSession(
   endpoint: string,
   command: SessionCommand,
+  activityOrAuth?: FinishSessionActivityInput | string,
   authorization?: string,
 ): Promise<SessionResult> {
+  let activity: FinishSessionActivityInput | undefined;
+  let auth = authorization;
+  if (typeof activityOrAuth === 'string') {
+    auth = activityOrAuth;
+  } else if (activityOrAuth) {
+    activity = activityOrAuth;
+  }
+
+  const variables: Record<string, unknown> = { command };
+  if (activity?.performedSets) {
+    variables.performedSets = activity.performedSets;
+  }
+  if (activity?.observationCoverage) {
+    variables.observationCoverage = activity.observationCoverage;
+  }
+  if (activity?.feedback) {
+    variables.feedback = activity.feedback;
+  }
+
   const result = await executeGraphQL<{
     finishSession: SessionResult;
-  }>(endpoint, finishSessionMutation, { command }, authorization);
+  }>(endpoint, finishSessionMutation, variables, auth);
   if (result.errors) {
     return { session: null, errors: result.errors };
   }
   return result.data?.finishSession ?? {
+    session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function recordSessionFeedback(
+  endpoint: string,
+  command: SessionCommand,
+  feedback: SessionFeedbackInput,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{
+    recordSessionFeedback: SessionResult;
+  }>(endpoint, recordSessionFeedbackMutation, { command, feedback }, authorization);
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return result.data?.recordSessionFeedback ?? {
     session: null,
     errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
   };

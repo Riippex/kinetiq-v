@@ -99,6 +99,53 @@ class InvalidSessionStateTransition(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class PerformedSet:
+    exercise_id: str
+    set_order: int
+    repetitions: int | None = None
+    duration_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.exercise_id.strip():
+            raise ValueError("Exercise ID cannot be empty")
+        if self.set_order < 1:
+            raise ValueError("Set order must be at least 1")
+        if self.repetitions is not None and self.repetitions < 0:
+            raise ValueError("Repetitions cannot be negative")
+        if self.duration_seconds is not None and self.duration_seconds < 0:
+            raise ValueError("Duration seconds cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationCoverage:
+    coverage_ratio: float
+    tracked_seconds: int
+    total_seconds: int
+    fully_visible_ratio: float = 1.0
+    untracked_reasons: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.coverage_ratio <= 1.0):
+            raise ValueError("Coverage ratio must be between 0.0 and 1.0")
+        if self.tracked_seconds < 0:
+            raise ValueError("Tracked seconds cannot be negative")
+        if self.total_seconds < 0:
+            raise ValueError("Total seconds cannot be negative")
+        if not (0.0 <= self.fully_visible_ratio <= 1.0):
+            raise ValueError("Fully visible ratio must be between 0.0 and 1.0")
+
+
+@dataclass(frozen=True, slots=True)
+class SessionFeedback:
+    perceived_effort: int | None = None
+    comments: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.perceived_effort is not None and not (1 <= self.perceived_effort <= 10):
+            raise ValueError("Perceived effort must be between 1 and 10")
+
+
+@dataclass(frozen=True, slots=True)
 class WorkoutSession:
     id: UUID
     owner_id: UUID
@@ -108,12 +155,18 @@ class WorkoutSession:
     state: SessionState
     configuration: SessionConfiguration
     pause_reason: PauseReason | None = None
+    confirmed_repetitions: int = 0
+    performed_sets: tuple[PerformedSet, ...] = ()
+    observation_coverage: ObservationCoverage | None = None
+    feedback: SessionFeedback | None = None
 
     def __post_init__(self) -> None:
         if self.routine_version < 1:
             raise ValueError("Routine version must be positive")
         if self.revision < 1:
             raise ValueError("Session revision must be positive")
+        if self.confirmed_repetitions < 0:
+            raise ValueError("Confirmed repetitions cannot be negative")
 
     @classmethod
     def prepare(
@@ -136,6 +189,10 @@ class WorkoutSession:
             state=SessionState.READY,
             configuration=configuration,
             pause_reason=None,
+            confirmed_repetitions=0,
+            performed_sets=(),
+            observation_coverage=None,
+            feedback=None,
         )
 
     def start(self) -> WorkoutSession:
@@ -178,14 +235,46 @@ class WorkoutSession:
         configuration = replace(self.configuration, active_mode=SessionMode.NORMAL)
         return replace(self, configuration=configuration, revision=self.revision + 1)
 
-    def finish(self) -> WorkoutSession:
+    def finish(
+        self,
+        *,
+        performed_sets: tuple[PerformedSet, ...] = (),
+        observation_coverage: ObservationCoverage | None = None,
+        feedback: SessionFeedback | None = None,
+    ) -> WorkoutSession:
         if self.state not in (SessionState.ACTIVE, SessionState.PAUSED):
             raise InvalidSessionStateTransition("Only an active or paused session can be finished")
+
+        new_repetitions = (
+            sum(s.repetitions or 0 for s in performed_sets)
+            if performed_sets
+            else self.confirmed_repetitions
+        )
+
         return replace(
             self,
             state=SessionState.COMPLETED,
             revision=self.revision + 1,
             pause_reason=None,
+            confirmed_repetitions=new_repetitions,
+            performed_sets=performed_sets if performed_sets else self.performed_sets,
+            observation_coverage=(
+                observation_coverage
+                if observation_coverage is not None
+                else self.observation_coverage
+            ),
+            feedback=feedback if feedback is not None else self.feedback,
+        )
+
+    def record_feedback(self, feedback: SessionFeedback) -> WorkoutSession:
+        if self.state is not SessionState.COMPLETED:
+            raise InvalidSessionStateTransition(
+                "Feedback can only be recorded for a completed session"
+            )
+        return replace(
+            self,
+            revision=self.revision + 1,
+            feedback=feedback,
         )
 
     def abandon(self) -> WorkoutSession:

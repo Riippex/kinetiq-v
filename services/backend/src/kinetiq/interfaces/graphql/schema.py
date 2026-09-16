@@ -22,6 +22,7 @@ from kinetiq.bootstrap.container import (
     pause_workout_session,
     prepare_workout_session,
     propose_routine,
+    record_session_feedback,
     resume_workout_session,
     set_goal,
     start_workout_session,
@@ -42,8 +43,10 @@ from kinetiq.modules.routines.domain.errors import (
 )
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application import (
+    FinishSessionCommand,
     IdempotencyConflict,
     PrepareSessionCommand,
+    RecordSessionFeedbackCommand,
     RevisionConflict,
     RoutineUnavailable,
     SessionLifecycleCommand,
@@ -54,6 +57,9 @@ from kinetiq.modules.workouts.domain import (
     DynamicChallengeFrequency,
     DynamicChallengeType,
     InvalidSessionStateTransition,
+    ObservationCoverage,
+    PerformedSet,
+    SessionFeedback,
     SessionIntensity,
     SessionMode,
 )
@@ -203,6 +209,29 @@ class SessionConfigurationType:
     dynamic: DynamicSessionConfigurationType | None
 
 
+@strawberry.type(name="PerformedSet")
+class PerformedSetType:
+    exercise_id: strawberry.ID
+    set_order: int
+    repetitions: int | None
+    duration_seconds: int | None
+
+
+@strawberry.type(name="ObservationCoverage")
+class ObservationCoverageType:
+    coverage_ratio: float
+    tracked_seconds: int
+    total_seconds: int
+    fully_visible_ratio: float
+    untracked_reasons: list[str]
+
+
+@strawberry.type(name="SessionFeedback")
+class SessionFeedbackType:
+    perceived_effort: int | None
+    comments: str | None
+
+
 @strawberry.type(name="WorkoutSession")
 class WorkoutSessionType:
     id: strawberry.ID
@@ -212,6 +241,9 @@ class WorkoutSessionType:
     configuration: SessionConfigurationType
     pause_reason: PauseReasonType | None
     confirmed_repetitions: int
+    performed_sets: list[PerformedSetType]
+    observation_coverage: ObservationCoverageType | None
+    feedback: SessionFeedbackType | None
     updated_at: datetime
 
 
@@ -317,6 +349,29 @@ class SessionCommandInput:
     idempotency_key: str
 
 
+@strawberry.input
+class PerformedSetInput:
+    exercise_id: strawberry.ID
+    set_order: int
+    repetitions: int | None = None
+    duration_seconds: int | None = None
+
+
+@strawberry.input
+class ObservationCoverageInput:
+    coverage_ratio: float
+    tracked_seconds: int
+    total_seconds: int
+    fully_visible_ratio: float = 1.0
+    untracked_reasons: list[str] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class SessionFeedbackInput:
+    perceived_effort: int | None = None
+    comments: str | None = None
+
+
 @strawberry.type
 class Query:
     @strawberry.field
@@ -330,6 +385,29 @@ class Query:
             raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing profile")
         profile = get_profile().execute(owner_id)
         return _to_profile_graphql(profile)
+
+    @strawberry.field
+    def session(
+        self, info: Info[Any, None], id: strawberry.ID
+    ) -> WorkoutSessionType | None:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing session")
+        try:
+            session_uuid = UUID(str(id))
+            record = (
+                WorkoutSessionRecord.objects.select_related(
+                    "routine", "observation_coverage", "feedback"
+                )
+                .prefetch_related("performed_sets")
+                .filter(id=session_uuid, owner_id=owner_id)
+                .first()
+            )
+            if record is None:
+                return None
+            return _to_graphql(record)
+        except (ValueError, TypeError):
+            return None
 
     @strawberry.field
     def goals(self, info: Info[Any, None]) -> list[GoalType]:
@@ -652,13 +730,126 @@ class Mutation:
 
     @strawberry.mutation
     def finish_session(
-        self, info: Info[Any, None], command: SessionCommandInput
+        self,
+        info: Info[Any, None],
+        command: SessionCommandInput,
+        performed_sets: list[PerformedSetInput] | None = None,
+        observation_coverage: ObservationCoverageInput | None = None,
+        feedback: SessionFeedbackInput | None = None,
     ) -> SessionResultType:
-        return _handle_session_lifecycle(
-            info,
-            command,
-            lambda owner_id, cmd: finish_workout_session().execute(owner_id=owner_id, command=cmd),
-        )
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return _failure("AUTHENTICATION_REQUIRED", "Sign in before modifying a session")
+
+        try:
+            session_uuid = UUID(str(command.session_id))
+        except (ValueError, TypeError) as error:
+            return _failure("INVALID_INPUT", f"Invalid session ID: {error}", "sessionId")
+
+        try:
+            domain_sets: tuple[PerformedSet, ...] = ()
+            if performed_sets is not None:
+                domain_sets = tuple(
+                    PerformedSet(
+                        exercise_id=str(s.exercise_id),
+                        set_order=s.set_order,
+                        repetitions=s.repetitions,
+                        duration_seconds=s.duration_seconds,
+                    )
+                    for s in performed_sets
+                )
+
+            domain_coverage: ObservationCoverage | None = None
+            if observation_coverage is not None:
+                domain_coverage = ObservationCoverage(
+                    coverage_ratio=observation_coverage.coverage_ratio,
+                    tracked_seconds=observation_coverage.tracked_seconds,
+                    total_seconds=observation_coverage.total_seconds,
+                    fully_visible_ratio=observation_coverage.fully_visible_ratio,
+                    untracked_reasons=tuple(observation_coverage.untracked_reasons),
+                )
+
+            domain_feedback: SessionFeedback | None = None
+            if feedback is not None:
+                domain_feedback = SessionFeedback(
+                    perceived_effort=feedback.perceived_effort,
+                    comments=feedback.comments,
+                )
+
+            finish_cmd = FinishSessionCommand(
+                session_id=session_uuid,
+                expected_revision=command.expected_revision,
+                idempotency_key=command.idempotency_key,
+                performed_sets=domain_sets,
+                observation_coverage=domain_coverage,
+                feedback=domain_feedback,
+            )
+            session = finish_workout_session().execute(owner_id=owner_id, command=finish_cmd)
+            record = (
+                WorkoutSessionRecord.objects.select_related(
+                    "routine", "observation_coverage", "feedback"
+                )
+                .prefetch_related("performed_sets")
+                .get(pk=session.id)
+            )
+            return SessionResultType(session=_to_graphql(record), errors=[])
+        except SessionNotFound as error:
+            return _failure("SESSION_NOT_FOUND", str(error), "sessionId")
+        except RevisionConflict as error:
+            return _failure("REVISION_CONFLICT", str(error), "expectedRevision")
+        except IdempotencyConflict as error:
+            return _failure("IDEMPOTENCY_CONFLICT", str(error), "idempotencyKey")
+        except InvalidSessionStateTransition as error:
+            return _failure("INVALID_SESSION_STATE", str(error))
+        except (ValueError, TypeError) as error:
+            return _failure("INVALID_INPUT", str(error))
+
+    @strawberry.mutation
+    def record_session_feedback(
+        self,
+        info: Info[Any, None],
+        command: SessionCommandInput,
+        feedback: SessionFeedbackInput,
+    ) -> SessionResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return _failure("AUTHENTICATION_REQUIRED", "Sign in before modifying a session")
+
+        try:
+            session_uuid = UUID(str(command.session_id))
+        except (ValueError, TypeError) as error:
+            return _failure("INVALID_INPUT", f"Invalid session ID: {error}", "sessionId")
+
+        try:
+            domain_feedback = SessionFeedback(
+                perceived_effort=feedback.perceived_effort,
+                comments=feedback.comments,
+            )
+            cmd = RecordSessionFeedbackCommand(
+                session_id=session_uuid,
+                expected_revision=command.expected_revision,
+                idempotency_key=command.idempotency_key,
+                feedback=domain_feedback,
+            )
+            session = record_session_feedback().execute(owner_id=owner_id, command=cmd)
+            record = (
+                WorkoutSessionRecord.objects.select_related(
+                    "routine", "observation_coverage", "feedback"
+                )
+                .prefetch_related("performed_sets")
+                .get(pk=session.id)
+            )
+            return SessionResultType(session=_to_graphql(record), errors=[])
+        except SessionNotFound as error:
+            return _failure("SESSION_NOT_FOUND", str(error), "sessionId")
+        except RevisionConflict as error:
+            return _failure("REVISION_CONFLICT", str(error), "expectedRevision")
+        except IdempotencyConflict as error:
+            return _failure("IDEMPOTENCY_CONFLICT", str(error), "idempotencyKey")
+        except InvalidSessionStateTransition as error:
+            return _failure("INVALID_SESSION_STATE", str(error))
+        except (ValueError, TypeError) as error:
+            return _failure("INVALID_INPUT", str(error))
 
     @strawberry.mutation
     def abandon_session(
@@ -692,7 +883,13 @@ def _handle_session_lifecycle(
             idempotency_key=command.idempotency_key,
         )
         session = action(owner_id, cmd)
-        record = WorkoutSessionRecord.objects.select_related("routine").get(pk=session.id)
+        record = (
+            WorkoutSessionRecord.objects.select_related(
+                "routine", "observation_coverage", "feedback"
+            )
+            .prefetch_related("performed_sets")
+            .get(pk=session.id)
+        )
         return SessionResultType(session=_to_graphql(record), errors=[])
     except SessionNotFound as error:
         return _failure("SESSION_NOT_FOUND", str(error), "sessionId")
@@ -822,6 +1019,40 @@ def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
             scoring_enabled=dynamic_data["scoring_enabled"],
             narration_enabled=dynamic_data["narration_enabled"],
         )
+    performed_sets = [
+        PerformedSetType(
+            exercise_id=strawberry.ID(s.exercise_id),
+            set_order=s.set_order,
+            repetitions=s.repetitions,
+            duration_seconds=s.duration_seconds,
+        )
+        for s in record.performed_sets.all()
+    ]
+    coverage = None
+    try:
+        cov = getattr(record, "observation_coverage", None)
+        if cov is not None:
+            coverage = ObservationCoverageType(
+                coverage_ratio=cov.coverage_ratio,
+                tracked_seconds=cov.tracked_seconds,
+                total_seconds=cov.total_seconds,
+                fully_visible_ratio=cov.fully_visible_ratio,
+                untracked_reasons=list(cov.untracked_reasons or []),
+            )
+    except Exception:
+        coverage = None
+
+    feedback = None
+    try:
+        fb = getattr(record, "feedback", None)
+        if fb is not None:
+            feedback = SessionFeedbackType(
+                perceived_effort=fb.perceived_effort,
+                comments=fb.comments,
+            )
+    except Exception:
+        feedback = None
+
     return WorkoutSessionType(
         id=strawberry.ID(str(record.id)),
         revision=record.revision,
@@ -843,6 +1074,9 @@ def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
             PauseReasonType(record.pause_reason) if record.pause_reason else None
         ),
         confirmed_repetitions=record.confirmed_repetitions,
+        performed_sets=performed_sets,
+        observation_coverage=coverage,
+        feedback=feedback,
         updated_at=record.updated_at,
     )
 

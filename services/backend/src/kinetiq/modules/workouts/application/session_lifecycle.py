@@ -6,7 +6,10 @@ from uuid import UUID
 
 from kinetiq.modules.workouts.application.ports import SessionLifecycleRepository
 from kinetiq.modules.workouts.domain import (
+    ObservationCoverage,
     PauseReason,
+    PerformedSet,
+    SessionFeedback,
     WorkoutSession,
 )
 
@@ -29,6 +32,69 @@ class SessionLifecycleCommand:
         payload = {
             "session_id": str(self.session_id),
             "expected_revision": self.expected_revision,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class FinishSessionCommand(SessionLifecycleCommand):
+    performed_sets: tuple[PerformedSet, ...] = ()
+    observation_coverage: ObservationCoverage | None = None
+    feedback: SessionFeedback | None = None
+
+    def fingerprint(self) -> str:
+        sets_data = [
+            {
+                "exercise_id": s.exercise_id,
+                "set_order": s.set_order,
+                "repetitions": s.repetitions,
+                "duration_seconds": s.duration_seconds,
+            }
+            for s in self.performed_sets
+        ]
+        coverage_data = (
+            {
+                "coverage_ratio": self.observation_coverage.coverage_ratio,
+                "tracked_seconds": self.observation_coverage.tracked_seconds,
+                "total_seconds": self.observation_coverage.total_seconds,
+                "fully_visible_ratio": self.observation_coverage.fully_visible_ratio,
+                "untracked_reasons": list(self.observation_coverage.untracked_reasons),
+            }
+            if self.observation_coverage
+            else None
+        )
+        feedback_data = (
+            {
+                "perceived_effort": self.feedback.perceived_effort,
+                "comments": self.feedback.comments,
+            }
+            if self.feedback
+            else None
+        )
+        payload = {
+            "session_id": str(self.session_id),
+            "expected_revision": self.expected_revision,
+            "performed_sets": sets_data,
+            "observation_coverage": coverage_data,
+            "feedback": feedback_data,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class RecordSessionFeedbackCommand(SessionLifecycleCommand):
+    feedback: SessionFeedback = SessionFeedback()
+
+    def fingerprint(self) -> str:
+        payload = {
+            "session_id": str(self.session_id),
+            "expected_revision": self.expected_revision,
+            "feedback": {
+                "perceived_effort": self.feedback.perceived_effort,
+                "comments": self.feedback.comments,
+            },
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode()).hexdigest()
@@ -109,12 +175,35 @@ class DisableDynamicModeUseCase(BaseSessionLifecycleUseCase):
 
 
 class FinishWorkoutSessionUseCase(BaseSessionLifecycleUseCase):
-    def execute(self, *, owner_id: UUID, command: SessionLifecycleCommand) -> WorkoutSession:
+    def execute(
+        self, *, owner_id: UUID, command: FinishSessionCommand | SessionLifecycleCommand
+    ) -> WorkoutSession:
+        def transition(session: WorkoutSession) -> WorkoutSession:
+            if isinstance(command, FinishSessionCommand):
+                return session.finish(
+                    performed_sets=command.performed_sets,
+                    observation_coverage=command.observation_coverage,
+                    feedback=command.feedback,
+                )
+            return session.finish()
+
         return self._execute_transition(
             owner_id=owner_id,
             command=command,
             operation="workouts.finish_session",
-            transition=lambda session: session.finish(),
+            transition=transition,
+        )
+
+
+class RecordSessionFeedbackUseCase(BaseSessionLifecycleUseCase):
+    def execute(
+        self, *, owner_id: UUID, command: RecordSessionFeedbackCommand
+    ) -> WorkoutSession:
+        return self._execute_transition(
+            owner_id=owner_id,
+            command=command,
+            operation="workouts.record_session_feedback",
+            transition=lambda session: session.record_feedback(command.feedback),
         )
 
 

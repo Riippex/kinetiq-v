@@ -13,14 +13,23 @@ from kinetiq.modules.workouts.domain import (
     DynamicChallengeFrequency,
     DynamicChallengeType,
     DynamicSessionConfiguration,
+    ObservationCoverage,
     PauseReason,
+    PerformedSet,
     SessionConfiguration,
+    SessionFeedback,
     SessionIntensity,
     SessionMode,
     SessionState,
     WorkoutSession,
 )
-from kinetiq.modules.workouts.infrastructure.models import IdempotencyReceipt, WorkoutSessionRecord
+from kinetiq.modules.workouts.infrastructure.models import (
+    IdempotencyReceipt,
+    ObservationCoverageRecord,
+    PerformedSetRecord,
+    SessionFeedbackRecord,
+    WorkoutSessionRecord,
+)
 
 PREPARE_OPERATION = "workouts.prepare_session"
 
@@ -85,7 +94,10 @@ class DjangoSessionPreparationRepository:
     @staticmethod
     def _find_receipt(owner_id: UUID, key: str) -> IdempotencyReceipt | None:
         return (
-            IdempotencyReceipt.objects.select_related("session", "session__routine")
+            IdempotencyReceipt.objects.select_related(
+                "session", "session__routine", "session__observation_coverage", "session__feedback"
+            )
+            .prefetch_related("session__performed_sets")
             .filter(owner_id=owner_id, operation=PREPARE_OPERATION, key=key)
             .first()
         )
@@ -100,7 +112,10 @@ class DjangoSessionPreparationRepository:
 class DjangoSessionLifecycleRepository:
     def get_session(self, *, owner_id: UUID, session_id: UUID) -> WorkoutSession | None:
         record = (
-            WorkoutSessionRecord.objects.select_related("routine")
+            WorkoutSessionRecord.objects.select_related(
+                "routine", "observation_coverage", "feedback"
+            )
+            .prefetch_related("performed_sets")
             .filter(id=session_id, owner_id=owner_id)
             .first()
         )
@@ -127,7 +142,8 @@ class DjangoSessionLifecycleRepository:
             with transaction.atomic():
                 record = (
                     WorkoutSessionRecord.objects.select_for_update()
-                    .select_related("routine")
+                    .select_related("routine", "observation_coverage", "feedback")
+                    .prefetch_related("performed_sets")
                     .filter(id=session_id, owner_id=owner_id)
                     .first()
                 )
@@ -149,15 +165,52 @@ class DjangoSessionLifecycleRepository:
                     updated_session.pause_reason.value if updated_session.pause_reason else None
                 )
                 record.configuration = _serialize_configuration(updated_session.configuration)
+                record.confirmed_repetitions = updated_session.confirmed_repetitions
                 record.save(
                     update_fields=[
                         "state",
                         "revision",
                         "pause_reason",
                         "configuration",
+                        "confirmed_repetitions",
                         "updated_at",
                     ]
                 )
+
+                if updated_session.performed_sets:
+                    for set_data in updated_session.performed_sets:
+                        PerformedSetRecord.objects.get_or_create(
+                            session=record,
+                            exercise_id=set_data.exercise_id,
+                            set_order=set_data.set_order,
+                            defaults={
+                                "repetitions": set_data.repetitions,
+                                "duration_seconds": set_data.duration_seconds,
+                            },
+                        )
+
+                if updated_session.observation_coverage is not None:
+                    cov = updated_session.observation_coverage
+                    ObservationCoverageRecord.objects.update_or_create(
+                        session=record,
+                        defaults={
+                            "coverage_ratio": cov.coverage_ratio,
+                            "tracked_seconds": cov.tracked_seconds,
+                            "total_seconds": cov.total_seconds,
+                            "fully_visible_ratio": cov.fully_visible_ratio,
+                            "untracked_reasons": list(cov.untracked_reasons),
+                        },
+                    )
+
+                if updated_session.feedback is not None:
+                    fb = updated_session.feedback
+                    SessionFeedbackRecord.objects.update_or_create(
+                        session=record,
+                        defaults={
+                            "perceived_effort": fb.perceived_effort,
+                            "comments": fb.comments,
+                        },
+                    )
 
                 IdempotencyReceipt.objects.create(
                     owner_id=owner_id,
@@ -177,7 +230,10 @@ class DjangoSessionLifecycleRepository:
     @staticmethod
     def _find_receipt(owner_id: UUID, operation: str, key: str) -> IdempotencyReceipt | None:
         return (
-            IdempotencyReceipt.objects.select_related("session", "session__routine")
+            IdempotencyReceipt.objects.select_related(
+                "session", "session__routine", "session__observation_coverage", "session__feedback"
+            )
+            .prefetch_related("session__performed_sets")
             .filter(owner_id=owner_id, operation=operation, key=key)
             .first()
         )
@@ -227,6 +283,46 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
             policy_version=dynamic_data["policy_version"],
             random_seed=UUID(dynamic_data["random_seed"]),
         )
+
+    performed_sets: tuple[PerformedSet, ...] = ()
+    try:
+        performed_sets = tuple(
+            PerformedSet(
+                exercise_id=s.exercise_id,
+                set_order=s.set_order,
+                repetitions=s.repetitions,
+                duration_seconds=s.duration_seconds,
+            )
+            for s in record.performed_sets.all()
+        )
+    except Exception:
+        performed_sets = ()
+
+    observation_coverage: ObservationCoverage | None = None
+    try:
+        cov = getattr(record, "observation_coverage", None)
+        if cov is not None:
+            observation_coverage = ObservationCoverage(
+                coverage_ratio=cov.coverage_ratio,
+                tracked_seconds=cov.tracked_seconds,
+                total_seconds=cov.total_seconds,
+                fully_visible_ratio=cov.fully_visible_ratio,
+                untracked_reasons=tuple(cov.untracked_reasons or []),
+            )
+    except Exception:
+        observation_coverage = None
+
+    feedback: SessionFeedback | None = None
+    try:
+        fb = getattr(record, "feedback", None)
+        if fb is not None:
+            feedback = SessionFeedback(
+                perceived_effort=fb.perceived_effort,
+                comments=fb.comments,
+            )
+    except Exception:
+        feedback = None
+
     return WorkoutSession(
         id=record.id,
         owner_id=record.owner_id,
@@ -245,5 +341,9 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
             dynamic=dynamic,
         ),
         pause_reason=PauseReason(record.pause_reason) if record.pause_reason else None,
+        confirmed_repetitions=record.confirmed_repetitions,
+        performed_sets=performed_sets,
+        observation_coverage=observation_coverage,
+        feedback=feedback,
     )
 

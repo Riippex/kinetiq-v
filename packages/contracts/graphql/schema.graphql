@@ -67,11 +67,57 @@ type SessionConfiguration {
   promptForProgressPhoto: Boolean!
   dynamic: DynamicSessionConfiguration
 }
-type WorkoutSession { id: ID! revision: Int! routine: Routine! state: SessionState! configuration: SessionConfiguration! pauseReason: PauseReason confirmedRepetitions: Int! updatedAt: DateTime! }
+type PerformedSet {
+  exerciseId: ID!
+  setOrder: Int!
+  repetitions: Int
+  durationSeconds: Int
+}
+type ObservationCoverage {
+  coverageRatio: Float!
+  trackedSeconds: Int!
+  totalSeconds: Int!
+  fullyVisibleRatio: Float!
+  untrackedReasons: [String!]!
+}
+type SessionFeedback {
+  perceivedEffort: Int
+  comments: String
+}
+type WorkoutSession {
+  id: ID!
+  revision: Int!
+  routine: Routine!
+  state: SessionState!
+  configuration: SessionConfiguration!
+  pauseReason: PauseReason
+  confirmedRepetitions: Int!
+  performedSets: [PerformedSet!]!
+  observationCoverage: ObservationCoverage
+  feedback: SessionFeedback
+  updatedAt: DateTime!
+}
 type SessionPage { nodes: [WorkoutSession!]! endCursor: String hasNextPage: Boolean! }
 type ProgressSummary { completedSessions: Int! partialSessions: Int! from: DateTime! to: DateTime! }
 input RoutineContext { goalId: ID! minutes: Int! equipment: [String!]! excludedExerciseIds: [ID!]! }
 input SessionCommand { sessionId: ID! expectedRevision: Int! idempotencyKey: String! }
+input PerformedSetInput {
+  exerciseId: ID!
+  setOrder: Int!
+  repetitions: Int
+  durationSeconds: Int
+}
+input ObservationCoverageInput {
+  coverageRatio: Float!
+  trackedSeconds: Int!
+  totalSeconds: Int!
+  fullyVisibleRatio: Float = 1.0
+  untrackedReasons: [String!] = []
+}
+input SessionFeedbackInput {
+  perceivedEffort: Int
+  comments: String
+}
 input DynamicSessionConfigurationInput {
   frequency: DynamicChallengeFrequency! = STANDARD
   allowedChallengeTypes: [DynamicChallengeType!]!
@@ -115,7 +161,16 @@ type Mutation {
   disableDynamicMode(command: SessionCommand!): SessionResult!
   pauseSession(command: SessionCommand!): SessionResult!
   resumeSession(command: SessionCommand!): SessionResult!
-  finishSession(command: SessionCommand!): SessionResult!
+  finishSession(
+    command: SessionCommand!
+    performedSets: [PerformedSetInput!]
+    observationCoverage: ObservationCoverageInput
+    feedback: SessionFeedbackInput
+  ): SessionResult!
+  recordSessionFeedback(
+    command: SessionCommand!
+    feedback: SessionFeedbackInput!
+  ): SessionResult!
   abandonSession(command: SessionCommand!): SessionResult!
   approveDisplay(userCode: String!, sessionId: ID!): PairingResult!
   requestProgressPhotoUpload(sessionId: ID!, contentType: String!, byteLength: Int!, idempotencyKey: String!): UploadRequest!

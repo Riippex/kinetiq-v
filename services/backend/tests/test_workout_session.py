@@ -7,8 +7,11 @@ from kinetiq.modules.workouts.domain import (
     DynamicChallengeType,
     DynamicSessionConfiguration,
     InvalidSessionStateTransition,
+    ObservationCoverage,
     PauseReason,
+    PerformedSet,
     SessionConfiguration,
+    SessionFeedback,
     SessionIntensity,
     SessionMode,
     SessionState,
@@ -219,6 +222,79 @@ class SessionPreparationTests(unittest.TestCase):
         abandoned = prepared_session(SessionMode.NORMAL).abandon()
         with self.assertRaises(InvalidSessionStateTransition):
             abandoned.abandon()
+
+    def test_finish_records_performed_sets_coverage_and_feedback(self) -> None:
+        session = prepared_session(SessionMode.NORMAL).start()
+        sets = (
+            PerformedSet(exercise_id="exercise-push-up-v1", set_order=1, repetitions=12),
+            PerformedSet(exercise_id="exercise-push-up-v1", set_order=2, repetitions=10),
+            PerformedSet(exercise_id="exercise-plank-v1", set_order=1, duration_seconds=60),
+        )
+        coverage = ObservationCoverage(
+            coverage_ratio=0.92,
+            tracked_seconds=120,
+            total_seconds=130,
+            fully_visible_ratio=0.88,
+            untracked_reasons=("OCCLUDED",),
+        )
+        feedback = SessionFeedback(perceived_effort=8, comments="Challenging set")
+
+        completed = session.finish(
+            performed_sets=sets,
+            observation_coverage=coverage,
+            feedback=feedback,
+        )
+
+        self.assertEqual(SessionState.COMPLETED, completed.state)
+        self.assertEqual(22, completed.confirmed_repetitions)
+        self.assertEqual(3, len(completed.performed_sets))
+        self.assertIsNotNone(completed.observation_coverage)
+        self.assertEqual(0.92, completed.observation_coverage.coverage_ratio)
+        self.assertIsNotNone(completed.feedback)
+        self.assertEqual(8, completed.feedback.perceived_effort)
+        self.assertEqual("Challenging set", completed.feedback.comments)
+
+    def test_record_feedback_updates_completed_session(self) -> None:
+        completed = prepared_session(SessionMode.NORMAL).start().finish()
+        self.assertIsNone(completed.feedback)
+
+        updated = completed.record_feedback(
+            SessionFeedback(perceived_effort=7, comments="Felt good")
+        )
+        self.assertEqual(completed.revision + 1, updated.revision)
+        self.assertIsNotNone(updated.feedback)
+        self.assertEqual(7, updated.feedback.perceived_effort)
+        self.assertEqual("Felt good", updated.feedback.comments)
+
+    def test_record_feedback_rejects_non_completed_session(self) -> None:
+        active = prepared_session(SessionMode.NORMAL).start()
+        with self.assertRaises(InvalidSessionStateTransition):
+            active.record_feedback(SessionFeedback(perceived_effort=5))
+
+    def test_session_feedback_validates_effort_range(self) -> None:
+        with self.assertRaises(ValueError):
+            SessionFeedback(perceived_effort=0)
+        with self.assertRaises(ValueError):
+            SessionFeedback(perceived_effort=11)
+        with self.assertRaises(ValueError):
+            SessionFeedback(perceived_effort=-1)
+
+        valid = SessionFeedback(perceived_effort=1)
+        self.assertEqual(1, valid.perceived_effort)
+        valid10 = SessionFeedback(perceived_effort=10)
+        self.assertEqual(10, valid10.perceived_effort)
+
+    def test_performed_set_and_coverage_validation(self) -> None:
+        with self.assertRaises(ValueError):
+            PerformedSet(exercise_id="", set_order=1)
+        with self.assertRaises(ValueError):
+            PerformedSet(exercise_id="pushups", set_order=0)
+        with self.assertRaises(ValueError):
+            PerformedSet(exercise_id="pushups", set_order=1, repetitions=-1)
+        with self.assertRaises(ValueError):
+            ObservationCoverage(coverage_ratio=1.5, tracked_seconds=10, total_seconds=10)
+        with self.assertRaises(ValueError):
+            ObservationCoverage(coverage_ratio=-0.1, tracked_seconds=10, total_seconds=10)
 
 
 if __name__ == "__main__":
