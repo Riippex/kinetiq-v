@@ -63,3 +63,25 @@ class RoutineItemLookup(Protocol):
     ) -> tuple[AcceptedRoutineItem, ...] | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class TransientSessionUpdate:
+    session_id: UUID
+    active_exercise_id: str | None = None
+    current_repetitions: int | None = None
+    current_duration_seconds: int | None = None
+    pose_confidence: float | None = None
+    visibility_status: str = "VISIBLE"
+    timestamp: str | None = None
+
+
+class SessionTransientStore(Protocol):
+    """Port for writing and reading transient session updates backed by Redis,
+    guaranteeing graceful fallbacks when Redis is unpopulated or offline.
+    """
+
+    def publish_transient_update(self, update: TransientSessionUpdate) -> bool: ...
+
+    def get_transient_update(self, session_id: UUID) -> TransientSessionUpdate | None: ...
+
+
+

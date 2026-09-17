@@ -1,3 +1,4 @@
+from .ports import SessionTransientStore, TransientSessionUpdate
 from .prepare_session import (
     IdempotencyConflict,
     PrepareSessionCommand,
@@ -40,6 +41,9 @@ __all__ = [
     "RoutineUnavailable",
     "SessionLifecycleCommand",
     "SessionNotFound",
+    "SessionTransientStore",
     "StartWorkoutSessionUseCase",
+    "TransientSessionUpdate",
     "UnknownRoutineExerciseError",
 ]
+

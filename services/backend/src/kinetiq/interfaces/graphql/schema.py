@@ -17,6 +17,7 @@ from kinetiq.bootstrap.container import (
     get_current_routine,
     get_profile,
     get_routine_version,
+    get_session_transient_store,
     get_workout_session,
     list_catalog_exercises,
     list_goal_revisions,
@@ -53,6 +54,7 @@ from kinetiq.modules.workouts.application import (
     RoutineUnavailable,
     SessionLifecycleCommand,
     SessionNotFound,
+    TransientSessionUpdate,
     UnknownRoutineExerciseError,
 )
 from kinetiq.modules.workouts.domain import (
@@ -377,6 +379,34 @@ class SessionFeedbackInput:
     comments: str | None = None
 
 
+@strawberry.type(name="TransientSessionUpdate")
+class TransientSessionUpdateType:
+    session_id: strawberry.ID
+    active_exercise_id: strawberry.ID | None = None
+    current_repetitions: int | None = None
+    current_duration_seconds: int | None = None
+    pose_confidence: float | None = None
+    visibility_status: str = "VISIBLE"
+    timestamp: str | None = None
+
+
+@strawberry.input
+class TransientSessionUpdateInput:
+    session_id: strawberry.ID
+    active_exercise_id: strawberry.ID | None = None
+    current_repetitions: int | None = None
+    current_duration_seconds: int | None = None
+    pose_confidence: float | None = None
+    visibility_status: str = "VISIBLE"
+    timestamp: str | None = None
+
+
+@strawberry.type(name="TransientSessionUpdateResult")
+class TransientSessionUpdateResultType:
+    success: bool
+    errors: list[DomainError]
+
+
 @strawberry.type
 class Query:
     @strawberry.field
@@ -462,6 +492,44 @@ class Query:
             )
         catalog_exercises = list_catalog_exercises()
         return [_to_exercise_graphql(ex) for ex in catalog_exercises]
+
+    @strawberry.field
+    def transient_session_state(
+        self, info: Info[Any, None], session_id: strawberry.ID
+    ) -> TransientSessionUpdateType | None:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError(
+                "AUTHENTICATION_REQUIRED: Sign in before accessing transient state"
+            )
+        try:
+            session_uuid = UUID(str(session_id))
+        except (ValueError, TypeError):
+            return None
+
+        session = get_workout_session().execute(owner_id=owner_id, session_id=session_uuid)
+        if session is None:
+            return None
+
+        store = get_session_transient_store()
+        update = store.get_transient_update(session_uuid)
+        if update is None:
+            return None
+
+        return TransientSessionUpdateType(
+            session_id=strawberry.ID(str(update.session_id)),
+            active_exercise_id=(
+                strawberry.ID(update.active_exercise_id)
+                if update.active_exercise_id
+                else None
+            ),
+            current_repetitions=update.current_repetitions,
+            current_duration_seconds=update.current_duration_seconds,
+            pose_confidence=update.pose_confidence,
+            visibility_status=update.visibility_status,
+            timestamp=update.timestamp,
+        )
+
 
 
 @strawberry.type
@@ -870,6 +938,61 @@ class Mutation:
             command,
             lambda owner_id, cmd: abandon_workout_session().execute(owner_id=owner_id, command=cmd),
         )
+
+    @strawberry.mutation
+    def publish_transient_session_update(
+        self, info: Info[Any, None], input: TransientSessionUpdateInput
+    ) -> TransientSessionUpdateResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return TransientSessionUpdateResultType(
+                success=False,
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before publishing transient session updates",
+                    )
+                ],
+            )
+        try:
+            session_uuid = UUID(str(input.session_id))
+        except (ValueError, TypeError) as error:
+            return TransientSessionUpdateResultType(
+                success=False,
+                errors=[
+                    DomainError(
+                        code="INVALID_INPUT",
+                        message=f"Invalid session ID: {error}",
+                        field="sessionId",
+                    )
+                ],
+            )
+
+        session = get_workout_session().execute(owner_id=owner_id, session_id=session_uuid)
+        if session is None:
+            return TransientSessionUpdateResultType(
+                success=False,
+                errors=[
+                    DomainError(
+                        code="SESSION_NOT_FOUND",
+                        message=f"Workout session '{session_uuid}' not found",
+                        field="sessionId",
+                    )
+                ],
+            )
+
+        update = TransientSessionUpdate(
+            session_id=session_uuid,
+            active_exercise_id=str(input.active_exercise_id) if input.active_exercise_id else None,
+            current_repetitions=input.current_repetitions,
+            current_duration_seconds=input.current_duration_seconds,
+            pose_confidence=input.pose_confidence,
+            visibility_status=input.visibility_status,
+            timestamp=input.timestamp,
+        )
+        success = get_session_transient_store().publish_transient_update(update)
+        return TransientSessionUpdateResultType(success=success, errors=[])
+
 
 
 def _handle_session_lifecycle(

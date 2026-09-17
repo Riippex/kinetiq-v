@@ -145,6 +145,34 @@ export interface SessionResult {
   errors: DomainError[];
 }
 
+export interface TransientSessionUpdateInput {
+  sessionId: string;
+  activeExerciseId?: string;
+  currentRepetitions?: number;
+  currentDurationSeconds?: number;
+  poseConfidence?: number;
+  visibilityStatus?: string;
+  timestamp?: string;
+}
+
+export interface TransientSessionUpdate {
+  sessionId: string;
+  activeExerciseId?: string | null;
+  currentRepetitions?: number | null;
+  currentDurationSeconds?: number | null;
+  poseConfidence?: number | null;
+  visibilityStatus: string;
+  timestamp?: string | null;
+}
+
+export interface SessionStateSync {
+  session: PreparedSession | null;
+  transient: TransientSessionUpdate | null;
+  restoredFromCommitted: boolean;
+  errors: DomainError[];
+}
+
+
 export interface RoutineExercise {
   id: string;
   name: string;
@@ -422,6 +450,58 @@ const abandonSessionMutation = `
     }
   }
 `;
+
+const sessionQuery = `
+  query Session($id: ID!) {
+    session(id: $id) {
+      id
+      revision
+      state
+      confirmedRepetitions
+      performedSets {
+        exerciseId
+        setOrder
+        repetitions
+        durationSeconds
+      }
+      observationCoverage {
+        coverageRatio
+        trackedSeconds
+        totalSeconds
+        fullyVisibleRatio
+        untrackedReasons
+      }
+      feedback {
+        perceivedEffort
+        comments
+      }
+    }
+  }
+`;
+
+const publishTransientSessionUpdateMutation = `
+  mutation PublishTransientSessionUpdate($input: TransientSessionUpdateInput!) {
+    publishTransientSessionUpdate(input: $input) {
+      success
+      errors { code message field }
+    }
+  }
+`;
+
+const transientSessionStateQuery = `
+  query TransientSessionState($sessionId: ID!) {
+    transientSessionState(sessionId: $sessionId) {
+      sessionId
+      activeExerciseId
+      currentRepetitions
+      currentDurationSeconds
+      poseConfidence
+      visibilityStatus
+      timestamp
+    }
+  }
+`;
+
 
 const currentRoutineQuery = `
   query CurrentRoutine {
@@ -977,4 +1057,78 @@ export async function abandonSession(
     errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
   };
 }
+
+export async function fetchSession(
+  endpoint: string,
+  sessionId: string,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{ session: PreparedSession | null }>(
+    endpoint,
+    sessionQuery,
+    { id: sessionId },
+    authorization,
+  );
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return { session: result.data?.session ?? null, errors: [] };
+}
+
+export async function publishTransientSessionUpdate(
+  endpoint: string,
+  input: TransientSessionUpdateInput,
+  authorization?: string,
+): Promise<{ success: boolean; errors: DomainError[] }> {
+  const result = await executeGraphQL<{
+    publishTransientSessionUpdate: { success: boolean; errors: DomainError[] };
+  }>(endpoint, publishTransientSessionUpdateMutation, { input }, authorization);
+  if (result.errors) {
+    return { success: false, errors: result.errors };
+  }
+  return result.data?.publishTransientSessionUpdate ?? { success: false, errors: [] };
+}
+
+export async function fetchTransientSessionState(
+  endpoint: string,
+  sessionId: string,
+  authorization?: string,
+): Promise<{ transient: TransientSessionUpdate | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ transientSessionState: TransientSessionUpdate | null }>(
+    endpoint,
+    transientSessionStateQuery,
+    { sessionId },
+    authorization,
+  );
+  if (result.errors) {
+    return { transient: null, errors: result.errors };
+  }
+  return { transient: result.data?.transientSessionState ?? null, errors: [] };
+}
+
+export async function syncSessionState(
+  endpoint: string,
+  sessionId: string,
+  authorization?: string,
+): Promise<SessionStateSync> {
+  const sessionRes = await fetchSession(endpoint, sessionId, authorization);
+  if (sessionRes.errors.length > 0 || !sessionRes.session) {
+    return {
+      session: null,
+      transient: null,
+      restoredFromCommitted: false,
+      errors: sessionRes.errors,
+    };
+  }
+
+  const transientRes = await fetchTransientSessionState(endpoint, sessionId, authorization);
+  const transient = transientRes.transient;
+  return {
+    session: sessionRes.session,
+    transient,
+    restoredFromCommitted: transient === null,
+    errors: [],
+  };
+}
+
 

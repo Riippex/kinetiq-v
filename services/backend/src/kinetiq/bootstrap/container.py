@@ -27,15 +27,22 @@ from kinetiq.modules.workouts.application import (
     ResumeWorkoutSessionUseCase,
     StartWorkoutSessionUseCase,
 )
+from kinetiq.modules.workouts.application.ports import SessionTransientStore
 from kinetiq.modules.workouts.infrastructure.repositories import (
     DjangoRoutineItemLookup,
     DjangoSessionLifecycleRepository,
     DjangoSessionPreparationRepository,
 )
+from kinetiq.modules.workouts.infrastructure.transient_store import RedisSessionTransientStore
+
+
+def get_session_transient_store() -> SessionTransientStore:
+    return RedisSessionTransientStore()
 
 
 def prepare_workout_session() -> PrepareWorkoutSession:
     return PrepareWorkoutSession(DjangoSessionPreparationRepository())
+
 
 
 def start_workout_session() -> StartWorkoutSessionUseCase:

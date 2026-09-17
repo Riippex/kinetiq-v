@@ -6,19 +6,24 @@ import {
   disableDynamicMode,
   fetchExercises,
   fetchProfile,
+  fetchSession,
+  fetchTransientSessionState,
   finishSession,
   formatLimitationsInput,
   isUnsupportedLimitationError,
   parseLimitationsInput,
   pauseSession,
+  publishTransientSessionUpdate,
   recordSessionFeedback,
   resumeSession,
   startSession,
+  syncSessionState,
   toggleExclusion,
   updateProfile,
   type DomainError,
   type SessionCommand,
 } from './index.ts';
+
 
 // --- toggleExclusion -------------------------------------------------------
 
@@ -534,3 +539,75 @@ test('startSession surfaces domain error when revision conflict occurs', async (
     globalThis.fetch = originalFetch;
   }
 });
+
+test('publishTransientSessionUpdate sends mutation and returns status', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: { query: string; variables: unknown } }> = [];
+  globalThis.fetch = (async (url: string, options: { body: string }) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          publishTransientSessionUpdate: { success: true, errors: [] },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await publishTransientSessionUpdate('/api/graphql', {
+      sessionId: 'sess-001',
+      activeExerciseId: 'goblet-squat',
+      currentRepetitions: 5,
+    });
+    assert.equal(result.success, true);
+    assert.deepEqual(result.errors, []);
+    assert.match(calls[0].body.query, /mutation PublishTransientSessionUpdate/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('syncSessionState restores from committed PostgreSQL when transient state is null (Redis loss)', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, options: { body: string }) => {
+    const parsed = JSON.parse(options.body);
+    if (parsed.query.includes('query Session')) {
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            session: {
+              id: 'sess-001',
+              revision: 3,
+              state: 'COMPLETED',
+              confirmedRepetitions: 12,
+            },
+          },
+        }),
+      } as Response;
+    }
+    if (parsed.query.includes('query TransientSessionState')) {
+      return {
+        ok: true,
+        json: async () => ({
+          data: { transientSessionState: null },
+        }),
+      } as Response;
+    }
+    throw new Error('Unexpected query');
+  }) as typeof fetch;
+
+  try {
+    const sync = await syncSessionState('/api/graphql', 'sess-001');
+    assert.equal(sync.session?.id, 'sess-001');
+    assert.equal(sync.session?.state, 'COMPLETED');
+    assert.equal(sync.transient, null);
+    assert.equal(sync.restoredFromCommitted, true);
+    assert.deepEqual(sync.errors, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
