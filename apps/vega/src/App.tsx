@@ -4,7 +4,7 @@ import {BackHandler, Pressable, StyleSheet, Text, View} from 'react-native';
 
 type SessionMode = 'NORMAL' | 'DYNAMIC';
 type SessionIntensity = 'LIGHTER' | 'PLANNED' | 'CHALLENGING';
-type Screen = 'PREPARE' | 'READY';
+type Screen = 'PREPARE' | 'READY' | 'PAIRING' | 'LIVE';
 
 const sessionModes: SessionMode[] = ['NORMAL', 'DYNAMIC'];
 const sessionIntensities: SessionIntensity[] = [
@@ -13,13 +13,27 @@ const sessionIntensities: SessionIntensity[] = [
   'CHALLENGING',
 ];
 
+export interface LiveSessionState {
+  exerciseName: string;
+  confirmedReps: number;
+  visibilityStatus: 'VISIBLE' | 'PARTIALLY_VISIBLE' | 'NOT_VISIBLE';
+  isPaused: boolean;
+  pauseReason?: string | null;
+}
+
 export function App() {
   const [mode, setMode] = useState<SessionMode>('NORMAL');
   const [intensity, setIntensity] = useState<SessionIntensity>('PLANNED');
   const [screen, setScreen] = useState<Screen>('PREPARE');
+  const [liveState, setLiveState] = useState<LiveSessionState>({
+    exerciseName: 'Goblet Squat',
+    confirmedReps: 10,
+    visibilityStatus: 'VISIBLE',
+    isPaused: false,
+  });
 
   useEffect(() => {
-    if (screen !== 'READY') {
+    if (screen === 'PREPARE') {
       return;
     }
 
@@ -33,6 +47,87 @@ export function App() {
 
     return () => subscription?.remove();
   }, [screen]);
+
+  if (screen === 'LIVE') {
+    return (
+      <View style={styles.screen} testID="live-screen">
+        <View style={styles.copy}>
+          <Text style={styles.eyebrow}>KINETIQ V · VEGA OS LIVE</Text>
+          <Text style={styles.title}>{liveState.exerciseName}</Text>
+          <Text style={styles.description}>
+            {mode === 'NORMAL' ? 'Focused training' : 'Dynamic challenge mode'} ·{' '}
+            {intensity.toLowerCase()} intensity
+          </Text>
+        </View>
+
+        <TVFocusGuideView
+          autoFocus
+          trapFocusLeft
+          trapFocusRight
+          style={styles.controls}>
+          <Text style={styles.label}>LIVE SESSION STATE</Text>
+          <Text style={styles.summary} testID="live-metrics-summary">
+            {liveState.confirmedReps} REPS CONFIRMED
+          </Text>
+
+          <View style={styles.badge} testID="visibility-badge">
+            <Text style={styles.badgeText}>
+              {liveState.visibilityStatus === 'VISIBLE'
+                ? '● TARGET CONFIRMED'
+                : '⚠️ VISIBILITY LOW'}
+            </Text>
+          </View>
+
+          {liveState.isPaused ? (
+            <Text style={styles.pauseReason}>PAUSED: {liveState.pauseReason ?? 'USER_REQUEST'}</Text>
+          ) : null}
+
+          <TVButton
+            label="Back to preparation"
+            preferred
+            testID="back-to-prep-from-live"
+            onPress={() => setScreen('PREPARE')}
+          />
+        </TVFocusGuideView>
+      </View>
+    );
+  }
+
+  if (screen === 'PAIRING') {
+    return (
+      <View style={styles.screen} testID="pairing-screen">
+        <View style={styles.copy}>
+          <Text style={styles.eyebrow}>VEGA OS DISPLAY PAIRING</Text>
+          <Text style={styles.title}>Pair with phone</Text>
+          <Text style={styles.description}>
+            Display pairing code:{' '}
+            <Text style={styles.codeHighlight} testID="pairing-code">
+              VEGA-4404
+            </Text>
+            . Select this device on your mobile app to mirror prepared session activity.
+          </Text>
+        </View>
+
+        <TVFocusGuideView
+          autoFocus
+          trapFocusLeft
+          trapFocusRight
+          style={styles.controls}>
+          <TVButton
+            label="Connect live session"
+            preferred
+            testID="connect-live-session"
+            onPress={() => setScreen('LIVE')}
+          />
+          <TVButton
+            label="Back to preparation"
+            testID="back-from-pairing"
+            onPress={() => setScreen('PREPARE')}
+          />
+        </TVFocusGuideView>
+      </View>
+    );
+  }
 
   if (screen === 'READY') {
     return (
@@ -52,12 +147,17 @@ export function App() {
           trapFocusRight
           style={styles.controls}>
           <Text style={styles.label}>PREPARED SESSION</Text>
-          <Text style={styles.summary}>
+          <Text style={styles.summary} testID="prepared-summary">
             {mode} · {intensity}
           </Text>
           <TVButton
-            label="Back to preparation"
+            label="Start live movement"
             preferred
+            testID="start-live-movement"
+            onPress={() => setScreen('LIVE')}
+          />
+          <TVButton
+            label="Back to preparation"
             testID="back-to-preparation"
             onPress={() => setScreen('PREPARE')}
           />
@@ -109,11 +209,18 @@ export function App() {
           ))}
         </View>
 
-        <TVButton
-          label="Start prepared session"
-          testID="start-session"
-          onPress={() => setScreen('READY')}
-        />
+        <View style={styles.row}>
+          <TVButton
+            label="Start prepared session"
+            testID="start-session"
+            onPress={() => setScreen('READY')}
+          />
+          <TVButton
+            label="Pair display"
+            testID="pair-display"
+            onPress={() => setScreen('PAIRING')}
+          />
+        </View>
       </TVFocusGuideView>
     </View>
   );
@@ -183,6 +290,10 @@ const styles = StyleSheet.create({
     marginTop: 24,
     maxWidth: 720,
   },
+  codeHighlight: {
+    color: '#A3FF12',
+    fontWeight: '800',
+  },
   controls: {width: 650, justifyContent: 'center', gap: 20},
   label: {
     color: '#9CA3AF',
@@ -197,6 +308,27 @@ const styles = StyleSheet.create({
     fontSize: 26,
     fontWeight: '700',
     marginBottom: 12,
+  },
+  badge: {
+    backgroundColor: '#111827',
+    borderWidth: 2,
+    borderColor: '#A3FF12',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+    marginBottom: 10,
+  },
+  badgeText: {
+    color: '#A3FF12',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  pauseReason: {
+    color: '#F87171',
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 10,
   },
   button: {
     minHeight: 64,

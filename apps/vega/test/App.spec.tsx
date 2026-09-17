@@ -28,12 +28,27 @@ describe('App', () => {
     fireEvent.press(screen.getByTestId('start-session'));
 
     expect(screen.getByTestId('ready-screen')).toBeTruthy();
-    expect(screen.getByText('DYNAMIC · CHALLENGING')).toBeTruthy();
+    expect(screen.getByTestId('prepared-summary').children[0]).toBe('DYNAMIC · CHALLENGING');
 
     fireEvent.press(screen.getByTestId('back-to-preparation'));
     expect(screen.getByTestId('preparation-screen')).toBeTruthy();
     expect(screen.getByTestId('mode-dynamic').props.accessibilityState).toEqual(
       {selected: true},
     );
+  });
+
+  it('navigates to pairing screen and displays pairing code', () => {
+    const screen = render(<App />);
+
+    fireEvent.press(screen.getByTestId('pair-display'));
+    expect(screen.getByTestId('pairing-screen')).toBeTruthy();
+    expect(screen.getByTestId('pairing-code').children[0]).toBe('VEGA-4404');
+
+    fireEvent.press(screen.getByTestId('connect-live-session'));
+    expect(screen.getByTestId('live-screen')).toBeTruthy();
+    expect(screen.getByTestId('visibility-badge')).toBeTruthy();
+
+    fireEvent.press(screen.getByTestId('back-to-prep-from-live'));
+    expect(screen.getByTestId('preparation-screen')).toBeTruthy();
   });
 });

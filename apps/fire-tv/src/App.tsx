@@ -5,15 +5,135 @@ import {
   type SessionIntensity,
   type SessionMode,
 } from '@kinetiq/session-client';
-import {useState} from 'react';
-import {Pressable, StyleSheet, Text, View} from 'react-native';
+import {useEffect, useState} from 'react';
+import {BackHandler, Pressable, StyleSheet, Text, View} from 'react-native';
+
+type ScreenState = 'PREPARE' | 'PAIRING' | 'LIVE_SESSION';
+
+export interface DisplaySessionData {
+  sessionId: string;
+  mode: SessionMode;
+  intensity: SessionIntensity;
+  state: 'READY' | 'ACTIVE' | 'PAUSED' | 'COMPLETED';
+  activeExercise: string;
+  confirmedReps: number;
+  visibilityStatus: 'VISIBLE' | 'PARTIALLY_VISIBLE' | 'NOT_VISIBLE';
+  pauseReason?: string | null;
+}
 
 export default function App() {
   const [mode, setMode] = useState<SessionMode>('NORMAL');
   const [intensity, setIntensity] = useState<SessionIntensity>('PLANNED');
+  const [screen, setScreen] = useState<ScreenState>('PREPARE');
+  const [session, setSession] = useState<DisplaySessionData>({
+    sessionId: 'display-paired-01',
+    mode: 'NORMAL',
+    intensity: 'PLANNED',
+    state: 'ACTIVE',
+    activeExercise: 'Goblet Squat',
+    confirmedReps: 8,
+    visibilityStatus: 'VISIBLE',
+  });
+
+  useEffect(() => {
+    if (screen === 'PREPARE') {
+      return;
+    }
+
+    const backSubscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      setScreen('PREPARE');
+      return true;
+    });
+
+    return () => backSubscription.remove();
+  }, [screen]);
+
+  const startSession = () => {
+    setSession(prev => ({
+      ...prev,
+      mode,
+      intensity,
+      state: 'ACTIVE',
+    }));
+    setScreen('LIVE_SESSION');
+  };
+
+  const pairDisplay = () => {
+    setScreen('PAIRING');
+  };
+
+  if (screen === 'LIVE_SESSION') {
+    return (
+      <View style={styles.screen} testID="live-session-screen">
+        <StatusBar hidden />
+        <View style={styles.copy}>
+          <Text style={styles.eyebrow}>KINETIQ V · FIRE TV LIVE</Text>
+          <Text style={styles.title}>{session.activeExercise}</Text>
+          <Text style={styles.description}>
+            {session.mode === 'NORMAL' ? 'Focused training' : 'Dynamic challenge mode'} ·{' '}
+            {session.intensity.toLowerCase()} intensity
+          </Text>
+        </View>
+
+        <View style={styles.panel}>
+          <Text style={styles.label}>SESSION STATE</Text>
+          <Text style={styles.metricsSummary}>
+            {session.state} · {session.confirmedReps} REPS CONFIRMED
+          </Text>
+
+          <Text style={styles.label}>TRACKING STATUS</Text>
+          <View style={styles.statusBadge}>
+            <Text style={styles.statusText}>
+              {session.visibilityStatus === 'VISIBLE' ? '● TARGET VISIBLE' : '⚠️ CHECK VISIBILITY'}
+            </Text>
+          </View>
+
+          {session.pauseReason ? (
+            <Text style={styles.pauseReasonText}>PAUSED: {session.pauseReason}</Text>
+          ) : null}
+
+          <FocusableButton
+            label="Back to preparation"
+            preferred
+            testID="back-to-prep-btn"
+            onPress={() => setScreen('PREPARE')}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  if (screen === 'PAIRING') {
+    return (
+      <View style={styles.screen} testID="pairing-screen">
+        <StatusBar hidden />
+        <View style={styles.copy}>
+          <Text style={styles.eyebrow}>DISPLAY PAIRING</Text>
+          <Text style={styles.title}>Pair with phone</Text>
+          <Text style={styles.description}>
+            Display Code: <Text style={styles.codeText}>FIRE-7892</Text>. Select this display on your phone to sync workout status.
+          </Text>
+        </View>
+
+        <View style={styles.panel}>
+          <FocusableButton
+            label="Connect prepared session"
+            preferred
+            testID="connect-session-btn"
+            onPress={() => setScreen('LIVE_SESSION')}
+          />
+          <FocusableButton
+            label="Back"
+            testID="back-btn"
+            onPress={() => setScreen('PREPARE')}
+          />
+        </View>
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.screen}>
+    <View style={styles.screen} testID="preparation-screen">
       <StatusBar hidden />
       <View style={styles.copy}>
         <Text style={styles.eyebrow}>KINETIQ V · FIRE TV</Text>
@@ -30,6 +150,7 @@ export default function App() {
             <Choice
               key={value}
               label={value === 'NORMAL' ? 'Focused' : 'Dynamic'}
+              preferred={value === 'NORMAL'}
               selected={mode === value}
               onPress={() => setMode(value)}
             />
@@ -48,36 +169,63 @@ export default function App() {
           ))}
         </View>
 
-        <FocusableButton label="Start prepared session" preferred />
+        <View style={styles.row}>
+          <FocusableButton
+            label="Start prepared session"
+            preferred
+            testID="start-prepared-session-btn"
+            onPress={startSession}
+          />
+          <FocusableButton
+            label="Pair display"
+            testID="pair-display-btn"
+            onPress={pairDisplay}
+          />
+        </View>
       </View>
     </View>
   );
 }
 
-function Choice({label, selected, onPress}: {label: string; selected: boolean; onPress: () => void}) {
-  return <FocusableButton label={label} selected={selected} onPress={onPress} />;
+function Choice({
+  label,
+  selected,
+  preferred,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  preferred?: boolean;
+  onPress: () => void;
+}) {
+  return <FocusableButton label={label} preferred={preferred} selected={selected} onPress={onPress} />;
 }
 
 function FocusableButton({
   label,
   selected = false,
   preferred = false,
+  testID,
   onPress,
 }: {
   label: string;
   selected?: boolean;
   preferred?: boolean;
+  testID?: string;
   onPress?: () => void;
 }) {
   const [focused, setFocused] = useState(false);
 
   return (
     <Pressable
+      accessibilityLabel={label}
       accessibilityRole="button"
+      accessibilityState={{selected}}
       hasTVPreferredFocus={preferred}
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
       onPress={onPress}
+      testID={testID}
       style={[styles.button, selected && styles.selectedButton, focused && styles.focusedButton]}>
       <Text style={[styles.buttonText, (selected || focused) && styles.activeButtonText]}>{label}</Text>
     </Pressable>
@@ -90,8 +238,21 @@ const styles = StyleSheet.create({
   eyebrow: {color: '#A3FF12', fontSize: 18, fontWeight: '800', letterSpacing: 3},
   title: {color: '#F4F7FB', fontSize: 64, fontWeight: '700', marginTop: 20},
   description: {color: '#9CA3AF', fontSize: 24, lineHeight: 34, marginTop: 24, maxWidth: 720},
+  codeText: {color: '#A3FF12', fontWeight: '800'},
   panel: {width: 650, justifyContent: 'center', gap: 20},
   label: {color: '#9CA3AF', fontSize: 16, fontWeight: '700', letterSpacing: 2, marginTop: 12},
+  metricsSummary: {color: '#F4F7FB', fontSize: 28, fontWeight: '700'},
+  statusBadge: {
+    backgroundColor: '#111827',
+    borderWidth: 2,
+    borderColor: '#A3FF12',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+    alignSelf: 'flex-start',
+  },
+  statusText: {color: '#A3FF12', fontSize: 18, fontWeight: '700'},
+  pauseReasonText: {color: '#F87171', fontSize: 18, fontWeight: '600'},
   row: {flexDirection: 'row', gap: 16},
   button: {
     minHeight: 64,
