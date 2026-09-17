@@ -20,6 +20,7 @@ from kinetiq.modules.workouts.application import (
     AbandonWorkoutSessionUseCase,
     DisableDynamicModeUseCase,
     FinishWorkoutSessionUseCase,
+    GetWorkoutSessionUseCase,
     PauseWorkoutSessionUseCase,
     PrepareWorkoutSession,
     RecordSessionFeedbackUseCase,
@@ -27,6 +28,7 @@ from kinetiq.modules.workouts.application import (
     StartWorkoutSessionUseCase,
 )
 from kinetiq.modules.workouts.infrastructure.repositories import (
+    DjangoRoutineItemLookup,
     DjangoSessionLifecycleRepository,
     DjangoSessionPreparationRepository,
 )
@@ -53,7 +55,13 @@ def disable_dynamic_mode() -> DisableDynamicModeUseCase:
 
 
 def finish_workout_session() -> FinishWorkoutSessionUseCase:
-    return FinishWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
+    return FinishWorkoutSessionUseCase(
+        DjangoSessionLifecycleRepository(), DjangoRoutineItemLookup()
+    )
+
+
+def get_workout_session() -> GetWorkoutSessionUseCase:
+    return GetWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
 
 
 def record_session_feedback() -> RecordSessionFeedbackUseCase:

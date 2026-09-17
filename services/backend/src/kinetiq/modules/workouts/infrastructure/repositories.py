@@ -5,7 +5,7 @@ from uuid import UUID
 from django.db import IntegrityError, transaction
 
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
-from kinetiq.modules.workouts.application.ports import AcceptedRoutine
+from kinetiq.modules.workouts.application.ports import AcceptedRoutine, AcceptedRoutineItem
 from kinetiq.modules.workouts.application.prepare_session import IdempotencyConflict
 from kinetiq.modules.workouts.application.session_lifecycle import RevisionConflict, SessionNotFound
 from kinetiq.modules.workouts.domain import (
@@ -109,6 +109,40 @@ class DjangoSessionPreparationRepository:
         return _to_domain(receipt.session)
 
 
+class DjangoRoutineItemLookup:
+    """Read-only adapter over the routines module's persisted prescription,
+    scoped to exactly the fields session-finish validation needs."""
+
+    def get_accepted_routine_items(
+        self, *, owner_id: UUID, routine_id: UUID, version: int
+    ) -> tuple[AcceptedRoutineItem, ...] | None:
+        record = (
+            RoutineRecord.objects.filter(
+                owner_id=owner_id,
+                routine_id=routine_id,
+                version=version,
+                accepted=True,
+            )
+            .only("prescription")
+            .first()
+        )
+        if record is None:
+            return None
+
+        prescription = record.prescription
+        items: list[dict[str, Any]] = (
+            prescription.get("items", []) if isinstance(prescription, dict) else []
+        )
+        return tuple(
+            AcceptedRoutineItem(
+                exercise_id=str(item["exerciseId"]),
+                repetitions=item.get("repetitions"),
+                duration_seconds=item.get("durationSeconds"),
+            )
+            for item in items
+        )
+
+
 class DjangoSessionLifecycleRepository:
     def get_session(self, *, owner_id: UUID, session_id: UUID) -> WorkoutSession | None:
         record = (
@@ -140,8 +174,13 @@ class DjangoSessionLifecycleRepository:
 
         try:
             with transaction.atomic():
+                # `of=("self",)` restricts FOR UPDATE to this table alone.
+                # observation_coverage/feedback are nullable reverse OneToOne
+                # relations (LEFT OUTER JOIN via select_related); PostgreSQL
+                # rejects FOR UPDATE against the nullable side of an outer
+                # join, so locking must not extend to those joined tables.
                 record = (
-                    WorkoutSessionRecord.objects.select_for_update()
+                    WorkoutSessionRecord.objects.select_for_update(of=("self",))
                     .select_related("routine", "observation_coverage", "feedback")
                     .prefetch_related("performed_sets")
                     .filter(id=session_id, owner_id=owner_id)
@@ -149,6 +188,16 @@ class DjangoSessionLifecycleRepository:
                 )
                 if record is None:
                     raise SessionNotFound(f"Workout session {session_id} not found")
+
+                # Re-check idempotency now that the row lock is held: a concurrent
+                # identical request may have committed while this request was
+                # blocked waiting for select_for_update(), in which case the
+                # session's revision has already moved past `expected_revision`
+                # and must resolve to that receipt rather than raise a spurious
+                # RevisionConflict.
+                existing = self._find_receipt(owner_id, operation, idempotency_key)
+                if existing is not None:
+                    return self._resolve_receipt(existing, request_fingerprint)
 
                 if record.revision != expected_revision:
                     raise RevisionConflict(
@@ -284,44 +333,41 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
             random_seed=UUID(dynamic_data["random_seed"]),
         )
 
-    performed_sets: tuple[PerformedSet, ...] = ()
-    try:
-        performed_sets = tuple(
-            PerformedSet(
-                exercise_id=s.exercise_id,
-                set_order=s.set_order,
-                repetitions=s.repetitions,
-                duration_seconds=s.duration_seconds,
-            )
-            for s in record.performed_sets.all()
+    # Note: `getattr(record, name, None)` is sufficient here without a
+    # try/except. Django's reverse OneToOne descriptor raises a
+    # `RelatedObjectDoesNotExist` that also subclasses `AttributeError`
+    # specifically so `getattr(..., default)` treats "no related row" as the
+    # default rather than an error. A bare `except Exception` around this
+    # previously also swallowed genuine DB failures or corrupted data as
+    # empty/None instead of letting them propagate.
+    performed_sets = tuple(
+        PerformedSet(
+            exercise_id=s.exercise_id,
+            set_order=s.set_order,
+            repetitions=s.repetitions,
+            duration_seconds=s.duration_seconds,
         )
-    except Exception:
-        performed_sets = ()
+        for s in record.performed_sets.all()
+    )
 
     observation_coverage: ObservationCoverage | None = None
-    try:
-        cov = getattr(record, "observation_coverage", None)
-        if cov is not None:
-            observation_coverage = ObservationCoverage(
-                coverage_ratio=cov.coverage_ratio,
-                tracked_seconds=cov.tracked_seconds,
-                total_seconds=cov.total_seconds,
-                fully_visible_ratio=cov.fully_visible_ratio,
-                untracked_reasons=tuple(cov.untracked_reasons or []),
-            )
-    except Exception:
-        observation_coverage = None
+    cov = getattr(record, "observation_coverage", None)
+    if cov is not None:
+        observation_coverage = ObservationCoverage(
+            coverage_ratio=cov.coverage_ratio,
+            tracked_seconds=cov.tracked_seconds,
+            total_seconds=cov.total_seconds,
+            fully_visible_ratio=cov.fully_visible_ratio,
+            untracked_reasons=tuple(cov.untracked_reasons or []),
+        )
 
     feedback: SessionFeedback | None = None
-    try:
-        fb = getattr(record, "feedback", None)
-        if fb is not None:
-            feedback = SessionFeedback(
-                perceived_effort=fb.perceived_effort,
-                comments=fb.comments,
-            )
-    except Exception:
-        feedback = None
+    fb = getattr(record, "feedback", None)
+    if fb is not None:
+        feedback = SessionFeedback(
+            perceived_effort=fb.perceived_effort,
+            comments=fb.comments,
+        )
 
     return WorkoutSession(
         id=record.id,
@@ -345,5 +391,6 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
         performed_sets=performed_sets,
         observation_coverage=observation_coverage,
         feedback=feedback,
+        updated_at=record.updated_at,
     )
 

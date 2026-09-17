@@ -1,5 +1,6 @@
 from .session import (
     CoachingTone,
+    DuplicatePerformedSetError,
     DynamicChallengeFrequency,
     DynamicChallengeType,
     DynamicSessionConfiguration,
@@ -17,6 +18,7 @@ from .session import (
 
 __all__ = [
     "CoachingTone",
+    "DuplicatePerformedSetError",
     "DynamicChallengeFrequency",
     "DynamicChallengeType",
     "DynamicSessionConfiguration",

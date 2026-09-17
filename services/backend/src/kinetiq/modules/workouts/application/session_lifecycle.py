@@ -4,7 +4,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from uuid import UUID
 
-from kinetiq.modules.workouts.application.ports import SessionLifecycleRepository
+from kinetiq.modules.workouts.application.ports import (
+    RoutineItemLookup,
+    SessionLifecycleRepository,
+)
 from kinetiq.modules.workouts.domain import (
     ObservationCoverage,
     PauseReason,
@@ -20,6 +23,16 @@ class SessionNotFound(ValueError):
 
 class RevisionConflict(ValueError):
     pass
+
+
+class UnknownRoutineExerciseError(ValueError):
+    """Raised when a performed set names an exercise that is not part of the
+    exact accepted routine version the session was prepared against."""
+
+
+class InconsistentPerformedSetMeasurementError(ValueError):
+    """Raised when a performed set's measurement (repetitions vs. duration)
+    does not match how the accepted routine prescribes that exercise."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,11 +188,25 @@ class DisableDynamicModeUseCase(BaseSessionLifecycleUseCase):
 
 
 class FinishWorkoutSessionUseCase(BaseSessionLifecycleUseCase):
+    def __init__(
+        self,
+        repository: SessionLifecycleRepository,
+        routine_lookup: RoutineItemLookup,
+    ) -> None:
+        super().__init__(repository)
+        self._routine_lookup = routine_lookup
+
     def execute(
         self, *, owner_id: UUID, command: FinishSessionCommand | SessionLifecycleCommand
     ) -> WorkoutSession:
         def transition(session: WorkoutSession) -> WorkoutSession:
             if isinstance(command, FinishSessionCommand):
+                if command.performed_sets:
+                    self._validate_performed_sets(
+                        owner_id=owner_id,
+                        session=session,
+                        performed_sets=command.performed_sets,
+                    )
                 return session.finish(
                     performed_sets=command.performed_sets,
                     observation_coverage=command.observation_coverage,
@@ -193,6 +220,61 @@ class FinishWorkoutSessionUseCase(BaseSessionLifecycleUseCase):
             operation="workouts.finish_session",
             transition=transition,
         )
+
+    def _validate_performed_sets(
+        self,
+        *,
+        owner_id: UUID,
+        session: WorkoutSession,
+        performed_sets: tuple[PerformedSet, ...],
+    ) -> None:
+        """Verify every performed set names an exercise from the exact accepted
+        routine version the session was prepared against, with a measurement
+        (repetitions vs. duration) consistent with that routine's prescription.
+        """
+        items = self._routine_lookup.get_accepted_routine_items(
+            owner_id=owner_id,
+            routine_id=session.routine_id,
+            version=session.routine_version,
+        )
+        if items is None:
+            raise UnknownRoutineExerciseError(
+                f"Accepted routine {session.routine_id} version {session.routine_version} "
+                "is unavailable for activity validation"
+            )
+        items_by_exercise_id = {item.exercise_id: item for item in items}
+
+        for performed_set in performed_sets:
+            item = items_by_exercise_id.get(performed_set.exercise_id)
+            if item is None:
+                raise UnknownRoutineExerciseError(
+                    f"Exercise '{performed_set.exercise_id}' is not part of the accepted "
+                    f"routine version {session.routine_version}"
+                )
+
+            expects_duration = item.duration_seconds is not None
+            expects_repetitions = item.repetitions is not None
+
+            if expects_duration and performed_set.duration_seconds is None:
+                raise InconsistentPerformedSetMeasurementError(
+                    f"Exercise '{performed_set.exercise_id}' is prescribed by duration; "
+                    "a duration measurement is required"
+                )
+            if expects_repetitions and performed_set.repetitions is None:
+                raise InconsistentPerformedSetMeasurementError(
+                    f"Exercise '{performed_set.exercise_id}' is prescribed by repetitions; "
+                    "a repetitions measurement is required"
+                )
+            if expects_duration and performed_set.repetitions is not None:
+                raise InconsistentPerformedSetMeasurementError(
+                    f"Exercise '{performed_set.exercise_id}' is prescribed by duration; "
+                    "repetitions must not be provided"
+                )
+            if expects_repetitions and performed_set.duration_seconds is not None:
+                raise InconsistentPerformedSetMeasurementError(
+                    f"Exercise '{performed_set.exercise_id}' is prescribed by repetitions; "
+                    "duration must not be provided"
+                )
 
 
 class RecordSessionFeedbackUseCase(BaseSessionLifecycleUseCase):
@@ -215,3 +297,15 @@ class AbandonWorkoutSessionUseCase(BaseSessionLifecycleUseCase):
             operation="workouts.abandon_session",
             transition=lambda session: session.abandon(),
         )
+
+
+class GetWorkoutSessionUseCase:
+    """Reads a single owner-scoped workout session through the repository
+    port, so interface-layer resolvers never query workouts tables directly.
+    """
+
+    def __init__(self, repository: SessionLifecycleRepository) -> None:
+        self._repository = repository
+
+    def execute(self, *, owner_id: UUID, session_id: UUID) -> WorkoutSession | None:
+        return self._repository.get_session(owner_id=owner_id, session_id=session_id)

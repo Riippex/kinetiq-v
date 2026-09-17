@@ -46,3 +46,20 @@ class SessionLifecycleRepository(Protocol):
     ) -> WorkoutSession: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AcceptedRoutineItem:
+    exercise_id: str
+    repetitions: int | None
+    duration_seconds: int | None
+
+
+class RoutineItemLookup(Protocol):
+    """Read-only boundary onto the routines module's accepted-routine
+    prescription, scoped to exactly what session-finish validation needs.
+    """
+
+    def get_accepted_routine_items(
+        self, *, owner_id: UUID, routine_id: UUID, version: int
+    ) -> tuple[AcceptedRoutineItem, ...] | None: ...
+
+

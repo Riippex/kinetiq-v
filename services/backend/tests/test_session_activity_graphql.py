@@ -158,7 +158,18 @@ def accepted_routine(athlete: User) -> RoutineRecord:
                     "visionSupported": True,
                     "sets": 3,
                     "repetitions": 10,
-                }
+                    "durationSeconds": None,
+                },
+                {
+                    "order": 2,
+                    "exerciseId": "exercise-plank-v1",
+                    "exerciseVersion": 1,
+                    "name": "Plank",
+                    "visionSupported": True,
+                    "sets": 1,
+                    "repetitions": None,
+                    "durationSeconds": 45,
+                },
             ]
         },
         accepted=True,
@@ -265,6 +276,172 @@ def test_finish_session_persists_performed_sets_coverage_and_feedback(
     assert cov_rec.tracked_seconds == 140
     fb_rec = SessionFeedbackRecord.objects.get(session=record)
     assert fb_rec.perceived_effort == 8
+
+
+@pytest.mark.django_db
+def test_finish_session_rejects_duplicate_performed_set_pair(
+    client: Client, athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    """Regression test: two performed sets sharing the same
+    (exercise_id, set_order) pair within one finish call must be rejected
+    before any activity is persisted, not silently deduplicated."""
+    client.force_login(athlete)
+    session = prepare_and_start_session(client, accepted_routine)
+    session_id = session["id"]
+
+    performed_sets = [
+        {"exerciseId": "exercise-push-up-v1", "setOrder": 1, "repetitions": 10},
+        {"exerciseId": "exercise-push-up-v1", "setOrder": 1, "repetitions": 20},
+    ]
+
+    finish_resp = client.post(
+        "/graphql/",
+        data={
+            "query": FINISH_SESSION,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": session["revision"],
+                    "idempotencyKey": "finish-duplicate-set",
+                },
+                "performedSets": performed_sets,
+            },
+        },
+        content_type="application/json",
+    ).json()
+
+    data = finish_resp["data"]["finishSession"]
+    assert data["session"] is None
+    assert any(err["code"] == "DUPLICATE_PERFORMED_SET" for err in data["errors"])
+
+    record = WorkoutSessionRecord.objects.get(id=session_id)
+    assert record.state == "ACTIVE"
+    assert PerformedSetRecord.objects.filter(session=record).count() == 0
+
+
+@pytest.mark.django_db
+def test_finish_session_rejects_exercise_not_in_accepted_routine(
+    client: Client, athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    """Regression test: a performed set naming an exercise outside the
+    accepted routine version must be rejected rather than silently accepted
+    into the session's confirmed activity."""
+    client.force_login(athlete)
+    session = prepare_and_start_session(client, accepted_routine)
+    session_id = session["id"]
+
+    performed_sets = [
+        {"exerciseId": "exercise-burpee-v1", "setOrder": 1, "repetitions": 10},
+    ]
+
+    finish_resp = client.post(
+        "/graphql/",
+        data={
+            "query": FINISH_SESSION,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": session["revision"],
+                    "idempotencyKey": "finish-foreign-exercise",
+                },
+                "performedSets": performed_sets,
+            },
+        },
+        content_type="application/json",
+    ).json()
+
+    data = finish_resp["data"]["finishSession"]
+    assert data["session"] is None
+    assert any(err["code"] == "UNKNOWN_ROUTINE_EXERCISE" for err in data["errors"])
+
+    record = WorkoutSessionRecord.objects.get(id=session_id)
+    assert record.state == "ACTIVE"
+    assert PerformedSetRecord.objects.filter(session=record).count() == 0
+
+
+@pytest.mark.django_db
+def test_finish_session_rejects_measurement_inconsistent_with_prescription(
+    client: Client, athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    """Regression test: a repetitions-prescribed exercise submitted with only
+    a duration measurement (and vice versa) must be rejected."""
+    client.force_login(athlete)
+    session = prepare_and_start_session(client, accepted_routine)
+    session_id = session["id"]
+
+    # exercise-push-up-v1 is prescribed by repetitions in the fixture routine;
+    # submitting only a duration must be rejected.
+    performed_sets = [
+        {"exerciseId": "exercise-push-up-v1", "setOrder": 1, "durationSeconds": 30},
+    ]
+
+    finish_resp = client.post(
+        "/graphql/",
+        data={
+            "query": FINISH_SESSION,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": session["revision"],
+                    "idempotencyKey": "finish-inconsistent-measurement",
+                },
+                "performedSets": performed_sets,
+            },
+        },
+        content_type="application/json",
+    ).json()
+
+    data = finish_resp["data"]["finishSession"]
+    assert data["session"] is None
+    assert any(err["code"] == "INCONSISTENT_PERFORMED_SET_MEASUREMENT" for err in data["errors"])
+
+    record = WorkoutSessionRecord.objects.get(id=session_id)
+    assert record.state == "ACTIVE"
+    assert PerformedSetRecord.objects.filter(session=record).count() == 0
+
+
+@pytest.mark.django_db
+def test_finish_session_confirmed_repetitions_matches_persisted_sets(
+    client: Client, athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    """Regression test: confirmed_repetitions must always equal the sum of
+    the sets actually persisted, never a value derived from rejected or
+    unpersisted input."""
+    client.force_login(athlete)
+    session = prepare_and_start_session(client, accepted_routine)
+    session_id = session["id"]
+
+    performed_sets = [
+        {"exerciseId": "exercise-push-up-v1", "setOrder": 1, "repetitions": 8},
+        {"exerciseId": "exercise-push-up-v1", "setOrder": 2, "repetitions": 9},
+        {"exerciseId": "exercise-plank-v1", "setOrder": 1, "durationSeconds": 45},
+    ]
+
+    finish_resp = client.post(
+        "/graphql/",
+        data={
+            "query": FINISH_SESSION,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": session["revision"],
+                    "idempotencyKey": "finish-consistency-check",
+                },
+                "performedSets": performed_sets,
+            },
+        },
+        content_type="application/json",
+    ).json()
+
+    data = finish_resp["data"]["finishSession"]
+    assert data["errors"] == []
+
+    record = WorkoutSessionRecord.objects.get(id=session_id)
+    persisted_repetitions = sum(
+        s.repetitions or 0 for s in PerformedSetRecord.objects.filter(session=record)
+    )
+    assert record.confirmed_repetitions == persisted_repetitions == 17
+    assert PerformedSetRecord.objects.filter(session=record).count() == 3
 
 
 @pytest.mark.django_db
@@ -467,6 +644,83 @@ def test_record_session_feedback_validates_effort_bounds(
     ).json()
     errors_high = resp_high["data"]["recordSessionFeedback"]["errors"]
     assert any(err["code"] == "INVALID_INPUT" for err in errors_high)
+
+
+@pytest.mark.django_db
+def test_session_query_returns_full_activity_through_use_cases(
+    client: Client, athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    """Regression test: the `session` query resolver must return the same
+    performed sets, coverage, and feedback whether read through the use-case
+    path or freshly persisted, since it no longer queries workouts tables
+    directly (see GetWorkoutSessionUseCase)."""
+    client.force_login(athlete)
+    session = prepare_and_start_session(client, accepted_routine)
+    session_id = session["id"]
+
+    client.post(
+        "/graphql/",
+        data={
+            "query": FINISH_SESSION,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": session["revision"],
+                    "idempotencyKey": "finish-for-query",
+                },
+                "performedSets": [
+                    {"exerciseId": "exercise-push-up-v1", "setOrder": 1, "repetitions": 10},
+                ],
+                "observationCoverage": {
+                    "coverageRatio": 0.8,
+                    "trackedSeconds": 80,
+                    "totalSeconds": 100,
+                },
+                "feedback": {"perceivedEffort": 7},
+            },
+        },
+        content_type="application/json",
+    )
+
+    query_resp = client.post(
+        "/graphql/",
+        data={"query": QUERY_SESSION, "variables": {"id": session_id}},
+        content_type="application/json",
+    ).json()
+    retrieved = query_resp["data"]["session"]
+
+    assert retrieved["id"] == session_id
+    assert retrieved["state"] == "COMPLETED"
+    assert retrieved["confirmedRepetitions"] == 10
+    assert retrieved["performedSets"] == [
+        {
+            "exerciseId": "exercise-push-up-v1",
+            "setOrder": 1,
+            "repetitions": 10,
+            "durationSeconds": None,
+        }
+    ]
+    assert retrieved["observationCoverage"]["coverageRatio"] == 0.8
+    assert retrieved["feedback"]["perceivedEffort"] == 7
+
+
+@pytest.mark.django_db
+def test_session_query_enforces_owner_isolation(
+    client: Client, athlete: User, other_athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    client.force_login(athlete)
+    session = prepare_and_start_session(client, accepted_routine)
+    session_id = session["id"]
+
+    other_client = Client()
+    other_client.force_login(other_athlete)
+    response = other_client.post(
+        "/graphql/",
+        data={"query": QUERY_SESSION, "variables": {"id": session_id}},
+        content_type="application/json",
+    ).json()
+
+    assert response["data"]["session"] is None
 
 
 @pytest.mark.django_db

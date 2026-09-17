@@ -9,6 +9,8 @@ from .session_lifecycle import (
     DisableDynamicModeUseCase,
     FinishSessionCommand,
     FinishWorkoutSessionUseCase,
+    GetWorkoutSessionUseCase,
+    InconsistentPerformedSetMeasurementError,
     PauseWorkoutSessionUseCase,
     RecordSessionFeedbackCommand,
     RecordSessionFeedbackUseCase,
@@ -17,6 +19,7 @@ from .session_lifecycle import (
     SessionLifecycleCommand,
     SessionNotFound,
     StartWorkoutSessionUseCase,
+    UnknownRoutineExerciseError,
 )
 
 __all__ = [
@@ -24,7 +27,9 @@ __all__ = [
     "DisableDynamicModeUseCase",
     "FinishSessionCommand",
     "FinishWorkoutSessionUseCase",
+    "GetWorkoutSessionUseCase",
     "IdempotencyConflict",
+    "InconsistentPerformedSetMeasurementError",
     "PauseWorkoutSessionUseCase",
     "PrepareSessionCommand",
     "PrepareWorkoutSession",
@@ -36,4 +41,5 @@ __all__ = [
     "SessionLifecycleCommand",
     "SessionNotFound",
     "StartWorkoutSessionUseCase",
+    "UnknownRoutineExerciseError",
 ]

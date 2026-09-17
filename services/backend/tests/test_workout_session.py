@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from kinetiq.modules.workouts.domain import (
     CoachingTone,
+    DuplicatePerformedSetError,
     DynamicChallengeFrequency,
     DynamicChallengeType,
     DynamicSessionConfiguration,
@@ -253,6 +254,19 @@ class SessionPreparationTests(unittest.TestCase):
         self.assertIsNotNone(completed.feedback)
         self.assertEqual(8, completed.feedback.perceived_effort)
         self.assertEqual("Challenging set", completed.feedback.comments)
+
+    def test_finish_rejects_duplicate_performed_set_before_counting_repetitions(self) -> None:
+        """Regression test: a duplicate (exercise_id, set_order) pair must be
+        rejected before confirmed_repetitions is computed, so it can never
+        double-count a set that will only be persisted once."""
+        session = prepared_session(SessionMode.NORMAL).start()
+        duplicated_sets = (
+            PerformedSet(exercise_id="exercise-push-up-v1", set_order=1, repetitions=10),
+            PerformedSet(exercise_id="exercise-push-up-v1", set_order=1, repetitions=15),
+        )
+
+        with self.assertRaises(DuplicatePerformedSetError):
+            session.finish(performed_sets=duplicated_sets)
 
     def test_record_feedback_updates_completed_session(self) -> None:
         completed = prepared_session(SessionMode.NORMAL).start().finish()

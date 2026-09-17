@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
@@ -98,6 +99,11 @@ class InvalidSessionStateTransition(ValueError):
     pass
 
 
+class DuplicatePerformedSetError(ValueError):
+    """Raised when finishing a session with more than one performed set
+    sharing the same (exercise_id, set_order) pair."""
+
+
 @dataclass(frozen=True, slots=True)
 class PerformedSet:
     exercise_id: str
@@ -159,6 +165,7 @@ class WorkoutSession:
     performed_sets: tuple[PerformedSet, ...] = ()
     observation_coverage: ObservationCoverage | None = None
     feedback: SessionFeedback | None = None
+    updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.routine_version < 1:
@@ -244,6 +251,17 @@ class WorkoutSession:
     ) -> WorkoutSession:
         if self.state not in (SessionState.ACTIVE, SessionState.PAUSED):
             raise InvalidSessionStateTransition("Only an active or paused session can be finished")
+
+        if performed_sets:
+            seen_keys: set[tuple[str, int]] = set()
+            for performed_set in performed_sets:
+                key = (performed_set.exercise_id, performed_set.set_order)
+                if key in seen_keys:
+                    raise DuplicatePerformedSetError(
+                        f"Duplicate performed set for exercise '{performed_set.exercise_id}' "
+                        f"set {performed_set.set_order}"
+                    )
+                seen_keys.add(key)
 
         new_repetitions = (
             sum(s.repetitions or 0 for s in performed_sets)

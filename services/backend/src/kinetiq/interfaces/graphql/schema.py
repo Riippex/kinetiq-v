@@ -17,6 +17,7 @@ from kinetiq.bootstrap.container import (
     get_current_routine,
     get_profile,
     get_routine_version,
+    get_workout_session,
     list_catalog_exercises,
     list_goal_revisions,
     pause_workout_session,
@@ -45,15 +46,18 @@ from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application import (
     FinishSessionCommand,
     IdempotencyConflict,
+    InconsistentPerformedSetMeasurementError,
     PrepareSessionCommand,
     RecordSessionFeedbackCommand,
     RevisionConflict,
     RoutineUnavailable,
     SessionLifecycleCommand,
     SessionNotFound,
+    UnknownRoutineExerciseError,
 )
 from kinetiq.modules.workouts.domain import (
     CoachingTone,
+    DuplicatePerformedSetError,
     DynamicChallengeFrequency,
     DynamicChallengeType,
     InvalidSessionStateTransition,
@@ -62,6 +66,7 @@ from kinetiq.modules.workouts.domain import (
     SessionFeedback,
     SessionIntensity,
     SessionMode,
+    WorkoutSession,
 )
 from kinetiq.modules.workouts.infrastructure.models import WorkoutSessionRecord
 
@@ -395,19 +400,18 @@ class Query:
             raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing session")
         try:
             session_uuid = UUID(str(id))
-            record = (
-                WorkoutSessionRecord.objects.select_related(
-                    "routine", "observation_coverage", "feedback"
-                )
-                .prefetch_related("performed_sets")
-                .filter(id=session_uuid, owner_id=owner_id)
-                .first()
-            )
-            if record is None:
-                return None
-            return _to_graphql(record)
         except (ValueError, TypeError):
             return None
+
+        session = get_workout_session().execute(owner_id=owner_id, session_id=session_uuid)
+        if session is None:
+            return None
+        routine = get_routine_version().execute(
+            owner_id, session.routine_id, session.routine_version
+        )
+        if routine is None:
+            return None
+        return _to_workout_session_graphql(session, routine)
 
     @strawberry.field
     def goals(self, info: Info[Any, None]) -> list[GoalType]:
@@ -801,6 +805,12 @@ class Mutation:
             return _failure("IDEMPOTENCY_CONFLICT", str(error), "idempotencyKey")
         except InvalidSessionStateTransition as error:
             return _failure("INVALID_SESSION_STATE", str(error))
+        except DuplicatePerformedSetError as error:
+            return _failure("DUPLICATE_PERFORMED_SET", str(error), "performedSets")
+        except UnknownRoutineExerciseError as error:
+            return _failure("UNKNOWN_ROUTINE_EXERCISE", str(error), "performedSets")
+        except InconsistentPerformedSetMeasurementError as error:
+            return _failure("INCONSISTENT_PERFORMED_SET_MEASUREMENT", str(error), "performedSets")
         except (ValueError, TypeError) as error:
             return _failure("INVALID_INPUT", str(error))
 
@@ -1006,6 +1016,81 @@ def _to_routine_graphql(routine: Routine | RoutineRecord) -> RoutineType:
     )
 
 
+def _to_workout_session_graphql(
+    session: WorkoutSession, routine: Routine
+) -> WorkoutSessionType:
+    """Build the GraphQL projection purely from the domain WorkoutSession and
+    Routine returned by application use cases, with no direct ORM access."""
+    config = session.configuration
+    dynamic = None
+    if config.dynamic is not None:
+        dynamic = DynamicSessionConfigurationType(
+            frequency=DynamicChallengeFrequencyType(config.dynamic.frequency.value),
+            allowed_challenge_types=[
+                DynamicChallengeTypeType(t.value) for t in config.dynamic.allowed_challenge_types
+            ],
+            scoring_enabled=config.dynamic.scoring_enabled,
+            narration_enabled=config.dynamic.narration_enabled,
+        )
+
+    performed_sets = [
+        PerformedSetType(
+            exercise_id=strawberry.ID(s.exercise_id),
+            set_order=s.set_order,
+            repetitions=s.repetitions,
+            duration_seconds=s.duration_seconds,
+        )
+        for s in session.performed_sets
+    ]
+
+    coverage = None
+    if session.observation_coverage is not None:
+        cov = session.observation_coverage
+        coverage = ObservationCoverageType(
+            coverage_ratio=cov.coverage_ratio,
+            tracked_seconds=cov.tracked_seconds,
+            total_seconds=cov.total_seconds,
+            fully_visible_ratio=cov.fully_visible_ratio,
+            untracked_reasons=list(cov.untracked_reasons),
+        )
+
+    feedback = None
+    if session.feedback is not None:
+        feedback = SessionFeedbackType(
+            perceived_effort=session.feedback.perceived_effort,
+            comments=session.feedback.comments,
+        )
+
+    assert session.updated_at is not None, "A persisted session always has updated_at set"
+
+    return WorkoutSessionType(
+        id=strawberry.ID(str(session.id)),
+        revision=session.revision,
+        routine=_to_routine_graphql(routine),
+        state=SessionStateType(session.state.value),
+        configuration=SessionConfigurationType(
+            requested_mode=SessionModeType(config.requested_mode.value),
+            active_mode=SessionModeType(config.active_mode.value),
+            intensity=SessionIntensityType(config.intensity.value),
+            coaching_tone=CoachingToneType(config.coaching_tone.value),
+            capture_device_id=strawberry.ID(config.capture_device_id),
+            display_device_id=(
+                strawberry.ID(config.display_device_id) if config.display_device_id else None
+            ),
+            prompt_for_progress_photo=config.prompt_for_progress_photo,
+            dynamic=dynamic,
+        ),
+        pause_reason=(
+            PauseReasonType(session.pause_reason.value) if session.pause_reason else None
+        ),
+        confirmed_repetitions=session.confirmed_repetitions,
+        performed_sets=performed_sets,
+        observation_coverage=coverage,
+        feedback=feedback,
+        updated_at=session.updated_at,
+    )
+
+
 def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
     data = record.configuration
     dynamic_data = data.get("dynamic")
@@ -1028,30 +1113,29 @@ def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
         )
         for s in record.performed_sets.all()
     ]
+    # `getattr(record, name, None)` is sufficient: Django's reverse OneToOne
+    # descriptor raises `RelatedObjectDoesNotExist`, which also subclasses
+    # `AttributeError` for exactly this purpose. A broad `except Exception`
+    # here would silently turn a real DB failure or corrupted data into an
+    # empty/None field instead of propagating it.
     coverage = None
-    try:
-        cov = getattr(record, "observation_coverage", None)
-        if cov is not None:
-            coverage = ObservationCoverageType(
-                coverage_ratio=cov.coverage_ratio,
-                tracked_seconds=cov.tracked_seconds,
-                total_seconds=cov.total_seconds,
-                fully_visible_ratio=cov.fully_visible_ratio,
-                untracked_reasons=list(cov.untracked_reasons or []),
-            )
-    except Exception:
-        coverage = None
+    cov = getattr(record, "observation_coverage", None)
+    if cov is not None:
+        coverage = ObservationCoverageType(
+            coverage_ratio=cov.coverage_ratio,
+            tracked_seconds=cov.tracked_seconds,
+            total_seconds=cov.total_seconds,
+            fully_visible_ratio=cov.fully_visible_ratio,
+            untracked_reasons=list(cov.untracked_reasons or []),
+        )
 
     feedback = None
-    try:
-        fb = getattr(record, "feedback", None)
-        if fb is not None:
-            feedback = SessionFeedbackType(
-                perceived_effort=fb.perceived_effort,
-                comments=fb.comments,
-            )
-    except Exception:
-        feedback = None
+    fb = getattr(record, "feedback", None)
+    if fb is not None:
+        feedback = SessionFeedbackType(
+            perceived_effort=fb.perceived_effort,
+            comments=fb.comments,
+        )
 
     return WorkoutSessionType(
         id=strawberry.ID(str(record.id)),
