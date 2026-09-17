@@ -1,4 +1,9 @@
-from .ports import SessionTransientStore, TransientSessionUpdate
+from .ports import (
+    SessionTransientStore,
+    TransientSessionUpdate,
+    UnknownVisionCandidateError,
+    VisionSessionAnalysisPort,
+)
 from .prepare_session import (
     IdempotencyConflict,
     PrepareSessionCommand,
@@ -49,5 +54,7 @@ __all__ = [
     "StartWorkoutSessionUseCase",
     "TransientSessionUpdate",
     "UnknownRoutineExerciseError",
+    "UnknownVisionCandidateError",
+    "VisionSessionAnalysisPort",
 ]
 

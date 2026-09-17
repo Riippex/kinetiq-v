@@ -55,7 +55,11 @@ class RedisSessionTransientStore(SessionTransientStore):
                 redis_conn = get_redis_connection("default")
                 redis_conn.publish(channel, json_data)
             except Exception as pub_error:
-                logger.warning("Redis PubSub publish failed for session %s: %s", update.session_id, pub_error)
+                logger.warning(
+                    "Redis PubSub publish failed for session %s: %s",
+                    update.session_id,
+                    pub_error,
+                )
             return True
         except Exception as error:
             logger.warning("Failed to store transient session update in Redis: %s", error)
@@ -82,5 +86,9 @@ class RedisSessionTransientStore(SessionTransientStore):
                 timestamp=payload.get("timestamp"),
             )
         except Exception as error:
-            logger.warning("Failed to retrieve transient session update from Redis for %s: %s", session_id, error)
+            logger.warning(
+                "Failed to retrieve transient session update from Redis for %s: %s",
+                session_id,
+                error,
+            )
             return None

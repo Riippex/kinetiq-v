@@ -6,6 +6,7 @@ from kinetiq.modules.goals.application import (
     SetGoalUseCase,
 )
 from kinetiq.modules.goals.infrastructure.repositories import DjangoGoalRepository
+from kinetiq.modules.integrations import VisionRestAdapter
 from kinetiq.modules.profiles.application import GetProfileUseCase, UpdateProfileUseCase
 from kinetiq.modules.profiles.infrastructure.repositories import DjangoProfileRepository
 from kinetiq.modules.routines.application import (
@@ -16,7 +17,6 @@ from kinetiq.modules.routines.application import (
     ProposeRoutineUseCase,
 )
 from kinetiq.modules.routines.infrastructure.repositories import DjangoRoutineRepository
-from kinetiq.modules.integrations import VisionRestAdapter
 from kinetiq.modules.workouts.application import (
     AbandonWorkoutSessionUseCase,
     ConfirmSessionTargetUseCase,
@@ -51,7 +51,9 @@ def prepare_workout_session() -> PrepareWorkoutSession:
 
 
 def confirm_session_target() -> ConfirmSessionTargetUseCase:
-    return ConfirmSessionTargetUseCase(DjangoSessionLifecycleRepository())
+    return ConfirmSessionTargetUseCase(
+        DjangoSessionLifecycleRepository(), get_vision_rest_adapter(), DjangoRoutineItemLookup()
+    )
 
 
 

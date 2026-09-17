@@ -1,11 +1,65 @@
-from uuid import uuid4
+from unittest.mock import patch
+from uuid import UUID, uuid4
 
 import pytest
 from django.test import Client
 
 from kinetiq.modules.identity.infrastructure.models import User
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
+from kinetiq.modules.workouts.application import ConfirmSessionTargetUseCase
+from kinetiq.modules.workouts.application.ports import (
+    VisionAnalysisHandle,
+    VisionCandidateInfo,
+    VisionTargetConfirmation,
+)
 from kinetiq.modules.workouts.infrastructure.models import IdempotencyReceipt, WorkoutSessionRecord
+from kinetiq.modules.workouts.infrastructure.repositories import (
+    DjangoRoutineItemLookup,
+    DjangoSessionLifecycleRepository,
+)
+
+
+class FakeVisionSessionAnalysisPort:
+    """Deterministic Vision double for GraphQL wiring tests: any
+    candidate_id passed to select_target is treated as detected, so these
+    tests exercise the real ConfirmSessionTargetUseCase and real
+    persistence without a live Vision service. Candidate-validation
+    behavior itself (UnknownVisionCandidateError) is covered separately in
+    tests/unit/test_confirm_session_target_use_case.py.
+    """
+
+    def __init__(self) -> None:
+        self.created_analyses: list[UUID] = []
+
+    def create_analysis(
+        self, *, session_id: UUID, source_id: str, exercise_key: str,
+        exercise_version: int, idempotency_key: str,
+    ) -> VisionAnalysisHandle:
+        self.created_analyses.append(session_id)
+        return VisionAnalysisHandle(
+            analysis_id=f"fake-analysis-{session_id}", epoch=1, state="AWAITING_SELECTION"
+        )
+
+    def list_candidates(self, *, analysis_id: str) -> tuple[VisionCandidateInfo, ...]:
+        return (
+            VisionCandidateInfo(candidate_id="person-target-alpha", confidence=0.95),
+            VisionCandidateInfo(candidate_id="person-target-beta", confidence=0.9),
+        )
+
+    def select_target(
+        self, *, analysis_id: str, candidate_id: str, expected_epoch: int, idempotency_key: str,
+    ) -> VisionTargetConfirmation:
+        return VisionTargetConfirmation(
+            target_person_id=candidate_id, epoch=expected_epoch, state="TRACKING"
+        )
+
+
+def _fake_confirm_session_target() -> ConfirmSessionTargetUseCase:
+    return ConfirmSessionTargetUseCase(
+        DjangoSessionLifecycleRepository(),
+        FakeVisionSessionAnalysisPort(),
+        DjangoRoutineItemLookup(),
+    )
 
 PREPARE_SESSION = """
 mutation PrepareSession($input: PrepareSessionInput!) {
@@ -689,6 +743,7 @@ def test_invalid_uuid_rejected(athlete: User) -> None:
 
 
 @pytest.mark.django_db
+@patch("kinetiq.interfaces.graphql.schema.confirm_session_target", _fake_confirm_session_target)
 def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: RoutineRecord) -> None:
     client = Client()
     client.force_login(athlete)

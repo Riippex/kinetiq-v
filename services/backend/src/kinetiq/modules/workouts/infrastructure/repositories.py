@@ -75,7 +75,11 @@ class DjangoSessionPreparationRepository:
                     revision=session.revision,
                     state=session.state,
                     configuration=_serialize_configuration(
-                        session.configuration, target_person_id=session.target_person_id
+                        session.configuration,
+                        target_person_id=session.target_person_id,
+                        vision_analysis_id=session.vision_analysis_id,
+                        vision_epoch=session.vision_epoch,
+                        vision_observation_cursor=session.vision_observation_cursor,
                     ),
                 )
                 IdempotencyReceipt.objects.create(
@@ -216,7 +220,11 @@ class DjangoSessionLifecycleRepository:
                     updated_session.pause_reason.value if updated_session.pause_reason else None
                 )
                 record.configuration = _serialize_configuration(
-                    updated_session.configuration, target_person_id=updated_session.target_person_id
+                    updated_session.configuration,
+                    target_person_id=updated_session.target_person_id,
+                    vision_analysis_id=updated_session.vision_analysis_id,
+                    vision_epoch=updated_session.vision_epoch,
+                    vision_observation_cursor=updated_session.vision_observation_cursor,
                 )
                 record.confirmed_repetitions = updated_session.confirmed_repetitions
                 record.save(
@@ -299,7 +307,11 @@ class DjangoSessionLifecycleRepository:
 
 
 def _serialize_configuration(
-    configuration: SessionConfiguration, target_person_id: str | None = None
+    configuration: SessionConfiguration,
+    target_person_id: str | None = None,
+    vision_analysis_id: str | None = None,
+    vision_epoch: int | None = None,
+    vision_observation_cursor: str | None = None,
 ) -> dict[str, Any]:
     dynamic = None
     if configuration.dynamic is not None:
@@ -323,6 +335,12 @@ def _serialize_configuration(
     }
     if target_person_id is not None:
         payload["target_person_id"] = target_person_id
+    if vision_analysis_id is not None:
+        payload["vision_analysis_id"] = vision_analysis_id
+    if vision_epoch is not None:
+        payload["vision_epoch"] = vision_epoch
+    if vision_observation_cursor is not None:
+        payload["vision_observation_cursor"] = vision_observation_cursor
     return payload
 
 
@@ -402,6 +420,9 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
         observation_coverage=observation_coverage,
         feedback=feedback,
         target_person_id=data.get("target_person_id"),
+        vision_analysis_id=data.get("vision_analysis_id"),
+        vision_epoch=data.get("vision_epoch"),
+        vision_observation_cursor=data.get("vision_observation_cursor"),
         updated_at=record.updated_at,
     )
 

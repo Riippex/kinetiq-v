@@ -1,3 +1,11 @@
+// MOCK / DEMO SCREEN -- not wired to a real backend.
+//
+// There is no pairing-code issuance or session-state API anywhere in
+// kinetiq-v yet: screen transitions below only flip local component state,
+// they never call GraphQL or any pairing service. The "VEGA-4404" pairing
+// code and the initial live-session data are hardcoded. KV-404 reflects
+// this: it is Ready (mock UI only), not Verified, until a real
+// pairing/session-state backend exists and this screen calls it.
 import {TVFocusGuideView} from '@amazon-devices/react-native-kepler';
 import React, {useEffect, useState} from 'react';
 import {BackHandler, Pressable, StyleSheet, Text, View} from 'react-native';
@@ -52,6 +60,7 @@ export function App() {
     return (
       <View style={styles.screen} testID="live-screen">
         <View style={styles.copy}>
+          <MockBanner />
           <Text style={styles.eyebrow}>KINETIQ V · VEGA OS LIVE</Text>
           <Text style={styles.title}>{liveState.exerciseName}</Text>
           <Text style={styles.description}>
@@ -97,6 +106,7 @@ export function App() {
     return (
       <View style={styles.screen} testID="pairing-screen">
         <View style={styles.copy}>
+          <MockBanner />
           <Text style={styles.eyebrow}>VEGA OS DISPLAY PAIRING</Text>
           <Text style={styles.title}>Pair with phone</Text>
           <Text style={styles.description}>
@@ -226,6 +236,14 @@ export function App() {
   );
 }
 
+function MockBanner() {
+  return (
+    <View style={styles.mockBanner} testID="mock-banner">
+      <Text style={styles.mockBannerText}>DEMO MODE — not connected to a live session</Text>
+    </View>
+  );
+}
+
 function TVButton({
   label,
   selected = false,
@@ -276,6 +294,17 @@ const styles = StyleSheet.create({
     gap: 72,
   },
   copy: {flex: 1, justifyContent: 'center'},
+  mockBanner: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#3B0764',
+    borderWidth: 2,
+    borderColor: '#C084FC',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+  },
+  mockBannerText: {color: '#E9D5FF', fontSize: 14, fontWeight: '800', letterSpacing: 1},
   eyebrow: {
     color: '#A3FF12',
     fontSize: 18,

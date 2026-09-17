@@ -15,7 +15,6 @@ from kinetiq.modules.workouts.domain.session import PauseReason
 logger = logging.getLogger(__name__)
 
 CONTRACTS_DIR = Path(__file__).resolve().parents[6] / "contracts" / "vision" / "v1" / "schema"
-CAPABILITIES_SCHEMA_PATH = CONTRACTS_DIR / "vision-capabilities.v1.schema.json"
 OBSERVATION_SCHEMA_PATH = CONTRACTS_DIR / "vision-observation.v1.schema.json"
 
 
@@ -36,11 +35,45 @@ class VisionSchemaValidationError(VisionAdapterError):
 
 
 class VisionHttpError(VisionAdapterError):
-    """Raised when the Vision service returns a non-2xx HTTP status."""
+    """Raised when the Vision service returns a non-2xx HTTP status not
+    otherwise mapped to a more specific exception below."""
 
     def __init__(self, message: str, status_code: int) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class VisionAnalysisNotFoundError(VisionAdapterError):
+    """Raised on 404 for an analysis_id the Vision service does not know about."""
+
+    def __init__(self, analysis_id: str) -> None:
+        super().__init__(f"Vision analysis '{analysis_id}' was not found")
+        self.analysis_id = analysis_id
+
+
+class VisionStaleEpochError(VisionAdapterError):
+    """Raised on 409 STALE_EPOCH: the caller's expected_epoch no longer
+    matches the analysis's current epoch (e.g. a concurrent re-target or
+    stream restart already advanced it)."""
+
+    def __init__(
+        self, message: str, expected_epoch: int | None = None, current_epoch: int | None = None
+    ) -> None:
+        super().__init__(message)
+        self.expected_epoch = expected_epoch
+        self.current_epoch = current_epoch
+
+
+class VisionCursorExpiredError(VisionAdapterError):
+    """Raised on 410 CURSOR_EXPIRED: the requested observation cursor has
+    aged out of Vision's sliding retention buffer."""
+
+    def __init__(
+        self, message: str, requested_cursor: str, oldest_cursor: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.requested_cursor = requested_cursor
+        self.oldest_cursor = oldest_cursor
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +97,7 @@ class VisionHoldDTO:
 
 @dataclass(frozen=True, slots=True)
 class VisionObservationDTO:
-    session_id: UUID
+    session_id: str
     epoch: int
     sequence: int
     timestamp_utc: str
@@ -83,22 +116,42 @@ class VisionObservationDTO:
 
 
 @dataclass(frozen=True, slots=True)
-class VisionSupportedExerciseDTO:
-    exercise_key: str
-    version: int
-    name: str
-    analysis_type: str
-    supported_metrics: tuple[str, ...]
-    required_visibility: str
+class VisionAnalysisDTO:
+    analysis_id: str
+    session_id: str
+    epoch: int
+    state: str
 
 
 @dataclass(frozen=True, slots=True)
-class VisionCapabilitiesDTO:
-    service: str
-    contract_version: str
-    supported_target_modes: tuple[str, ...]
-    supported_camera_perspectives: tuple[str, ...]
-    supported_exercises: tuple[VisionSupportedExerciseDTO, ...]
+class VisionAnalysisStatusDTO:
+    analysis_id: str
+    session_id: str
+    epoch: int
+    state: str
+    last_valid_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VisionTargetSelectionDTO:
+    target_person_id: str
+    epoch: int
+    state: str
+
+
+@dataclass(frozen=True, slots=True)
+class VisionCandidateDTO:
+    candidate_id: str
+    bbox: tuple[float, float, float, float]
+    confidence: float
+    detected_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class VisionObservationsPageDTO:
+    observations: tuple[VisionObservationDTO, ...]
+    next_cursor: str | None
+    has_more: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,32 +175,37 @@ def map_reason_code_to_pause_reason(reason_code: str) -> PauseReason | None:
 
 
 class VisionRestAdapter:
-    """Typed REST adapter for the external Vision microservice.
+    """Typed REST adapter for the external Vision microservice, aligned with
+    the canonical `/v1/analyses` contract (kinetiq-v-vision
+    `contracts/v1/rest-api.md`): create an analysis, list detected
+    candidates, confirm a target with `expected_epoch`, poll observations by
+    cursor, and delete the analysis.
 
     Features:
     - Deadlines and configurable connection/socket timeouts.
     - Automatic correlation ID and request ID propagation.
-    - Strict JSON Schema validation against versioned Draft 2020-12 contracts.
+    - Strict JSON Schema validation of observation payloads against the
+      versioned Draft 2020-12 contract.
+    - Typed exceptions for the contract's structured error codes
+      (STALE_EPOCH -> VisionStaleEpochError, CURSOR_EXPIRED ->
+      VisionCursorExpiredError, 404 -> VisionAnalysisNotFoundError).
     - Explicit reason code to domain PauseReason mapping.
     - Zero direct database access.
+
+    Capabilities (supported exercises/perspectives) are not served by this
+    adapter: the Vision service has no versioned `/v1/capabilities` REST
+    endpoint, and capabilities are instead read from the local pinned
+    fixture via `FileBasedVisionCapabilities`
+    (modules/catalog/infrastructure/vision_contract_adapter.py).
     """
 
     def __init__(
         self,
         config: VisionClientConfig | None = None,
         *,
-        capabilities_schema: dict[str, Any] | None = None,
         observation_schema: dict[str, Any] | None = None,
     ) -> None:
         self.config = config or VisionClientConfig()
-
-        if capabilities_schema is not None:
-            self._capabilities_schema = capabilities_schema
-        elif CAPABILITIES_SCHEMA_PATH.exists():
-            with open(CAPABILITIES_SCHEMA_PATH, encoding="utf-8") as f:
-                self._capabilities_schema = json.load(f)
-        else:
-            self._capabilities_schema = {}
 
         if observation_schema is not None:
             self._observation_schema = observation_schema
@@ -157,11 +215,6 @@ class VisionRestAdapter:
         else:
             self._observation_schema = {}
 
-        self._capabilities_validator = (
-            Draft202012Validator(self._capabilities_schema)
-            if self._capabilities_schema
-            else None
-        )
         self._observation_validator = (
             Draft202012Validator(self._observation_schema)
             if self._observation_schema
@@ -194,77 +247,147 @@ class VisionRestAdapter:
             with urllib.request.urlopen(req, timeout=self.config.timeout_seconds) as response:
                 body = response.read().decode("utf-8")
                 return json.loads(body) if body.strip() else {}
-        except (TimeoutError, socket.timeout) as err:
+        except TimeoutError as err:
             logger.error("Vision service timeout for %s %s (cid=%s): %s", method, url, cid, err)
-            raise VisionTimeoutError(f"Vision request to {path} timed out after {self.config.timeout_seconds}s") from err
+            raise VisionTimeoutError(
+                f"Vision request to {path} timed out after {self.config.timeout_seconds}s"
+            ) from err
         except urllib.error.HTTPError as err:
-            err_body = err.read().decode("utf-8") if hasattr(err, "read") else ""
-            logger.error("Vision service HTTP error %s for %s (cid=%s): %s", err.code, url, cid, err_body)
-            raise VisionHttpError(f"Vision service returned HTTP {err.code}: {err_body}", status_code=err.code) from err
+            err_body_raw = err.read().decode("utf-8") if hasattr(err, "read") else ""
+            logger.error(
+                "Vision service HTTP error %s for %s (cid=%s): %s", err.code, url, cid, err_body_raw
+            )
+            raise self._map_http_error(err.code, err_body_raw, path) from err
         except urllib.error.URLError as err:
             if isinstance(err.reason, (socket.timeout, TimeoutError)):
                 raise VisionTimeoutError(f"Vision request to {path} timed out") from err
             logger.error("Vision service connection failed for %s (cid=%s): %s", url, cid, err)
-            raise VisionConnectionError(f"Failed to connect to Vision service at {url}: {err.reason}") from err
+            raise VisionConnectionError(
+                f"Failed to connect to Vision service at {url}: {err.reason}"
+            ) from err
         except Exception as err:
-            logger.error("Unexpected error contacting Vision service %s (cid=%s): %s", url, cid, err)
+            logger.error(
+                "Unexpected error contacting Vision service %s (cid=%s): %s", url, cid, err
+            )
             raise VisionAdapterError(f"Unexpected vision error: {err}") from err
 
-    def validate_capabilities_payload(self, data: dict[str, Any]) -> VisionCapabilitiesDTO:
-        """Validate raw dictionary against capabilities schema and return strongly-typed DTO."""
-        if self._capabilities_validator:
-            errors = list(self._capabilities_validator.iter_errors(data))
-            if errors:
-                raise VisionSchemaValidationError(
-                    f"Capabilities payload failed schema validation: {[e.message for e in errors]}"
-                )
+    @staticmethod
+    def _map_http_error(status_code: int, body: str, path: str) -> VisionAdapterError:
+        """Map the contract's structured error envelope
 
-        supported_exercises = tuple(
-            VisionSupportedExerciseDTO(
-                exercise_key=item["exercise_key"],
-                version=item["version"],
-                name=item["name"],
-                analysis_type=item["analysis_type"],
-                supported_metrics=tuple(item["supported_metrics"]),
-                required_visibility=item["required_visibility"],
+        (`{"error": {"code", "message", "details", ...}}`) to a specific
+        typed exception where one is defined, falling back to the generic
+        `VisionHttpError` otherwise.
+        """
+        error_obj: dict[str, Any] = {}
+        try:
+            parsed = json.loads(body) if body.strip() else {}
+            error_obj = parsed.get("error", {}) if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+        code = error_obj.get("code")
+        message = error_obj.get("message") or f"Vision service returned HTTP {status_code}: {body}"
+        details = error_obj.get("details") or {}
+
+        if status_code == 404:
+            analysis_id = details.get("analysis_id") or path.rsplit("/", 1)[-1]
+            return VisionAnalysisNotFoundError(str(analysis_id))
+        if code == "STALE_EPOCH":
+            return VisionStaleEpochError(
+                message,
+                expected_epoch=details.get("expected_epoch"),
+                current_epoch=details.get("current_epoch"),
             )
-            for item in data.get("supported_exercises", [])
-        )
+        if code == "CURSOR_EXPIRED" or status_code == 410:
+            return VisionCursorExpiredError(
+                message,
+                requested_cursor=details.get("requested_cursor", ""),
+                oldest_cursor=details.get("oldest_cursor"),
+            )
+        return VisionHttpError(message, status_code=status_code)
 
-        return VisionCapabilitiesDTO(
-            service=data["service"],
-            contract_version=data["contract_version"],
-            supported_target_modes=tuple(data.get("supported_target_modes", [])),
-            supported_camera_perspectives=tuple(data.get("supported_camera_perspectives", [])),
-            supported_exercises=supported_exercises,
-        )
-
-    def fetch_capabilities(self, correlation_id: str | None = None) -> VisionCapabilitiesDTO:
-        data = self._execute_http("GET", "/v1/capabilities", correlation_id=correlation_id)
-        return self.validate_capabilities_payload(data)
-
-    def start_session_analysis(
+    def create_analysis(
         self,
         *,
         session_id: UUID,
-        target_person_id: str,
+        source_id: str,
         exercise_key: str,
-        exercise_version: int,
-        epoch: int = 1,
+        exercise_version: int = 1,
+        idempotency_key: str | None = None,
         correlation_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> VisionAnalysisDTO:
         payload = {
             "session_id": str(session_id),
-            "target_person_id": target_person_id,
+            "source_id": source_id,
             "exercise_key": exercise_key,
             "exercise_version": exercise_version,
-            "epoch": epoch,
+            "idempotency_key": idempotency_key,
         }
-        return self._execute_http(
+        data = self._execute_http(
+            "POST", "/v1/analyses", payload=payload, correlation_id=correlation_id
+        )
+        return VisionAnalysisDTO(
+            analysis_id=data["analysis_id"],
+            session_id=data["session_id"],
+            epoch=data["epoch"],
+            state=data["state"],
+        )
+
+    def select_target(
+        self,
+        *,
+        analysis_id: str,
+        candidate_id: str,
+        expected_epoch: int,
+        idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+    ) -> VisionTargetSelectionDTO:
+        payload = {
+            "candidate_id": candidate_id,
+            "expected_epoch": expected_epoch,
+            "idempotency_key": idempotency_key,
+        }
+        data = self._execute_http(
             "POST",
-            f"/v1/sessions/{session_id}/analysis",
+            f"/v1/analyses/{analysis_id}/target",
             payload=payload,
             correlation_id=correlation_id,
+        )
+        return VisionTargetSelectionDTO(
+            target_person_id=data["target_person_id"],
+            epoch=data["epoch"],
+            state=data["state"],
+        )
+
+    def get_analysis_status(
+        self, *, analysis_id: str, correlation_id: str | None = None
+    ) -> VisionAnalysisStatusDTO:
+        data = self._execute_http(
+            "GET", f"/v1/analyses/{analysis_id}", correlation_id=correlation_id
+        )
+        return VisionAnalysisStatusDTO(
+            analysis_id=data["analysis_id"],
+            session_id=data["session_id"],
+            epoch=data["epoch"],
+            state=data["state"],
+            last_valid_at=data.get("last_valid_at"),
+        )
+
+    def list_candidates(
+        self, *, analysis_id: str, correlation_id: str | None = None
+    ) -> tuple[VisionCandidateDTO, ...]:
+        data = self._execute_http(
+            "GET", f"/v1/analyses/{analysis_id}/candidates", correlation_id=correlation_id
+        )
+        return tuple(
+            VisionCandidateDTO(
+                candidate_id=c["candidate_id"],
+                bbox=tuple(c["bbox"]),
+                confidence=c["confidence"],
+                detected_at=c["detected_at"],
+            )
+            for c in data.get("candidates", [])
         )
 
     def validate_observation_payload(self, data: dict[str, Any]) -> VisionObservationDTO:
@@ -300,7 +423,7 @@ class VisionRestAdapter:
             )
 
         return VisionObservationDTO(
-            session_id=UUID(data["session_id"]),
+            session_id=data["session_id"],
             epoch=data["epoch"],
             sequence=data["sequence"],
             timestamp_utc=data["timestamp_utc"],
@@ -314,29 +437,34 @@ class VisionRestAdapter:
             hold=hold,
         )
 
-    def fetch_observation(
+    def poll_observations(
         self,
         *,
-        session_id: UUID,
+        analysis_id: str,
+        after_cursor: str | None = None,
+        limit: int = 50,
         correlation_id: str | None = None,
-    ) -> VisionObservationDTO:
+    ) -> VisionObservationsPageDTO:
+        query = f"limit={limit}"
+        if after_cursor:
+            query += f"&after={after_cursor}"
         data = self._execute_http(
             "GET",
-            f"/v1/sessions/{session_id}/observation",
+            f"/v1/analyses/{analysis_id}/observations?{query}",
             correlation_id=correlation_id,
         )
-        return self.validate_observation_payload(data)
+        observations = tuple(
+            self.validate_observation_payload(obs) for obs in data.get("observations", [])
+        )
+        return VisionObservationsPageDTO(
+            observations=observations,
+            next_cursor=data.get("next_cursor"),
+            has_more=bool(data.get("has_more", False)),
+        )
 
-    def stop_session_analysis(
-        self,
-        *,
-        session_id: UUID,
-        correlation_id: str | None = None,
-    ) -> bool:
-        result = self._execute_http(
-            "POST",
-            f"/v1/sessions/{session_id}/analysis/stop",
-            payload={"session_id": str(session_id)},
-            correlation_id=correlation_id,
+    def delete_analysis(
+        self, *, analysis_id: str, correlation_id: str | None = None
+    ) -> None:
+        self._execute_http(
+            "DELETE", f"/v1/analyses/{analysis_id}", correlation_id=correlation_id
         )
-        return bool(result.get("stopped", True))

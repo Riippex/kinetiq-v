@@ -1,3 +1,11 @@
+// MOCK / DEMO SCREEN -- not wired to a real backend.
+//
+// There is no pairing-code issuance or session-state API anywhere in
+// kinetiq-v yet: `pairDisplay`/`startSession` below only flip local
+// component state, they never call GraphQL or any pairing service. The
+// "FIRE-7892" pairing code and the initial session data are hardcoded.
+// KV-404 reflects this: it is Ready (mock UI only), not Verified, until a
+// real pairing/session-state backend exists and this screen calls it.
 import {StatusBar} from 'expo-status-bar';
 import {
   sessionIntensities,
@@ -67,6 +75,7 @@ export default function App() {
       <View style={styles.screen} testID="live-session-screen">
         <StatusBar hidden />
         <View style={styles.copy}>
+          <MockBanner />
           <Text style={styles.eyebrow}>KINETIQ V · FIRE TV LIVE</Text>
           <Text style={styles.title}>{session.activeExercise}</Text>
           <Text style={styles.description}>
@@ -108,6 +117,7 @@ export default function App() {
       <View style={styles.screen} testID="pairing-screen">
         <StatusBar hidden />
         <View style={styles.copy}>
+          <MockBanner />
           <Text style={styles.eyebrow}>DISPLAY PAIRING</Text>
           <Text style={styles.title}>Pair with phone</Text>
           <Text style={styles.description}>
@@ -187,6 +197,14 @@ export default function App() {
   );
 }
 
+function MockBanner() {
+  return (
+    <View style={styles.mockBanner} testID="mock-banner">
+      <Text style={styles.mockBannerText}>DEMO MODE — not connected to a live session</Text>
+    </View>
+  );
+}
+
 function Choice({
   label,
   selected,
@@ -235,6 +253,17 @@ function FocusableButton({
 const styles = StyleSheet.create({
   screen: {flex: 1, flexDirection: 'row', backgroundColor: '#070B14', padding: 72, gap: 72},
   copy: {flex: 1, justifyContent: 'center'},
+  mockBanner: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#3B0764',
+    borderWidth: 2,
+    borderColor: '#C084FC',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+  },
+  mockBannerText: {color: '#E9D5FF', fontSize: 14, fontWeight: '800', letterSpacing: 1},
   eyebrow: {color: '#A3FF12', fontSize: 18, fontWeight: '800', letterSpacing: 3},
   title: {color: '#F4F7FB', fontSize: 64, fontWeight: '700', marginTop: 20},
   description: {color: '#9CA3AF', fontSize: 24, lineHeight: 34, marginTop: 24, maxWidth: 720},

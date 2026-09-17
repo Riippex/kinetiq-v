@@ -1,10 +1,12 @@
-from collections.abc import Callable
+import json
+from collections.abc import AsyncGenerator, Callable
 from datetime import datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
 import strawberry
+from django.conf import settings
 from strawberry.types import Info
 
 from kinetiq.bootstrap.container import (
@@ -34,6 +36,7 @@ from kinetiq.bootstrap.container import (
 from kinetiq.modules.catalog.domain.entities import Exercise
 from kinetiq.modules.goals.application import SetGoalCommand
 from kinetiq.modules.goals.domain import GoalRevision
+from kinetiq.modules.integrations.vision_adapter import VisionAdapterError, VisionStaleEpochError
 from kinetiq.modules.profiles.application import UpdateProfileCommand
 from kinetiq.modules.profiles.domain import ExperienceLevel, UserProfile
 from kinetiq.modules.routines.application import EditRoutineCommand, RoutineEditItem
@@ -58,6 +61,7 @@ from kinetiq.modules.workouts.application import (
     SessionNotFound,
     TransientSessionUpdate,
     UnknownRoutineExerciseError,
+    UnknownVisionCandidateError,
 )
 from kinetiq.modules.workouts.domain import (
     CoachingTone,
@@ -86,6 +90,13 @@ class ExperienceLevelType(Enum):
 class SessionModeType(Enum):
     NORMAL = "NORMAL"
     DYNAMIC = "DYNAMIC"
+
+
+@strawberry.enum(name="VisibilityStatus")
+class VisibilityStatusType(Enum):
+    VISIBLE = "VISIBLE"
+    PARTIALLY_VISIBLE = "PARTIALLY_VISIBLE"
+    NOT_VISIBLE = "NOT_VISIBLE"
 
 
 @strawberry.enum(name="SessionIntensity")
@@ -389,7 +400,7 @@ class TransientSessionUpdateType:
     current_repetitions: int | None = None
     current_duration_seconds: int | None = None
     pose_confidence: float | None = None
-    visibility_status: str = "VISIBLE"
+    visibility_status: VisibilityStatusType = VisibilityStatusType.VISIBLE
     timestamp: str | None = None
 
 
@@ -400,7 +411,7 @@ class TransientSessionUpdateInput:
     current_repetitions: int | None = None
     current_duration_seconds: int | None = None
     pose_confidence: float | None = None
-    visibility_status: str = "VISIBLE"
+    visibility_status: VisibilityStatusType = VisibilityStatusType.VISIBLE
     timestamp: str | None = None
 
 
@@ -529,7 +540,7 @@ class Query:
             current_repetitions=update.current_repetitions,
             current_duration_seconds=update.current_duration_seconds,
             pose_confidence=update.pose_confidence,
-            visibility_status=update.visibility_status,
+            visibility_status=VisibilityStatusType(update.visibility_status),
             timestamp=update.timestamp,
         )
 
@@ -833,6 +844,12 @@ class Mutation:
             return _failure("IDEMPOTENCY_CONFLICT", str(error), "idempotencyKey")
         except InvalidSessionStateTransition as error:
             return _failure("INVALID_SESSION_STATE", str(error))
+        except UnknownVisionCandidateError as error:
+            return _failure("UNKNOWN_VISION_CANDIDATE", str(error), "targetPersonId")
+        except VisionStaleEpochError as error:
+            return _failure("VISION_STALE_EPOCH", str(error))
+        except VisionAdapterError as error:
+            return _failure("VISION_UNAVAILABLE", str(error))
         except (ValueError, TypeError) as error:
             return _failure("INVALID_INPUT", str(error))
 
@@ -1027,15 +1044,44 @@ class Mutation:
                 ],
             )
 
-        update = TransientSessionUpdate(
-            session_id=session_uuid,
-            active_exercise_id=str(input.active_exercise_id) if input.active_exercise_id else None,
-            current_repetitions=input.current_repetitions,
-            current_duration_seconds=input.current_duration_seconds,
-            pose_confidence=input.pose_confidence,
-            visibility_status=input.visibility_status,
-            timestamp=input.timestamp,
-        )
+        # Transient updates describe what Vision is currently observing for
+        # this session's confirmed target; a session with no confirmed
+        # target has no Vision observation source that could have produced
+        # these values, so publishing here is refused rather than letting
+        # an arbitrary client-supplied progress snapshot stand in for one.
+        if session.target_person_id is None:
+            return TransientSessionUpdateResultType(
+                success=False,
+                errors=[
+                    DomainError(
+                        code="NO_CONFIRMED_TARGET",
+                        message=(
+                            "Cannot publish transient updates before a target person "
+                            "has been confirmed via confirmSessionTarget"
+                        ),
+                        field="sessionId",
+                    )
+                ],
+            )
+
+        try:
+            update = TransientSessionUpdate(
+                session_id=session_uuid,
+                active_exercise_id=(
+                    str(input.active_exercise_id) if input.active_exercise_id else None
+                ),
+                current_repetitions=input.current_repetitions,
+                current_duration_seconds=input.current_duration_seconds,
+                pose_confidence=input.pose_confidence,
+                visibility_status=input.visibility_status.value,
+                timestamp=input.timestamp,
+            )
+        except ValueError as error:
+            return TransientSessionUpdateResultType(
+                success=False,
+                errors=[DomainError(code="INVALID_INPUT", message=str(error))],
+            )
+
         success = get_session_transient_store().publish_transient_update(update)
         return TransientSessionUpdateResultType(success=success, errors=[])
 
@@ -1342,4 +1388,85 @@ def _failure(code: str, message: str, field: str | None = None) -> SessionResult
     )
 
 
-schema = strawberry.Schema(query=Query, mutation=Mutation)
+@strawberry.type
+class Subscription:
+    """The intended fan-out path for live transient session progress:
+    clients subscribe to receive server-validated updates rather than each
+    other publishing arbitrary values via `publishTransientSessionUpdate`.
+    Reuses the same Redis Pub/Sub channel `RedisSessionTransientStore`
+    already publishes validated `TransientSessionUpdate`s to.
+
+    Disclosed limitation: this resolver is not yet reachable by a real
+    client. The GraphQL endpoint is served synchronously via
+    `strawberry.django.views.GraphQLView` over plain HTTP
+    (bootstrap/urls.py); GraphQL subscriptions need a websocket transport,
+    and wiring one (an ASGI websocket route/consumer) is a separate,
+    substantial infrastructure change not made in this pass. This is
+    unit-testable directly against the schema (as a query/mutation would
+    be) without that transport.
+    """
+
+    @strawberry.subscription
+    async def transient_session_updates(
+        self, info: Info[Any, None], session_id: strawberry.ID
+    ) -> AsyncGenerator[TransientSessionUpdateType, None]:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError(
+                "AUTHENTICATION_REQUIRED: Sign in before subscribing to transient session updates"
+            )
+
+        try:
+            session_uuid = UUID(str(session_id))
+        except (ValueError, TypeError) as error:
+            raise ValueError(f"Invalid session ID: {error}") from error
+
+        from asgiref.sync import sync_to_async
+
+        # get_workout_session() hits the Django ORM synchronously; this
+        # resolver is an async generator (subscriptions require one), so the
+        # lookup must be dispatched to a worker thread rather than called
+        # directly -- Django refuses synchronous DB access from an async
+        # context outright.
+        session = await sync_to_async(get_workout_session().execute)(
+            owner_id=owner_id, session_id=session_uuid
+        )
+        if session is None:
+            raise ValueError(f"Workout session '{session_uuid}' not found")
+
+        import redis.asyncio as aioredis
+
+        channel = f"kinetiq:session:{session_uuid}:stream"
+        redis_client = aioredis.Redis.from_url(settings.REDIS_URL)
+        pubsub = redis_client.pubsub()
+        try:
+            await pubsub.subscribe(channel)
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                try:
+                    payload = json.loads(message["data"])
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    continue
+                yield TransientSessionUpdateType(
+                    session_id=strawberry.ID(str(payload.get("session_id", session_uuid))),
+                    active_exercise_id=(
+                        strawberry.ID(payload["active_exercise_id"])
+                        if payload.get("active_exercise_id")
+                        else None
+                    ),
+                    current_repetitions=payload.get("current_repetitions"),
+                    current_duration_seconds=payload.get("current_duration_seconds"),
+                    pose_confidence=payload.get("pose_confidence"),
+                    visibility_status=VisibilityStatusType(
+                        payload.get("visibility_status", "VISIBLE")
+                    ),
+                    timestamp=payload.get("timestamp"),
+                )
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
+            await redis_client.aclose()
+
+
+schema = strawberry.Schema(query=Query, mutation=Mutation, subscription=Subscription)

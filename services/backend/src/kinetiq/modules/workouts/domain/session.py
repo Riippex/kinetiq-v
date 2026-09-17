@@ -166,6 +166,13 @@ class WorkoutSession:
     observation_coverage: ObservationCoverage | None = None
     feedback: SessionFeedback | None = None
     target_person_id: str | None = None
+    # Vision analysis context (kinetiq-v-vision `/v1/analyses`): tracked so
+    # confirmSessionTarget and later target reconfirmation can address the
+    # same analysis and detect a stale epoch rather than blindly persisting
+    # a client-supplied target_person_id with no Vision-side association.
+    vision_analysis_id: str | None = None
+    vision_epoch: int | None = None
+    vision_observation_cursor: str | None = None
     updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
@@ -204,7 +211,13 @@ class WorkoutSession:
             target_person_id=None,
         )
 
-    def confirm_target(self, target_person_id: str) -> WorkoutSession:
+    def confirm_target(
+        self,
+        target_person_id: str,
+        *,
+        vision_analysis_id: str | None = None,
+        vision_epoch: int | None = None,
+    ) -> WorkoutSession:
         if not target_person_id.strip():
             raise ValueError("Target person ID cannot be empty")
         if self.state in (SessionState.COMPLETED, SessionState.ABANDONED):
@@ -212,6 +225,10 @@ class WorkoutSession:
         return replace(
             self,
             target_person_id=target_person_id,
+            vision_analysis_id=(
+                vision_analysis_id if vision_analysis_id is not None else self.vision_analysis_id
+            ),
+            vision_epoch=vision_epoch if vision_epoch is not None else self.vision_epoch,
             revision=self.revision + 1,
         )
 

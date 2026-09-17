@@ -1,8 +1,5 @@
 import io
 import json
-import os
-import socket
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -10,12 +7,15 @@ from urllib.error import HTTPError, URLError
 from uuid import uuid4
 
 from kinetiq.modules.integrations.vision_adapter import (
+    VisionAnalysisNotFoundError,
     VisionClientConfig,
     VisionConnectionError,
+    VisionCursorExpiredError,
     VisionHttpError,
     VisionObservationDTO,
     VisionRestAdapter,
     VisionSchemaValidationError,
+    VisionStaleEpochError,
     VisionTimeoutError,
     map_reason_code_to_pause_reason,
 )
@@ -25,24 +25,32 @@ from kinetiq.modules.workouts.domain import PauseReason
 def _load_fixture(relative_path: str) -> dict:
     base_dir = Path(__file__).resolve().parents[4] / "contracts" / "vision" / "v1" / "fixtures"
     fixture_file = base_dir / relative_path
-    with open(fixture_file, "r", encoding="utf-8") as f:
+    with open(fixture_file, encoding="utf-8") as f:
         return json.load(f)
 
 
-class VisionRestAdapterSchemaValidationTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.config = VisionClientConfig(
-            base_url="http://localhost:8080",
-            timeout_seconds=2.0,
-        )
-        self.adapter = VisionRestAdapter(config=self.config)
+def _mock_response(payload: dict | list | None) -> MagicMock:
+    body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else b""
+    mock_response = MagicMock()
+    mock_response.read.return_value = body_bytes
+    mock_response.__enter__.return_value = mock_response
+    return mock_response
 
-    def test_validate_positive_capabilities_fixture(self) -> None:
-        payload = _load_fixture("capabilities.v1.json")
-        validated = self.adapter.validate_capabilities_payload(payload)
-        self.assertEqual("1.0.0", validated.contract_version)
-        exercise_keys = [ex.exercise_key for ex in validated.supported_exercises]
-        self.assertIn("bodyweight_squat", exercise_keys)
+
+def _http_error(url: str, code: int, error_body: dict) -> HTTPError:
+    fp = io.BytesIO(json.dumps(error_body).encode("utf-8"))
+    return HTTPError(url=url, code=code, msg="error", hdrs={}, fp=fp)
+
+
+class VisionObservationSchemaValidationTests(unittest.TestCase):
+    """Observation payload validation is the only schema validation this
+    adapter still performs: Vision has no versioned /v1/capabilities REST
+    endpoint, so capabilities are read from a local pinned fixture via
+    FileBasedVisionCapabilities instead (see vision_contract_adapter.py)."""
+
+    def setUp(self) -> None:
+        self.config = VisionClientConfig(base_url="http://localhost:8080", timeout_seconds=2.0)
+        self.adapter = VisionRestAdapter(config=self.config)
 
     def test_validate_positive_observation_fixtures(self) -> None:
         positive_files = [
@@ -56,7 +64,7 @@ class VisionRestAdapterSchemaValidationTests(unittest.TestCase):
                 payload = _load_fixture(filename)
                 dto = self.adapter.validate_observation_payload(payload)
                 self.assertIsInstance(dto, VisionObservationDTO)
-                self.assertEqual(payload["session_id"], str(dto.session_id))
+                self.assertEqual(payload["session_id"], dto.session_id)
                 self.assertEqual(payload["tracking_state"], dto.tracking_state)
                 self.assertEqual(payload["reason_code"], dto.reason_code)
 
@@ -74,93 +82,212 @@ class VisionRestAdapterSchemaValidationTests(unittest.TestCase):
 
         for file_path in negative_files:
             with self.subTest(negative_fixture=file_path.name):
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(file_path, encoding="utf-8") as f:
                     payload = json.load(f)
                 with self.assertRaises(VisionSchemaValidationError):
                     self.adapter.validate_observation_payload(payload)
 
 
-class VisionRestAdapterHttpTests(unittest.TestCase):
+class VisionRestAdapterAnalysesRoutesTests(unittest.TestCase):
+    """Exercises every canonical /v1/analyses route from
+    kinetiq-v-vision's contracts/v1/rest-api.md, verifying both the exact
+    HTTP request shape and the parsed response DTO."""
+
     def setUp(self) -> None:
         self.config = VisionClientConfig(
-            base_url="http://vision-service.local:8080",
-            timeout_seconds=3.5,
+            base_url="http://vision-service.local:8080", timeout_seconds=3.5
         )
         self.adapter = VisionRestAdapter(config=self.config)
 
     @patch("urllib.request.urlopen")
-    def test_fetch_capabilities_passes_headers_and_returns_dto(self, mock_urlopen) -> None:
-        payload = _load_fixture("capabilities.v1.json")
-        body_bytes = json.dumps(payload).encode("utf-8")
-        mock_response = MagicMock()
-        mock_response.read.return_value = body_bytes
-        mock_response.__enter__.return_value = mock_response
-        mock_urlopen.return_value = mock_response
+    def test_create_analysis_posts_to_v1_analyses(self, mock_urlopen) -> None:
+        session_id = uuid4()
+        mock_urlopen.return_value = _mock_response(
+            {
+                "analysis_id": "an_1",
+                "session_id": str(session_id),
+                "epoch": 1,
+                "state": "AWAITING_SELECTION",
+            }
+        )
 
-        correlation_id = "corr-12345"
-        dto = self.adapter.fetch_capabilities(correlation_id=correlation_id)
+        dto = self.adapter.create_analysis(
+            session_id=session_id,
+            source_id="camera-front",
+            exercise_key="bodyweight_squat",
+            exercise_version=1,
+            idempotency_key="idem-1",
+        )
 
-        self.assertEqual("1.0.0", dto.contract_version)
-        self.assertTrue(mock_urlopen.called)
+        self.assertEqual("an_1", dto.analysis_id)
+        self.assertEqual(1, dto.epoch)
+        self.assertEqual("AWAITING_SELECTION", dto.state)
+
         req = mock_urlopen.call_args[0][0]
-        self.assertEqual("http://vision-service.local:8080/v1/capabilities", req.full_url)
-        self.assertEqual(correlation_id, req.headers["X-correlation-id"])
-        self.assertIn("X-request-id", req.headers)
-        self.assertEqual(3.5, mock_urlopen.call_args[1]["timeout"])
+        self.assertEqual("POST", req.get_method())
+        self.assertEqual("http://vision-service.local:8080/v1/analyses", req.full_url)
+        body = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(str(session_id), body["session_id"])
+        self.assertEqual("camera-front", body["source_id"])
+        self.assertEqual("bodyweight_squat", body["exercise_key"])
+        self.assertEqual("idem-1", body["idempotency_key"])
 
     @patch("urllib.request.urlopen")
-    def test_fetch_observation_passes_headers_and_validates(self, mock_urlopen) -> None:
-        payload = _load_fixture("observation_repetition.v1.json")
-        session_id = payload["session_id"]
-        body_bytes = json.dumps(payload).encode("utf-8")
-        mock_response = MagicMock()
-        mock_response.read.return_value = body_bytes
-        mock_response.__enter__.return_value = mock_response
-        mock_urlopen.return_value = mock_response
+    def test_select_target_posts_expected_epoch(self, mock_urlopen) -> None:
+        mock_urlopen.return_value = _mock_response(
+            {"target_person_id": "cand_1", "epoch": 1, "state": "TRACKING"}
+        )
 
-        dto = self.adapter.fetch_observation(session_id=session_id)
+        dto = self.adapter.select_target(
+            analysis_id="an_1", candidate_id="cand_1", expected_epoch=1
+        )
 
-        self.assertEqual(session_id, str(dto.session_id))
-        self.assertEqual("CONFIRMED", dto.tracking_state)
-        self.assertEqual(2, len(dto.repetitions))
-        self.assertEqual("person_track_01", dto.target_person_id)
+        self.assertEqual("cand_1", dto.target_person_id)
+        self.assertEqual("TRACKING", dto.state)
+
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual("POST", req.get_method())
+        self.assertEqual(
+            "http://vision-service.local:8080/v1/analyses/an_1/target", req.full_url
+        )
+        body = json.loads(req.data.decode("utf-8"))
+        self.assertEqual("cand_1", body["candidate_id"])
+        self.assertEqual(1, body["expected_epoch"])
+
+    @patch("urllib.request.urlopen")
+    def test_select_target_stale_epoch_raises_typed_error(self, mock_urlopen) -> None:
+        mock_urlopen.side_effect = _http_error(
+            "http://vision-service.local:8080/v1/analyses/an_1/target",
+            409,
+            {
+                "error": {
+                    "code": "STALE_EPOCH",
+                    "message": "Expected epoch 1 does not match active epoch 2",
+                    "details": {"expected_epoch": 1, "current_epoch": 2},
+                }
+            },
+        )
+
+        with self.assertRaises(VisionStaleEpochError) as ctx:
+            self.adapter.select_target(analysis_id="an_1", candidate_id="cand_1", expected_epoch=1)
+        self.assertEqual(1, ctx.exception.expected_epoch)
+        self.assertEqual(2, ctx.exception.current_epoch)
+
+    @patch("urllib.request.urlopen")
+    def test_get_analysis_status_not_found_raises_typed_error(self, mock_urlopen) -> None:
+        mock_urlopen.side_effect = _http_error(
+            "http://vision-service.local:8080/v1/analyses/missing",
+            404,
+            {"error": {"code": "NOT_FOUND", "message": "not found", "details": {}}},
+        )
+
+        with self.assertRaises(VisionAnalysisNotFoundError) as ctx:
+            self.adapter.get_analysis_status(analysis_id="missing")
+        self.assertEqual("missing", ctx.exception.analysis_id)
+
+    @patch("urllib.request.urlopen")
+    def test_list_candidates_parses_bbox_and_confidence(self, mock_urlopen) -> None:
+        mock_urlopen.return_value = _mock_response(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "cand_1",
+                        "bbox": [0.1, 0.2, 0.3, 0.4],
+                        "confidence": 0.91,
+                        "detected_at": "2026-09-17T00:00:00Z",
+                    }
+                ]
+            }
+        )
+
+        candidates = self.adapter.list_candidates(analysis_id="an_1")
+
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("cand_1", candidates[0].candidate_id)
+        self.assertEqual((0.1, 0.2, 0.3, 0.4), candidates[0].bbox)
+        self.assertEqual(0.91, candidates[0].confidence)
 
         req = mock_urlopen.call_args[0][0]
         self.assertEqual(
-            f"http://vision-service.local:8080/v1/sessions/{session_id}/observation",
-            req.full_url,
+            "http://vision-service.local:8080/v1/analyses/an_1/candidates", req.full_url
         )
-        self.assertIn("X-correlation-id", req.headers)
-        self.assertIn("X-request-id", req.headers)
 
     @patch("urllib.request.urlopen")
-    def test_http_error_surfaces_vision_http_error(self, mock_urlopen) -> None:
-        fp = io.BytesIO(b'{"error": "Internal Server Error"}')
-        mock_urlopen.side_effect = HTTPError(
-            url="http://vision-service.local:8080/v1/capabilities",
-            code=500,
-            msg="Server Error",
-            hdrs={},
-            fp=fp,
+    def test_poll_observations_passes_cursor_and_limit_and_validates(self, mock_urlopen) -> None:
+        obs_payload = _load_fixture("observation_repetition.v1.json")
+        mock_urlopen.return_value = _mock_response(
+            {"observations": [obs_payload], "next_cursor": "1:2", "has_more": False}
+        )
+
+        page = self.adapter.poll_observations(analysis_id="an_1", after_cursor="1:1", limit=10)
+
+        self.assertEqual(1, len(page.observations))
+        self.assertEqual("1:2", page.next_cursor)
+        self.assertFalse(page.has_more)
+
+        req = mock_urlopen.call_args[0][0]
+        self.assertIn("/v1/analyses/an_1/observations?", req.full_url)
+        self.assertIn("after=1:1", req.full_url)
+        self.assertIn("limit=10", req.full_url)
+
+    @patch("urllib.request.urlopen")
+    def test_poll_observations_cursor_expired_raises_typed_error(self, mock_urlopen) -> None:
+        mock_urlopen.side_effect = _http_error(
+            "http://vision-service.local:8080/v1/analyses/an_1/observations",
+            410,
+            {
+                "error": {
+                    "code": "CURSOR_EXPIRED",
+                    "message": "cursor expired",
+                    "details": {"requested_cursor": "1:1", "oldest_cursor": "1:50"},
+                }
+            },
+        )
+
+        with self.assertRaises(VisionCursorExpiredError) as ctx:
+            self.adapter.poll_observations(analysis_id="an_1", after_cursor="1:1")
+        self.assertEqual("1:1", ctx.exception.requested_cursor)
+        self.assertEqual("1:50", ctx.exception.oldest_cursor)
+
+    @patch("urllib.request.urlopen")
+    def test_delete_analysis_sends_delete(self, mock_urlopen) -> None:
+        mock_urlopen.return_value = _mock_response(None)
+
+        self.adapter.delete_analysis(analysis_id="an_1")
+
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual("DELETE", req.get_method())
+        self.assertEqual(
+            "http://vision-service.local:8080/v1/analyses/an_1", req.full_url
+        )
+
+    @patch("urllib.request.urlopen")
+    def test_generic_http_error_falls_back_to_vision_http_error(self, mock_urlopen) -> None:
+        mock_urlopen.side_effect = _http_error(
+            "http://vision-service.local:8080/v1/analyses",
+            500,
+            {"error": {"code": "INTERNAL", "message": "boom", "details": {}}},
         )
 
         with self.assertRaises(VisionHttpError) as ctx:
-            self.adapter.fetch_capabilities()
+            self.adapter.create_analysis(
+                session_id=uuid4(), source_id="cam", exercise_key="bodyweight_squat"
+            )
         self.assertEqual(500, ctx.exception.status_code)
 
     @patch("urllib.request.urlopen")
     def test_timeout_surfaces_vision_timeout_error(self, mock_urlopen) -> None:
-        mock_urlopen.side_effect = URLError(socket.timeout("timed out"))
+        mock_urlopen.side_effect = URLError(TimeoutError("timed out"))
 
         with self.assertRaises(VisionTimeoutError):
-            self.adapter.fetch_observation(session_id=uuid4())
+            self.adapter.get_analysis_status(analysis_id="an_1")
 
     @patch("urllib.request.urlopen")
     def test_connection_failure_surfaces_vision_connection_error(self, mock_urlopen) -> None:
         mock_urlopen.side_effect = URLError(ConnectionRefusedError("Connection refused"))
 
         with self.assertRaises(VisionConnectionError):
-            self.adapter.fetch_capabilities()
+            self.adapter.get_analysis_status(analysis_id="an_1")
 
 
 class ReasonCodeMappingTests(unittest.TestCase):

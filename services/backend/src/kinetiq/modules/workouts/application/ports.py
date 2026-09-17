@@ -64,6 +64,75 @@ class RoutineItemLookup(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class VisionCandidateInfo:
+    candidate_id: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class VisionAnalysisHandle:
+    analysis_id: str
+    epoch: int
+    state: str
+
+
+@dataclass(frozen=True, slots=True)
+class VisionTargetConfirmation:
+    target_person_id: str
+    epoch: int
+    state: str
+
+
+class UnknownVisionCandidateError(ValueError):
+    """Raised when a client attempts to confirm a candidate_id that is not
+    among the currently detected candidates for the active Vision analysis
+    -- i.e. an arbitrary string rather than a real, Vision-detected person."""
+
+    def __init__(self, candidate_id: str, analysis_id: str) -> None:
+        super().__init__(
+            f"Candidate '{candidate_id}' is not among the detected candidates "
+            f"for Vision analysis '{analysis_id}'"
+        )
+        self.candidate_id = candidate_id
+        self.analysis_id = analysis_id
+
+
+class VisionSessionAnalysisPort(Protocol):
+    """Read/write boundary onto the Vision service's canonical
+    `/v1/analyses` REST contract, scoped to exactly what session target
+    confirmation needs: create-or-reuse an analysis context for the
+    session's capture device, list its currently detected candidates, and
+    confirm one of them as the session's target.
+    """
+
+    def create_analysis(
+        self,
+        *,
+        session_id: UUID,
+        source_id: str,
+        exercise_key: str,
+        exercise_version: int,
+        idempotency_key: str,
+    ) -> VisionAnalysisHandle: ...
+
+    def list_candidates(self, *, analysis_id: str) -> tuple[VisionCandidateInfo, ...]: ...
+
+    def select_target(
+        self,
+        *,
+        analysis_id: str,
+        candidate_id: str,
+        expected_epoch: int,
+        idempotency_key: str,
+    ) -> VisionTargetConfirmation: ...
+
+
+VISIBILITY_STATUSES = frozenset({"VISIBLE", "PARTIALLY_VISIBLE", "NOT_VISIBLE"})
+MAX_PLAUSIBLE_REPETITIONS = 10_000
+MAX_PLAUSIBLE_DURATION_SECONDS = 86_400  # 24h: generous upper bound, not a real session length
+
+
+@dataclass(frozen=True, slots=True)
 class TransientSessionUpdate:
     session_id: UUID
     active_exercise_id: str | None = None
@@ -72,6 +141,27 @@ class TransientSessionUpdate:
     pose_confidence: float | None = None
     visibility_status: str = "VISIBLE"
     timestamp: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.current_repetitions is not None and not (
+            0 <= self.current_repetitions <= MAX_PLAUSIBLE_REPETITIONS
+        ):
+            raise ValueError(
+                f"current_repetitions must be between 0 and {MAX_PLAUSIBLE_REPETITIONS}"
+            )
+        if self.current_duration_seconds is not None and not (
+            0 <= self.current_duration_seconds <= MAX_PLAUSIBLE_DURATION_SECONDS
+        ):
+            raise ValueError(
+                f"current_duration_seconds must be between 0 and {MAX_PLAUSIBLE_DURATION_SECONDS}"
+            )
+        if self.pose_confidence is not None and not (0.0 <= self.pose_confidence <= 1.0):
+            raise ValueError("pose_confidence must be between 0.0 and 1.0")
+        if self.visibility_status not in VISIBILITY_STATUSES:
+            raise ValueError(
+                f"visibility_status must be one of {sorted(VISIBILITY_STATUSES)}, "
+                f"got {self.visibility_status!r}"
+            )
 
 
 class SessionTransientStore(Protocol):

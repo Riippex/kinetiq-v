@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from unittest.mock import patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from django.core.cache import cache
@@ -8,13 +8,82 @@ from django.core.cache import cache
 from kinetiq.interfaces.graphql.schema import schema
 from kinetiq.modules.identity.infrastructure.models import User
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
-from kinetiq.modules.workouts.application.ports import TransientSessionUpdate
+from kinetiq.modules.workouts.application import ConfirmSessionTargetUseCase
+from kinetiq.modules.workouts.application.ports import (
+    TransientSessionUpdate,
+    VisionAnalysisHandle,
+    VisionCandidateInfo,
+    VisionTargetConfirmation,
+)
+from kinetiq.modules.workouts.infrastructure.repositories import (
+    DjangoRoutineItemLookup,
+    DjangoSessionLifecycleRepository,
+)
 from kinetiq.modules.workouts.infrastructure.transient_store import RedisSessionTransientStore
 
 
 @dataclass
 class DummyContext:
     user: User | None = None
+
+
+class _FakeVisionSessionAnalysisPort:
+    """Deterministic Vision double: any candidate_id is treated as detected,
+    so these tests exercise confirmSessionTarget's real wiring without a
+    live Vision service."""
+
+    def create_analysis(
+        self, *, session_id, source_id, exercise_key, exercise_version, idempotency_key
+    ):
+        return VisionAnalysisHandle(
+            analysis_id=f"fake-{session_id}", epoch=1, state="AWAITING_SELECTION"
+        )
+
+    def list_candidates(self, *, analysis_id):
+        return (VisionCandidateInfo(candidate_id="vision-target-01", confidence=0.95),)
+
+    def select_target(self, *, analysis_id, candidate_id, expected_epoch, idempotency_key):
+        return VisionTargetConfirmation(
+            target_person_id=candidate_id, epoch=expected_epoch, state="TRACKING"
+        )
+
+
+def _fake_confirm_session_target() -> ConfirmSessionTargetUseCase:
+    return ConfirmSessionTargetUseCase(
+        DjangoSessionLifecycleRepository(),
+        _FakeVisionSessionAnalysisPort(),
+        DjangoRoutineItemLookup(),
+    )
+
+
+def _confirm_target(
+    session_id: str, user: User, *, expected_revision: int, idempotency_key: str
+) -> None:
+    confirm_mutation = """
+    mutation ConfirmSessionTarget($command: SessionCommandInput!, $targetPersonId: String!) {
+      confirmSessionTarget(command: $command, targetPersonId: $targetPersonId) {
+        session { id revision }
+        errors { code message field }
+      }
+    }
+    """
+    with patch(
+        "kinetiq.interfaces.graphql.schema.confirm_session_target", _fake_confirm_session_target
+    ):
+        result = schema.execute_sync(
+            confirm_mutation,
+            variable_values={
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": expected_revision,
+                    "idempotencyKey": idempotency_key,
+                },
+                "targetPersonId": "vision-target-01",
+            },
+            context_value=DummyContext(user=user),
+        )
+    assert result.errors is None
+    assert result.data["confirmSessionTarget"]["errors"] == []
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +150,9 @@ def test_publish_and_query_transient_session_update():
     )
     assert prep_result.errors is None
     session_id = prep_result.data["prepareSession"]["session"]["id"]
+
+    # Confirm target: transient updates require a Vision-confirmed target.
+    _confirm_target(session_id, user, expected_revision=1, idempotency_key="transient-confirm-01")
 
     # Publish transient update
     pub_mutation = """
@@ -166,6 +238,11 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
     )
     session_id = prep_result.data["prepareSession"]["session"]["id"]
 
+    # Confirm target: transient updates require a Vision-confirmed target.
+    # Must happen before finish (target cannot be confirmed on a finished
+    # session), which shifts the start/finish revisions below by one.
+    _confirm_target(session_id, user, expected_revision=1, idempotency_key="transient-confirm-02")
+
     # Start session
     start_mutation = """
     mutation StartSession($command: SessionCommandInput!) {
@@ -180,7 +257,7 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
         variable_values={
             "command": {
                 "sessionId": session_id,
-                "expectedRevision": 1,
+                "expectedRevision": 2,
                 "idempotencyKey": "start-02",
             }
         },
@@ -204,7 +281,7 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
         variable_values={
             "command": {
                 "sessionId": session_id,
-                "expectedRevision": 2,
+                "expectedRevision": 3,
                 "idempotencyKey": "finish-02",
             },
             "performedSets": [
@@ -333,8 +410,9 @@ def test_transient_update_unauthenticated_or_wrong_owner():
         },
         context_value=DummyContext(user=None),
     )
-    assert unauth_res.data["publishTransientSessionUpdate"]["success"] is False
-    assert unauth_res.data["publishTransientSessionUpdate"]["errors"][0]["code"] == "AUTHENTICATION_REQUIRED"
+    unauth_data = unauth_res.data["publishTransientSessionUpdate"]
+    assert unauth_data["success"] is False
+    assert unauth_data["errors"][0]["code"] == "AUTHENTICATION_REQUIRED"
 
     # User 2 attempt on User 1's session
     wrong_res = schema.execute_sync(
@@ -347,8 +425,123 @@ def test_transient_update_unauthenticated_or_wrong_owner():
         },
         context_value=DummyContext(user=user2),
     )
-    assert wrong_res.data["publishTransientSessionUpdate"]["success"] is False
-    assert wrong_res.data["publishTransientSessionUpdate"]["errors"][0]["code"] == "SESSION_NOT_FOUND"
+    wrong_data = wrong_res.data["publishTransientSessionUpdate"]
+    assert wrong_data["success"] is False
+    assert wrong_data["errors"][0]["code"] == "SESSION_NOT_FOUND"
+
+
+@pytest.mark.django_db
+def test_transient_update_rejected_before_target_confirmed():
+    """Regression test for the reviewed defect: a session with no
+    Vision-confirmed target has no real observation source, so publishing
+    must be refused rather than accepting an arbitrary client snapshot."""
+    user = _create_user("no-target-owner")
+    routine = _create_routine(user)
+
+    prep_result = schema.execute_sync(
+        """
+        mutation PrepareSession($input: PrepareSessionInput!) {
+          prepareSession(input: $input) { session { id } }
+        }
+        """,
+        variable_values={
+            "input": {
+                "routineId": str(routine.routine_id),
+                "routineVersion": routine.version,
+                "mode": "NORMAL",
+                "intensity": "PLANNED",
+                "coachingTone": "CALM",
+                "captureDeviceId": "phone-cam-04",
+                "idempotencyKey": "transient-prep-04",
+            }
+        },
+        context_value=DummyContext(user=user),
+    )
+    session_id = prep_result.data["prepareSession"]["session"]["id"]
+
+    pub_result = schema.execute_sync(
+        """
+        mutation PublishTransient($input: TransientSessionUpdateInput!) {
+          publishTransientSessionUpdate(input: $input) {
+            success
+            errors { code message field }
+          }
+        }
+        """,
+        variable_values={"input": {"sessionId": session_id, "currentRepetitions": 5}},
+        context_value=DummyContext(user=user),
+    )
+    pub_data = pub_result.data["publishTransientSessionUpdate"]
+    assert pub_data["success"] is False
+    assert pub_data["errors"][0]["code"] == "NO_CONFIRMED_TARGET"
+
+
+@pytest.mark.django_db
+def test_transient_update_rejects_out_of_bounds_values():
+    """Human GraphQL clients must not be able to publish arbitrary
+    repetition counts or confidence values -- both are bounded."""
+    user = _create_user("bounds-owner")
+    routine = _create_routine(user)
+
+    prep_result = schema.execute_sync(
+        """
+        mutation PrepareSession($input: PrepareSessionInput!) {
+          prepareSession(input: $input) { session { id } }
+        }
+        """,
+        variable_values={
+            "input": {
+                "routineId": str(routine.routine_id),
+                "routineVersion": routine.version,
+                "mode": "NORMAL",
+                "intensity": "PLANNED",
+                "coachingTone": "CALM",
+                "captureDeviceId": "phone-cam-05",
+                "idempotencyKey": "transient-prep-05",
+            }
+        },
+        context_value=DummyContext(user=user),
+    )
+    session_id = prep_result.data["prepareSession"]["session"]["id"]
+    _confirm_target(session_id, user, expected_revision=1, idempotency_key="transient-confirm-05")
+
+    pub_mutation = """
+    mutation PublishTransient($input: TransientSessionUpdateInput!) {
+      publishTransientSessionUpdate(input: $input) {
+        success
+        errors { code message field }
+      }
+    }
+    """
+
+    negative_reps = schema.execute_sync(
+        pub_mutation,
+        variable_values={"input": {"sessionId": session_id, "currentRepetitions": -1}},
+        context_value=DummyContext(user=user),
+    )
+    negative_reps_data = negative_reps.data["publishTransientSessionUpdate"]
+    assert negative_reps_data["success"] is False
+    assert negative_reps_data["errors"][0]["code"] == "INVALID_INPUT"
+
+    out_of_range_confidence = schema.execute_sync(
+        pub_mutation,
+        variable_values={"input": {"sessionId": session_id, "poseConfidence": 1.5}},
+        context_value=DummyContext(user=user),
+    )
+    assert out_of_range_confidence.data["publishTransientSessionUpdate"]["success"] is False
+    assert (
+        out_of_range_confidence.data["publishTransientSessionUpdate"]["errors"][0]["code"]
+        == "INVALID_INPUT"
+    )
+
+    # An unrecognized visibilityStatus value is rejected at the GraphQL
+    # enum-parsing layer itself, before the resolver ever runs.
+    invalid_enum = schema.execute_sync(
+        pub_mutation,
+        variable_values={"input": {"sessionId": session_id, "visibilityStatus": "GHOST"}},
+        context_value=DummyContext(user=user),
+    )
+    assert invalid_enum.errors is not None
 
 
 def test_redis_store_handles_exceptions_safely():
