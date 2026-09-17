@@ -113,7 +113,22 @@ class RecordSessionFeedbackCommand(SessionLifecycleCommand):
         return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class ConfirmTargetCommand(SessionLifecycleCommand):
+    target_person_id: str = ""
+
+    def fingerprint(self) -> str:
+        payload = {
+            "session_id": str(self.session_id),
+            "expected_revision": self.expected_revision,
+            "target_person_id": self.target_person_id,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode()).hexdigest()
+
+
 class BaseSessionLifecycleUseCase:
+
     def __init__(self, repository: SessionLifecycleRepository) -> None:
         self._repository = repository
 
@@ -297,6 +312,17 @@ class AbandonWorkoutSessionUseCase(BaseSessionLifecycleUseCase):
             operation="workouts.abandon_session",
             transition=lambda session: session.abandon(),
         )
+
+
+class ConfirmSessionTargetUseCase(BaseSessionLifecycleUseCase):
+    def execute(self, *, owner_id: UUID, command: ConfirmTargetCommand) -> WorkoutSession:
+        return self._execute_transition(
+            owner_id=owner_id,
+            command=command,
+            operation="workouts.confirm_target",
+            transition=lambda session: session.confirm_target(command.target_person_id),
+        )
+
 
 
 class GetWorkoutSessionUseCase:

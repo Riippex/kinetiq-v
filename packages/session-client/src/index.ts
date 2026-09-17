@@ -122,6 +122,7 @@ export interface PreparedSession {
   id: string;
   revision: number;
   state: 'READY' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ABANDONED';
+  targetPersonId?: string | null;
   confirmedRepetitions?: number;
   performedSets?: PerformedSet[];
   observationCoverage?: ObservationCoverage | null;
@@ -355,6 +356,20 @@ const resumeSessionMutation = `
   }
 `;
 
+const confirmSessionTargetMutation = `
+  mutation ConfirmSessionTarget($command: SessionCommand!, $targetPersonId: String!) {
+    confirmSessionTarget(command: $command, targetPersonId: $targetPersonId) {
+      session {
+        id
+        revision
+        state
+        targetPersonId
+      }
+      errors { code message field }
+    }
+  }
+`;
+
 const disableDynamicModeMutation = `
   mutation DisableDynamicMode($command: SessionCommand!) {
     disableDynamicMode(command: $command) {
@@ -457,6 +472,7 @@ const sessionQuery = `
       id
       revision
       state
+      targetPersonId
       confirmedRepetitions
       performedSets {
         exerciseId
@@ -958,6 +974,24 @@ export async function resumeSession(
     return { session: null, errors: result.errors };
   }
   return result.data?.resumeSession ?? {
+    session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+export async function confirmSessionTarget(
+  endpoint: string,
+  command: SessionCommand,
+  targetPersonId: string,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{
+    confirmSessionTarget: SessionResult;
+  }>(endpoint, confirmSessionTargetMutation, { command, targetPersonId }, authorization);
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return result.data?.confirmSessionTarget ?? {
     session: null,
     errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
   };

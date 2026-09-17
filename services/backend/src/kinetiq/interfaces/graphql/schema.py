@@ -10,6 +10,7 @@ from strawberry.types import Info
 from kinetiq.bootstrap.container import (
     abandon_workout_session,
     accept_routine,
+    confirm_session_target,
     disable_dynamic_mode,
     edit_routine,
     finish_workout_session,
@@ -45,6 +46,7 @@ from kinetiq.modules.routines.domain.errors import (
 )
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application import (
+    ConfirmTargetCommand,
     FinishSessionCommand,
     IdempotencyConflict,
     InconsistentPerformedSetMeasurementError,
@@ -252,6 +254,7 @@ class WorkoutSessionType:
     observation_coverage: ObservationCoverageType | None
     feedback: SessionFeedbackType | None
     updated_at: datetime
+    target_person_id: str | None = None
 
 
 @strawberry.type
@@ -791,6 +794,49 @@ class Mutation:
         )
 
     @strawberry.mutation
+    def confirm_session_target(
+        self,
+        info: Info[Any, None],
+        command: SessionCommandInput,
+        target_person_id: str,
+    ) -> SessionResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return _failure("AUTHENTICATION_REQUIRED", "Sign in before modifying a session")
+
+        try:
+            session_uuid = UUID(str(command.session_id))
+        except (ValueError, TypeError) as error:
+            return _failure("INVALID_INPUT", f"Invalid session ID: {error}", "sessionId")
+
+        try:
+            cmd = ConfirmTargetCommand(
+                session_id=session_uuid,
+                expected_revision=command.expected_revision,
+                idempotency_key=command.idempotency_key,
+                target_person_id=target_person_id,
+            )
+            session = confirm_session_target().execute(owner_id=owner_id, command=cmd)
+            record = (
+                WorkoutSessionRecord.objects.select_related(
+                    "routine", "observation_coverage", "feedback"
+                )
+                .prefetch_related("performed_sets")
+                .get(pk=session.id)
+            )
+            return SessionResultType(session=_to_graphql(record), errors=[])
+        except SessionNotFound as error:
+            return _failure("SESSION_NOT_FOUND", str(error), "sessionId")
+        except RevisionConflict as error:
+            return _failure("REVISION_CONFLICT", str(error), "expectedRevision")
+        except IdempotencyConflict as error:
+            return _failure("IDEMPOTENCY_CONFLICT", str(error), "idempotencyKey")
+        except InvalidSessionStateTransition as error:
+            return _failure("INVALID_SESSION_STATE", str(error))
+        except (ValueError, TypeError) as error:
+            return _failure("INVALID_INPUT", str(error))
+
+    @strawberry.mutation
     def disable_dynamic_mode(
         self, info: Info[Any, None], command: SessionCommandInput
     ) -> SessionResultType:
@@ -1211,6 +1257,7 @@ def _to_workout_session_graphql(
         observation_coverage=coverage,
         feedback=feedback,
         updated_at=session.updated_at,
+        target_person_id=session.target_person_id,
     )
 
 
@@ -1285,6 +1332,7 @@ def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
         observation_coverage=coverage,
         feedback=feedback,
         updated_at=record.updated_at,
+        target_person_id=data.get("target_person_id"),
     )
 
 

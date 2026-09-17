@@ -78,6 +78,24 @@ mutation ResumeSession($command: SessionCommandInput!) {
 }
 """
 
+CONFIRM_SESSION_TARGET = """
+mutation ConfirmSessionTarget($command: SessionCommandInput!, $targetPersonId: String!) {
+  confirmSessionTarget(command: $command, targetPersonId: $targetPersonId) {
+    session {
+      id
+      revision
+      state
+      targetPersonId
+      configuration {
+        requestedMode
+        activeMode
+      }
+    }
+    errors { code message field }
+  }
+}
+"""
+
 DISABLE_DYNAMIC_MODE = """
 mutation DisableDynamicMode($command: SessionCommandInput!) {
   disableDynamicMode(command: $command) {
@@ -668,3 +686,93 @@ def test_invalid_uuid_rejected(athlete: User) -> None:
     assert response["session"] is None
     assert response["errors"][0]["code"] == "INVALID_INPUT"
     assert response["errors"][0]["field"] == "sessionId"
+
+
+@pytest.mark.django_db
+def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: RoutineRecord) -> None:
+    client = Client()
+    client.force_login(athlete)
+
+    session = prepare_test_session(client, accepted_routine, key="prep-confirm-target")
+    session_id = session["id"]
+    assert session["revision"] == 1
+
+    # Confirm target on READY session
+    response = client.post(
+        "/graphql/",
+        data={
+            "query": CONFIRM_SESSION_TARGET,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": 1,
+                    "idempotencyKey": "confirm-target-1",
+                },
+                "targetPersonId": "person-target-alpha",
+            },
+        },
+        content_type="application/json",
+    ).json()["data"]["confirmSessionTarget"]
+
+    assert response["errors"] == []
+    assert response["session"]["id"] == session_id
+    assert response["session"]["revision"] == 2
+    assert response["session"]["targetPersonId"] == "person-target-alpha"
+
+    # Verify session query also returns targetPersonId
+    session_query = """
+    query GetSession($id: ID!) {
+      session(id: $id) {
+        id
+        revision
+        targetPersonId
+      }
+    }
+    """
+    query_resp = client.post(
+        "/graphql/",
+        data={"query": session_query, "variables": {"id": session_id}},
+        content_type="application/json",
+    ).json()["data"]["session"]
+    assert query_resp["targetPersonId"] == "person-target-alpha"
+
+    # Idempotent re-execution returns identical result
+    idempotent_resp = client.post(
+        "/graphql/",
+        data={
+            "query": CONFIRM_SESSION_TARGET,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": 1,
+                    "idempotencyKey": "confirm-target-1",
+                },
+                "targetPersonId": "person-target-alpha",
+            },
+        },
+        content_type="application/json",
+    ).json()["data"]["confirmSessionTarget"]
+
+    assert idempotent_resp["errors"] == []
+    assert idempotent_resp["session"]["revision"] == 2
+    assert idempotent_resp["session"]["targetPersonId"] == "person-target-alpha"
+
+    # Revision conflict with stale expectedRevision
+    conflict_resp = client.post(
+        "/graphql/",
+        data={
+            "query": CONFIRM_SESSION_TARGET,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": 1,
+                    "idempotencyKey": "confirm-target-2",
+                },
+                "targetPersonId": "person-target-beta",
+            },
+        },
+        content_type="application/json",
+    ).json()["data"]["confirmSessionTarget"]
+
+    assert conflict_resp["session"] is None
+    assert conflict_resp["errors"][0]["code"] == "REVISION_CONFLICT"

@@ -74,7 +74,9 @@ class DjangoSessionPreparationRepository:
                     routine_id=routine.record_id,
                     revision=session.revision,
                     state=session.state,
-                    configuration=_serialize_configuration(session.configuration),
+                    configuration=_serialize_configuration(
+                        session.configuration, target_person_id=session.target_person_id
+                    ),
                 )
                 IdempotencyReceipt.objects.create(
                     owner_id=session.owner_id,
@@ -213,7 +215,9 @@ class DjangoSessionLifecycleRepository:
                 record.pause_reason = (
                     updated_session.pause_reason.value if updated_session.pause_reason else None
                 )
-                record.configuration = _serialize_configuration(updated_session.configuration)
+                record.configuration = _serialize_configuration(
+                    updated_session.configuration, target_person_id=updated_session.target_person_id
+                )
                 record.confirmed_repetitions = updated_session.confirmed_repetitions
                 record.save(
                     update_fields=[
@@ -294,7 +298,9 @@ class DjangoSessionLifecycleRepository:
         return _to_domain(receipt.session)
 
 
-def _serialize_configuration(configuration: SessionConfiguration) -> dict[str, Any]:
+def _serialize_configuration(
+    configuration: SessionConfiguration, target_person_id: str | None = None
+) -> dict[str, Any]:
     dynamic = None
     if configuration.dynamic is not None:
         dynamic = {
@@ -305,7 +311,7 @@ def _serialize_configuration(configuration: SessionConfiguration) -> dict[str, A
             "policy_version": configuration.dynamic.policy_version,
             "random_seed": str(configuration.dynamic.random_seed),
         }
-    return {
+    payload: dict[str, Any] = {
         "requested_mode": configuration.requested_mode,
         "active_mode": configuration.active_mode,
         "intensity": configuration.intensity,
@@ -315,6 +321,10 @@ def _serialize_configuration(configuration: SessionConfiguration) -> dict[str, A
         "prompt_for_progress_photo": configuration.prompt_for_progress_photo,
         "dynamic": dynamic,
     }
+    if target_person_id is not None:
+        payload["target_person_id"] = target_person_id
+    return payload
+
 
 
 def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
@@ -391,6 +401,8 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
         performed_sets=performed_sets,
         observation_coverage=observation_coverage,
         feedback=feedback,
+        target_person_id=data.get("target_person_id"),
         updated_at=record.updated_at,
     )
+
 

@@ -7,6 +7,8 @@ from .prepare_session import (
 )
 from .session_lifecycle import (
     AbandonWorkoutSessionUseCase,
+    ConfirmSessionTargetUseCase,
+    ConfirmTargetCommand,
     DisableDynamicModeUseCase,
     FinishSessionCommand,
     FinishWorkoutSessionUseCase,
@@ -25,6 +27,8 @@ from .session_lifecycle import (
 
 __all__ = [
     "AbandonWorkoutSessionUseCase",
+    "ConfirmSessionTargetUseCase",
+    "ConfirmTargetCommand",
     "DisableDynamicModeUseCase",
     "FinishSessionCommand",
     "FinishWorkoutSessionUseCase",

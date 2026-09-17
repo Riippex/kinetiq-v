@@ -16,8 +16,10 @@ from kinetiq.modules.routines.application import (
     ProposeRoutineUseCase,
 )
 from kinetiq.modules.routines.infrastructure.repositories import DjangoRoutineRepository
+from kinetiq.modules.integrations import VisionRestAdapter
 from kinetiq.modules.workouts.application import (
     AbandonWorkoutSessionUseCase,
+    ConfirmSessionTargetUseCase,
     DisableDynamicModeUseCase,
     FinishWorkoutSessionUseCase,
     GetWorkoutSessionUseCase,
@@ -40,8 +42,17 @@ def get_session_transient_store() -> SessionTransientStore:
     return RedisSessionTransientStore()
 
 
+def get_vision_rest_adapter() -> VisionRestAdapter:
+    return VisionRestAdapter()
+
+
 def prepare_workout_session() -> PrepareWorkoutSession:
     return PrepareWorkoutSession(DjangoSessionPreparationRepository())
+
+
+def confirm_session_target() -> ConfirmSessionTargetUseCase:
+    return ConfirmSessionTargetUseCase(DjangoSessionLifecycleRepository())
+
 
 
 

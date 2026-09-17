@@ -165,6 +165,7 @@ class WorkoutSession:
     performed_sets: tuple[PerformedSet, ...] = ()
     observation_coverage: ObservationCoverage | None = None
     feedback: SessionFeedback | None = None
+    target_person_id: str | None = None
     updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
@@ -200,9 +201,22 @@ class WorkoutSession:
             performed_sets=(),
             observation_coverage=None,
             feedback=None,
+            target_person_id=None,
+        )
+
+    def confirm_target(self, target_person_id: str) -> WorkoutSession:
+        if not target_person_id.strip():
+            raise ValueError("Target person ID cannot be empty")
+        if self.state in (SessionState.COMPLETED, SessionState.ABANDONED):
+            raise InvalidSessionStateTransition("Cannot confirm target on a finished session")
+        return replace(
+            self,
+            target_person_id=target_person_id,
+            revision=self.revision + 1,
         )
 
     def start(self) -> WorkoutSession:
+
         if self.state is not SessionState.READY:
             raise InvalidSessionStateTransition("Only a ready session can start")
         return replace(

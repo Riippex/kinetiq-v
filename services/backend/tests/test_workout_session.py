@@ -310,6 +310,35 @@ class SessionPreparationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ObservationCoverage(coverage_ratio=-0.1, tracked_seconds=10, total_seconds=10)
 
+    def test_confirm_target_on_ready_and_active_session(self) -> None:
+        ready = prepared_session(SessionMode.NORMAL)
+        self.assertIsNone(ready.target_person_id)
+
+        confirmed_ready = ready.confirm_target("person-123")
+        self.assertEqual("person-123", confirmed_ready.target_person_id)
+        self.assertEqual(ready.revision + 1, confirmed_ready.revision)
+
+        active = ready.start()
+        confirmed_active = active.confirm_target("person-456")
+        self.assertEqual("person-456", confirmed_active.target_person_id)
+        self.assertEqual(active.revision + 1, confirmed_active.revision)
+
+    def test_confirm_target_rejects_empty_target_person_id(self) -> None:
+        ready = prepared_session(SessionMode.NORMAL)
+        with self.assertRaises(ValueError):
+            ready.confirm_target("")
+        with self.assertRaises(ValueError):
+            ready.confirm_target("   ")
+
+    def test_confirm_target_rejects_completed_or_abandoned_session(self) -> None:
+        completed = prepared_session(SessionMode.NORMAL).start().finish()
+        with self.assertRaises(InvalidSessionStateTransition):
+            completed.confirm_target("person-123")
+
+        abandoned = prepared_session(SessionMode.NORMAL).abandon()
+        with self.assertRaises(InvalidSessionStateTransition):
+            abandoned.confirm_target("person-123")
+
 
 if __name__ == "__main__":
     unittest.main()

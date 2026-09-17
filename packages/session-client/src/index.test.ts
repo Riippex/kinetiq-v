@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   abandonSession,
+  confirmSessionTarget,
   disableDynamicMode,
   fetchExercises,
   fetchProfile,
@@ -606,6 +607,65 @@ test('syncSessionState restores from committed PostgreSQL when transient state i
     assert.equal(sync.transient, null);
     assert.equal(sync.restoredFromCommitted, true);
     assert.deepEqual(sync.errors, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('confirmSessionTarget sends mutation with targetPersonId and updates session', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: { query: string; variables: { command: SessionCommand; targetPersonId: string } } }> = [];
+  globalThis.fetch = (async (url: string, options: { body: string }) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          confirmSessionTarget: {
+            session: {
+              id: 'sess-001',
+              revision: 2,
+              state: 'READY',
+              targetPersonId: 'person-42',
+            },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await confirmSessionTarget('/api/graphql', testCommand, 'person-42');
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.id, 'sess-001');
+    assert.equal(result.session?.targetPersonId, 'person-42');
+    assert.match(calls[0].body.query, /mutation ConfirmSessionTarget/);
+    assert.equal(calls[0].body.variables.targetPersonId, 'person-42');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('confirmSessionTarget surfaces domain error when session not found', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      data: {
+        confirmSessionTarget: {
+          session: null,
+          errors: [{ code: 'SESSION_NOT_FOUND', message: 'Workout session not found' }],
+        },
+      },
+    }),
+  }) as Response) as typeof fetch;
+
+  try {
+    const result = await confirmSessionTarget('/api/graphql', testCommand, 'person-42');
+    assert.equal(result.session, null);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].code, 'SESSION_NOT_FOUND');
   } finally {
     globalThis.fetch = originalFetch;
   }
