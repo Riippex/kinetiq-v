@@ -45,6 +45,7 @@ django_settings_module = "kinetiq.bootstrap.settings"
 
 [dependency-groups]
 dev = [
+    "daphne>=4.2.3",
     "django-stubs>=6.1.0",
     "jsonschema>=4.23.0",
     "mypy>=2.3.1",

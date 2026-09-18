@@ -198,7 +198,6 @@ export interface TransientSessionUpdateSubscription {
 export interface SubscribeToTransientSessionUpdatesOptions {
   onError?: (errors: DomainError[]) => void;
   onComplete?: () => void;
-  authorization?: string;
   webSocketFactory?: WebSocketFactory;
 }
 
@@ -1203,6 +1202,23 @@ function nextSubscriptionId(): string {
  *
  * `wsEndpoint` is the websocket URL (e.g. `wss://api.example.com/graphql`),
  * distinct from the HTTP endpoint the rest of this module posts to.
+ *
+ * Authentication for this transport is cookie-only: the backend's
+ * websocket route (bootstrap/asgi.py) is wrapped in
+ * `channels.auth.AuthMiddlewareStack`, which resolves the connection's
+ * user from the same Django session cookie the browser already sends on
+ * the WebSocket upgrade request -- there is no bearer-token or
+ * connection_init-payload authentication path on the server, matching
+ * the rest of this backend (it has no token-issuing infrastructure at
+ * all; every other operation in this module is also cookie-authenticated
+ * whenever its own `authorization` parameter is omitted). A prior version
+ * of this function accepted an `authorization` option and sent it in the
+ * `connection_init` payload, but the server never read it -- silently
+ * doing nothing. That option has been removed rather than wired up to a
+ * bearer-token check the backend has no way to validate; callers that
+ * need this transport to work must ensure the browser/runtime sends the
+ * session cookie on the WebSocket handshake (the default for same-origin
+ * connections).
  */
 export function subscribeToTransientSessionUpdates(
   wsEndpoint: string,
@@ -1226,12 +1242,7 @@ export function subscribeToTransientSessionUpdates(
   };
 
   function onOpen(): void {
-    socket.send(
-      JSON.stringify({
-        type: 'connection_init',
-        ...(options.authorization ? { payload: { authorization: options.authorization } } : {}),
-      }),
-    );
+    socket.send(JSON.stringify({ type: 'connection_init' }));
   }
 
   function onMessage(event: { data: string }): void {
