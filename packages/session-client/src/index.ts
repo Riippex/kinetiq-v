@@ -129,6 +129,11 @@ export interface PreparedSession {
   feedback?: SessionFeedback | null;
 }
 
+export interface VisionCandidate {
+  candidateId: string;
+  confidence: number;
+}
+
 export interface SessionCommand {
   sessionId: string;
   expectedRevision: number;
@@ -362,6 +367,24 @@ const startSessionMutation = `
     startSession(command: $command) {
       session { id revision state }
       errors { code message field }
+    }
+  }
+`;
+
+const startSessionVisionAnalysisMutation = `
+  mutation StartSessionVisionAnalysis($command: SessionCommand!) {
+    startSessionVisionAnalysis(command: $command) {
+      session { id revision state targetPersonId }
+      errors { code message field }
+    }
+  }
+`;
+
+const visionCandidatesQuery = `
+  query VisionCandidates($sessionId: ID!) {
+    visionCandidates(sessionId: $sessionId) {
+      candidateId
+      confidence
     }
   }
 `;
@@ -985,6 +1008,55 @@ export async function startSession(
     session: null,
     errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
   };
+}
+
+/**
+ * Starts (idempotently) the Vision analysis for a session's capture
+ * device -- the first step of the target-enrollment lifecycle. Must be
+ * called before `fetchVisionCandidates` returns anything and before
+ * `confirmSessionTarget` can succeed (it fails with
+ * VISION_ANALYSIS_NOT_STARTED otherwise).
+ */
+export async function startSessionVisionAnalysis(
+  endpoint: string,
+  command: SessionCommand,
+  authorization?: string,
+): Promise<SessionResult> {
+  const result = await executeGraphQL<{
+    startSessionVisionAnalysis: SessionResult;
+  }>(endpoint, startSessionVisionAnalysisMutation, { command }, authorization);
+  if (result.errors) {
+    return { session: null, errors: result.errors };
+  }
+  return result.data?.startSessionVisionAnalysis ?? {
+    session: null,
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
+/**
+ * Lists Vision's currently detected candidates for the analysis already
+ * started on a session -- the second step of the target-enrollment
+ * lifecycle, meant to be polled after `startSessionVisionAnalysis` while
+ * frames stream in, until at least one candidate appears to confirm via
+ * `confirmSessionTarget`. Returns an empty list (not an error) when no
+ * analysis has been started yet or none have been detected so far.
+ */
+export async function fetchVisionCandidates(
+  endpoint: string,
+  sessionId: string,
+  authorization?: string,
+): Promise<{ candidates: VisionCandidate[]; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ visionCandidates: VisionCandidate[] }>(
+    endpoint,
+    visionCandidatesQuery,
+    { sessionId },
+    authorization,
+  );
+  if (result.errors) {
+    return { candidates: [], errors: result.errors };
+  }
+  return { candidates: result.data?.visionCandidates ?? [], errors: [] };
 }
 
 export async function pauseSession(

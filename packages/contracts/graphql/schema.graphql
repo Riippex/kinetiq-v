@@ -9,6 +9,7 @@ enum CoachingTone { CALM TECHNICAL MOTIVATIONAL EDGY }
 enum DynamicChallengeType { HOLD_POSE MIRROR_POSE QUICK_REPS RECOVERY }
 enum DynamicChallengeFrequency { LOW STANDARD HIGH }
 enum ExperienceLevel { STARTING RETURNING REGULAR }
+enum VisibilityStatus { VISIBLE PARTIALLY_VISIBLE NOT_VISIBLE }
 type Profile {
   id: ID!
   displayName: String!
@@ -96,8 +97,29 @@ type WorkoutSession {
   observationCoverage: ObservationCoverage
   feedback: SessionFeedback
   updatedAt: DateTime!
+  targetPersonId: String
 }
 type SessionPage { nodes: [WorkoutSession!]! endCursor: String hasNextPage: Boolean! }
+type VisionCandidate { candidateId: String! confidence: Float! }
+type TransientSessionUpdate {
+  sessionId: ID!
+  activeExerciseId: ID
+  currentRepetitions: Int
+  currentDurationSeconds: Int
+  poseConfidence: Float
+  visibilityStatus: VisibilityStatus!
+  timestamp: String
+}
+input TransientSessionUpdateInput {
+  sessionId: ID!
+  activeExerciseId: ID
+  currentRepetitions: Int
+  currentDurationSeconds: Int
+  poseConfidence: Float
+  visibilityStatus: VisibilityStatus = VISIBLE
+  timestamp: String
+}
+type TransientSessionUpdateResult { success: Boolean! errors: [DomainError!]! }
 type ProgressSummary { completedSessions: Int! partialSessions: Int! from: DateTime! to: DateTime! }
 input RoutineContext { goalId: ID! minutes: Int! equipment: [String!]! excludedExerciseIds: [ID!]! }
 input SessionCommand { sessionId: ID! expectedRevision: Int! idempotencyKey: String! }
@@ -150,6 +172,8 @@ type Query {
   session(id: ID!): WorkoutSession
   sessions(first: Int! = 20, after: String): SessionPage!
   progress(from: DateTime!, to: DateTime!): ProgressSummary!
+  visionCandidates(sessionId: ID!): [VisionCandidate!]!
+  transientSessionState(sessionId: ID!): TransientSessionUpdate
 }
 type Mutation {
   updateProfile(input: UpdateProfileInput!): ProfileResult!
@@ -158,6 +182,8 @@ type Mutation {
   acceptRoutine(id: ID!, version: Int!, idempotencyKey: String!): Routine!
   prepareSession(input: PrepareSessionInput!): SessionResult!
   startSession(command: SessionCommand!): SessionResult!
+  startSessionVisionAnalysis(command: SessionCommand!): SessionResult!
+  confirmSessionTarget(command: SessionCommand!, targetPersonId: String!): SessionResult!
   disableDynamicMode(command: SessionCommand!): SessionResult!
   pauseSession(command: SessionCommand!): SessionResult!
   resumeSession(command: SessionCommand!): SessionResult!
@@ -172,9 +198,10 @@ type Mutation {
     feedback: SessionFeedbackInput!
   ): SessionResult!
   abandonSession(command: SessionCommand!): SessionResult!
+  publishTransientSessionUpdate(input: TransientSessionUpdateInput!): TransientSessionUpdateResult!
   approveDisplay(userCode: String!, sessionId: ID!): PairingResult!
   requestProgressPhotoUpload(sessionId: ID!, contentType: String!, byteLength: Int!, idempotencyKey: String!): UploadRequest!
   finalizeProgressPhoto(photoId: ID!): Boolean!
   deleteProgressPhoto(photoId: ID!): Boolean!
 }
-type Subscription { sessionUpdated(sessionId: ID!): WorkoutSession! }
+type Subscription { transientSessionUpdates(sessionId: ID!): TransientSessionUpdate! }

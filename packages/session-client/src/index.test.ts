@@ -9,6 +9,7 @@ import {
   fetchProfile,
   fetchSession,
   fetchTransientSessionState,
+  fetchVisionCandidates,
   finishSession,
   formatLimitationsInput,
   isUnsupportedLimitationError,
@@ -18,6 +19,7 @@ import {
   recordSessionFeedback,
   resumeSession,
   startSession,
+  startSessionVisionAnalysis,
   subscribeToTransientSessionUpdates,
   syncSessionState,
   toggleExclusion,
@@ -668,6 +670,128 @@ test('confirmSessionTarget surfaces domain error when session not found', async 
     assert.equal(result.session, null);
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].code, 'SESSION_NOT_FOUND');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// --- startSessionVisionAnalysis / fetchVisionCandidates ---------------------
+
+test('startSessionVisionAnalysis submits mutation with command and returns session', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: { query: string; variables: { command: SessionCommand } } }> = [];
+  globalThis.fetch = (async (url: string, options: { body: string }) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          startSessionVisionAnalysis: {
+            session: { id: 'sess-001', revision: 2, state: 'READY', targetPersonId: null },
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await startSessionVisionAnalysis('/api/graphql', testCommand);
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.session?.id, 'sess-001');
+    assert.equal(result.session?.revision, 2);
+    assert.match(calls[0].body.query, /mutation StartSessionVisionAnalysis/);
+    assert.deepEqual(calls[0].body.variables.command, testCommand);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('startSessionVisionAnalysis surfaces domain error when the lease is contended', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      data: {
+        startSessionVisionAnalysis: {
+          session: null,
+          errors: [
+            {
+              code: 'VISION_OPERATION_IN_PROGRESS',
+              message: 'Another Vision operation is already in progress for this session',
+            },
+          ],
+        },
+      },
+    }),
+  }) as Response) as typeof fetch;
+
+  try {
+    const result = await startSessionVisionAnalysis('/api/graphql', testCommand);
+    assert.equal(result.session, null);
+    assert.equal(result.errors[0].code, 'VISION_OPERATION_IN_PROGRESS');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchVisionCandidates returns the detected candidates for a session', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: { query: string; variables: { sessionId: string } } }> = [];
+  globalThis.fetch = (async (url: string, options: { body: string }) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          visionCandidates: [
+            { candidateId: 'person-alpha', confidence: 0.95 },
+            { candidateId: 'person-beta', confidence: 0.88 },
+          ],
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const result = await fetchVisionCandidates('/api/graphql', 'sess-001');
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.candidates.length, 2);
+    assert.equal(result.candidates[0].candidateId, 'person-alpha');
+    assert.equal(result.candidates[1].confidence, 0.88);
+    assert.match(calls[0].body.query, /query VisionCandidates/);
+    assert.equal(calls[0].body.variables.sessionId, 'sess-001');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchVisionCandidates returns an empty list before any are detected', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({ data: { visionCandidates: [] } }),
+  }) as Response) as typeof fetch;
+
+  try {
+    const result = await fetchVisionCandidates('/api/graphql', 'sess-001');
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.candidates, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchVisionCandidates surfaces a transport error when the request fails', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error('network down');
+  }) as typeof fetch;
+
+  try {
+    const result = await fetchVisionCandidates('/api/graphql', 'sess-001');
+    assert.deepEqual(result.candidates, []);
+    assert.equal(result.errors[0].code, 'TRANSPORT_ERROR');
   } finally {
     globalThis.fetch = originalFetch;
   }
