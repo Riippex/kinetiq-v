@@ -101,6 +101,14 @@ type WorkoutSession {
 }
 type SessionPage { nodes: [WorkoutSession!]! endCursor: String hasNextPage: Boolean! }
 type VisionCandidate { candidateId: String! confidence: Float! }
+# TransientSessionUpdate is server-produced only (published exclusively
+# by PollVisionObservationsUseCase polling real Vision observations).
+# There is deliberately no client-facing input/mutation for it: an
+# earlier publishTransientSessionUpdate mutation let any authenticated
+# owner of a session with a confirmed target submit arbitrary values,
+# forging a "live Vision result" -- removed rather than access-controlled
+# further. Read access (transientSessionState, transientSessionUpdates)
+# remains available and stays scoped to the session's owner.
 type TransientSessionUpdate {
   sessionId: ID!
   activeExerciseId: ID
@@ -110,16 +118,6 @@ type TransientSessionUpdate {
   visibilityStatus: VisibilityStatus!
   timestamp: String
 }
-input TransientSessionUpdateInput {
-  sessionId: ID!
-  activeExerciseId: ID
-  currentRepetitions: Int
-  currentDurationSeconds: Int
-  poseConfidence: Float
-  visibilityStatus: VisibilityStatus = VISIBLE
-  timestamp: String
-}
-type TransientSessionUpdateResult { success: Boolean! errors: [DomainError!]! }
 type ProgressSummary { completedSessions: Int! partialSessions: Int! from: DateTime! to: DateTime! }
 input RoutineContext { goalId: ID! minutes: Int! equipment: [String!]! excludedExerciseIds: [ID!]! }
 input SessionCommand { sessionId: ID! expectedRevision: Int! idempotencyKey: String! }
@@ -198,7 +196,6 @@ type Mutation {
     feedback: SessionFeedbackInput!
   ): SessionResult!
   abandonSession(command: SessionCommand!): SessionResult!
-  publishTransientSessionUpdate(input: TransientSessionUpdateInput!): TransientSessionUpdateResult!
   approveDisplay(userCode: String!, sessionId: ID!): PairingResult!
   requestProgressPhotoUpload(sessionId: ID!, contentType: String!, byteLength: Int!, idempotencyKey: String!): UploadRequest!
   finalizeProgressPhoto(photoId: ID!): Boolean!

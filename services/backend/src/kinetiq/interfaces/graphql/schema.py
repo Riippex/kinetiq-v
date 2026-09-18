@@ -61,7 +61,6 @@ from kinetiq.modules.workouts.application import (
     RoutineUnavailable,
     SessionLifecycleCommand,
     SessionNotFound,
-    TransientSessionUpdate,
     UnknownRoutineExerciseError,
     UnknownVisionCandidateError,
     VisionAnalysisNotStartedError,
@@ -412,23 +411,6 @@ class TransientSessionUpdateType:
     pose_confidence: float | None = None
     visibility_status: VisibilityStatusType = VisibilityStatusType.VISIBLE
     timestamp: str | None = None
-
-
-@strawberry.input
-class TransientSessionUpdateInput:
-    session_id: strawberry.ID
-    active_exercise_id: strawberry.ID | None = None
-    current_repetitions: int | None = None
-    current_duration_seconds: int | None = None
-    pose_confidence: float | None = None
-    visibility_status: VisibilityStatusType = VisibilityStatusType.VISIBLE
-    timestamp: str | None = None
-
-
-@strawberry.type(name="TransientSessionUpdateResult")
-class TransientSessionUpdateResultType:
-    success: bool
-    errors: list[DomainError]
 
 
 @strawberry.type
@@ -1084,90 +1066,6 @@ class Mutation:
             lambda owner_id, cmd: abandon_workout_session().execute(owner_id=owner_id, command=cmd),
         )
 
-    @strawberry.mutation
-    def publish_transient_session_update(
-        self, info: Info[Any, None], input: TransientSessionUpdateInput
-    ) -> TransientSessionUpdateResultType:
-        owner_id = _authenticated_owner_id(info)
-        if owner_id is None:
-            return TransientSessionUpdateResultType(
-                success=False,
-                errors=[
-                    DomainError(
-                        code="AUTHENTICATION_REQUIRED",
-                        message="Sign in before publishing transient session updates",
-                    )
-                ],
-            )
-        try:
-            session_uuid = UUID(str(input.session_id))
-        except (ValueError, TypeError) as error:
-            return TransientSessionUpdateResultType(
-                success=False,
-                errors=[
-                    DomainError(
-                        code="INVALID_INPUT",
-                        message=f"Invalid session ID: {error}",
-                        field="sessionId",
-                    )
-                ],
-            )
-
-        session = get_workout_session().execute(owner_id=owner_id, session_id=session_uuid)
-        if session is None:
-            return TransientSessionUpdateResultType(
-                success=False,
-                errors=[
-                    DomainError(
-                        code="SESSION_NOT_FOUND",
-                        message=f"Workout session '{session_uuid}' not found",
-                        field="sessionId",
-                    )
-                ],
-            )
-
-        # Transient updates describe what Vision is currently observing for
-        # this session's confirmed target; a session with no confirmed
-        # target has no Vision observation source that could have produced
-        # these values, so publishing here is refused rather than letting
-        # an arbitrary client-supplied progress snapshot stand in for one.
-        if session.target_person_id is None:
-            return TransientSessionUpdateResultType(
-                success=False,
-                errors=[
-                    DomainError(
-                        code="NO_CONFIRMED_TARGET",
-                        message=(
-                            "Cannot publish transient updates before a target person "
-                            "has been confirmed via confirmSessionTarget"
-                        ),
-                        field="sessionId",
-                    )
-                ],
-            )
-
-        try:
-            update = TransientSessionUpdate(
-                session_id=session_uuid,
-                active_exercise_id=(
-                    str(input.active_exercise_id) if input.active_exercise_id else None
-                ),
-                current_repetitions=input.current_repetitions,
-                current_duration_seconds=input.current_duration_seconds,
-                pose_confidence=input.pose_confidence,
-                visibility_status=input.visibility_status.value,
-                timestamp=input.timestamp,
-            )
-        except ValueError as error:
-            return TransientSessionUpdateResultType(
-                success=False,
-                errors=[DomainError(code="INVALID_INPUT", message=str(error))],
-            )
-
-        success = get_session_transient_store().publish_transient_update(update)
-        return TransientSessionUpdateResultType(success=success, errors=[])
-
-
 
 def _handle_session_lifecycle(
     info: Info[Any, None],
@@ -1473,13 +1371,18 @@ def _failure(code: str, message: str, field: str | None = None) -> SessionResult
 @strawberry.type
 class Subscription:
     """The fan-out path for live transient session progress: clients
-    subscribe to receive server-validated updates rather than each other
-    publishing arbitrary values via `publishTransientSessionUpdate`.
-    Reuses the same Redis Pub/Sub channel `RedisSessionTransientStore`
-    already publishes validated `TransientSessionUpdate`s to -- now fed for
-    real by `PollVisionObservationsUseCase` (see
-    workouts/application/observation_ingestion.py) rather than only by the
-    manual mutation.
+    subscribe to receive updates that are exclusively server-produced by
+    `PollVisionObservationsUseCase` (see
+    workouts/application/observation_ingestion.py) polling the real Vision
+    observation feed. There is no client-facing mutation that publishes a
+    transient update -- an earlier `publishTransientSessionUpdate`
+    mutation let any authenticated owner of a session with a confirmed
+    target submit arbitrary repetitions/duration/pose confidence/
+    visibility/timestamp values, which is exactly the class of forged
+    "live Vision result" this subscription's data must never contain, so
+    it was removed rather than access-controlled further. Reuses the same
+    Redis Pub/Sub channel `RedisSessionTransientStore` publishes
+    server-produced updates to.
 
     Reachable by a real client over the authenticated ASGI websocket
     transport wired in `bootstrap/asgi.py`

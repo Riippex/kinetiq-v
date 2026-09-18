@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from django.core.cache import cache
@@ -23,6 +23,14 @@ from kinetiq.modules.workouts.infrastructure.repositories import (
     DjangoSessionLifecycleRepository,
 )
 from kinetiq.modules.workouts.infrastructure.transient_store import RedisSessionTransientStore
+
+
+def _publish_server_produced_update(update: TransientSessionUpdate) -> None:
+    """Simulates PollVisionObservationsUseCase publishing a validated
+    update -- the only producer of transient state now that
+    publishTransientSessionUpdate has been removed as a public mutation.
+    """
+    RedisSessionTransientStore().publish_transient_update(update)
 
 
 @dataclass
@@ -160,7 +168,15 @@ def _create_routine(user: User) -> RoutineRecord:
 
 
 @pytest.mark.django_db
-def test_publish_and_query_transient_session_update():
+def test_transient_session_state_query_reads_server_produced_update():
+    """Regression test for the Block 4 finding: publishTransientSessionUpdate
+    let any authenticated owner of a session with a confirmed target
+    submit arbitrary progress values, forging a "live Vision result".
+    That mutation is removed; the only way transient state now reaches
+    the store is a server-side producer (PollVisionObservationsUseCase),
+    simulated here by publishing directly through
+    RedisSessionTransientStore. The transientSessionState query must
+    still read whatever the server produced."""
     user = _create_user("transient1")
     routine = _create_routine(user)
 
@@ -193,31 +209,18 @@ def test_publish_and_query_transient_session_update():
     # Confirm target: transient updates require a Vision-confirmed target.
     _confirm_target(session_id, user, expected_revision=1, idempotency_key="transient-confirm-01")
 
-    # Publish transient update
-    pub_mutation = """
-    mutation PublishTransient($input: TransientSessionUpdateInput!) {
-      publishTransientSessionUpdate(input: $input) {
-        success
-        errors { code message field }
-      }
-    }
-    """
-    pub_result = schema.execute_sync(
-        pub_mutation,
-        variable_values={
-            "input": {
-                "sessionId": session_id,
-                "activeExerciseId": "goblet-squat",
-                "currentRepetitions": 8,
-                "poseConfidence": 0.94,
-                "visibilityStatus": "VISIBLE",
-                "timestamp": "2026-09-17T13:20:00Z",
-            }
-        },
-        context_value=DummyContext(user=user),
+    # Simulate the real producer (PollVisionObservationsUseCase) publishing
+    # a validated update -- there is no client-facing way to do this now.
+    _publish_server_produced_update(
+        TransientSessionUpdate(
+            session_id=UUID(session_id),
+            active_exercise_id="goblet-squat",
+            current_repetitions=8,
+            pose_confidence=0.94,
+            visibility_status="VISIBLE",
+            timestamp="2026-09-17T13:20:00Z",
+        )
     )
-    assert pub_result.errors is None
-    assert pub_result.data["publishTransientSessionUpdate"]["success"] is True
 
     # Query transient state
     query_str = """
@@ -335,25 +338,13 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
     assert finish_result.data["finishSession"]["session"]["state"] == "COMPLETED"
     assert finish_result.data["finishSession"]["session"]["confirmedRepetitions"] == 10
 
-    # Publish transient update before simulated Redis flush
-    pub_mutation = """
-    mutation PublishTransient($input: TransientSessionUpdateInput!) {
-      publishTransientSessionUpdate(input: $input) {
-        success
-        errors { code message field }
-      }
-    }
-    """
-    schema.execute_sync(
-        pub_mutation,
-        variable_values={
-            "input": {
-                "sessionId": session_id,
-                "activeExerciseId": "goblet-squat",
-                "currentRepetitions": 10,
-            }
-        },
-        context_value=DummyContext(user=user),
+    # Simulate the real producer publishing before a Redis flush.
+    _publish_server_produced_update(
+        TransientSessionUpdate(
+            session_id=UUID(session_id),
+            active_exercise_id="goblet-squat",
+            current_repetitions=10,
+        )
     )
 
     # Simulate complete Redis flush/loss
@@ -402,20 +393,21 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
 
 
 @pytest.mark.django_db
-def test_transient_update_unauthenticated_or_wrong_owner():
+def test_transient_session_state_query_requires_authentication_and_ownership():
+    """The read side must stay ownership-protected even though the write
+    side (publishTransientSessionUpdate) is gone: an unauthenticated
+    caller is rejected outright, and a different user's session must not
+    leak another owner's transient progress."""
     user1 = _create_user("owner1")
     user2 = _create_user("owner2")
     routine = _create_routine(user1)
 
-    prep_mutation = """
-    mutation PrepareSession($input: PrepareSessionInput!) {
-      prepareSession(input: $input) {
-        session { id revision state }
-      }
-    }
-    """
     prep_result = schema.execute_sync(
-        prep_mutation,
+        """
+        mutation PrepareSession($input: PrepareSessionInput!) {
+          prepareSession(input: $input) { session { id revision state } }
+        }
+        """,
         variable_values={
             "input": {
                 "routineId": str(routine.routine_id),
@@ -430,77 +422,52 @@ def test_transient_update_unauthenticated_or_wrong_owner():
         context_value=DummyContext(user=user1),
     )
     session_id = prep_result.data["prepareSession"]["session"]["id"]
+    _publish_server_produced_update(
+        TransientSessionUpdate(session_id=UUID(session_id), current_repetitions=5)
+    )
 
-    pub_mutation = """
-    mutation PublishTransient($input: TransientSessionUpdateInput!) {
-      publishTransientSessionUpdate(input: $input) {
-        success
-        errors { code message field }
-      }
+    query_str = """
+    query GetTransientState($sessionId: ID!) {
+      transientSessionState(sessionId: $sessionId) { sessionId currentRepetitions }
     }
     """
 
     # Unauthenticated attempt
     unauth_res = schema.execute_sync(
-        pub_mutation,
-        variable_values={
-            "input": {
-                "sessionId": session_id,
-                "currentRepetitions": 5,
-            }
-        },
+        query_str,
+        variable_values={"sessionId": session_id},
         context_value=DummyContext(user=None),
     )
-    unauth_data = unauth_res.data["publishTransientSessionUpdate"]
-    assert unauth_data["success"] is False
-    assert unauth_data["errors"][0]["code"] == "AUTHENTICATION_REQUIRED"
+    assert unauth_res.errors is not None
+    assert "AUTHENTICATION_REQUIRED" in str(unauth_res.errors[0])
 
-    # User 2 attempt on User 1's session
+    # User 2 querying User 1's session must not see it.
     wrong_res = schema.execute_sync(
-        pub_mutation,
-        variable_values={
-            "input": {
-                "sessionId": session_id,
-                "currentRepetitions": 5,
-            }
-        },
+        query_str,
+        variable_values={"sessionId": session_id},
         context_value=DummyContext(user=user2),
     )
-    wrong_data = wrong_res.data["publishTransientSessionUpdate"]
-    assert wrong_data["success"] is False
-    assert wrong_data["errors"][0]["code"] == "SESSION_NOT_FOUND"
+    assert wrong_res.errors is None
+    assert wrong_res.data["transientSessionState"] is None
 
-
-@pytest.mark.django_db
-def test_transient_update_rejected_before_target_confirmed():
-    """Regression test for the reviewed defect: a session with no
-    Vision-confirmed target has no real observation source, so publishing
-    must be refused rather than accepting an arbitrary client snapshot."""
-    user = _create_user("no-target-owner")
-    routine = _create_routine(user)
-
-    prep_result = schema.execute_sync(
-        """
-        mutation PrepareSession($input: PrepareSessionInput!) {
-          prepareSession(input: $input) { session { id } }
-        }
-        """,
-        variable_values={
-            "input": {
-                "routineId": str(routine.routine_id),
-                "routineVersion": routine.version,
-                "mode": "NORMAL",
-                "intensity": "PLANNED",
-                "coachingTone": "CALM",
-                "captureDeviceId": "phone-cam-04",
-                "idempotencyKey": "transient-prep-04",
-            }
-        },
-        context_value=DummyContext(user=user),
+    # The real owner still sees it.
+    owner_res = schema.execute_sync(
+        query_str,
+        variable_values={"sessionId": session_id},
+        context_value=DummyContext(user=user1),
     )
-    session_id = prep_result.data["prepareSession"]["session"]["id"]
+    assert owner_res.errors is None
+    assert owner_res.data["transientSessionState"]["currentRepetitions"] == 5
 
-    pub_result = schema.execute_sync(
+
+def test_publish_transient_session_update_mutation_no_longer_exists():
+    """Regression test for the Block 4 finding: publishTransientSessionUpdate
+    let any authenticated owner of a session with a confirmed target
+    forge arbitrary "live Vision result" values. The mutation, and its
+    TransientSessionUpdateInput/TransientSessionUpdateResult types, must
+    no longer be part of the public schema at all -- not merely
+    access-restricted further."""
+    result = schema.execute_sync(
         """
         mutation PublishTransient($input: TransientSessionUpdateInput!) {
           publishTransientSessionUpdate(input: $input) {
@@ -509,80 +476,11 @@ def test_transient_update_rejected_before_target_confirmed():
           }
         }
         """,
-        variable_values={"input": {"sessionId": session_id, "currentRepetitions": 5}},
-        context_value=DummyContext(user=user),
+        variable_values={"input": {"sessionId": str(uuid4()), "currentRepetitions": 5}},
+        context_value=DummyContext(user=None),
     )
-    pub_data = pub_result.data["publishTransientSessionUpdate"]
-    assert pub_data["success"] is False
-    assert pub_data["errors"][0]["code"] == "NO_CONFIRMED_TARGET"
-
-
-@pytest.mark.django_db
-def test_transient_update_rejects_out_of_bounds_values():
-    """Human GraphQL clients must not be able to publish arbitrary
-    repetition counts or confidence values -- both are bounded."""
-    user = _create_user("bounds-owner")
-    routine = _create_routine(user)
-
-    prep_result = schema.execute_sync(
-        """
-        mutation PrepareSession($input: PrepareSessionInput!) {
-          prepareSession(input: $input) { session { id } }
-        }
-        """,
-        variable_values={
-            "input": {
-                "routineId": str(routine.routine_id),
-                "routineVersion": routine.version,
-                "mode": "NORMAL",
-                "intensity": "PLANNED",
-                "coachingTone": "CALM",
-                "captureDeviceId": "phone-cam-05",
-                "idempotencyKey": "transient-prep-05",
-            }
-        },
-        context_value=DummyContext(user=user),
-    )
-    session_id = prep_result.data["prepareSession"]["session"]["id"]
-    _confirm_target(session_id, user, expected_revision=1, idempotency_key="transient-confirm-05")
-
-    pub_mutation = """
-    mutation PublishTransient($input: TransientSessionUpdateInput!) {
-      publishTransientSessionUpdate(input: $input) {
-        success
-        errors { code message field }
-      }
-    }
-    """
-
-    negative_reps = schema.execute_sync(
-        pub_mutation,
-        variable_values={"input": {"sessionId": session_id, "currentRepetitions": -1}},
-        context_value=DummyContext(user=user),
-    )
-    negative_reps_data = negative_reps.data["publishTransientSessionUpdate"]
-    assert negative_reps_data["success"] is False
-    assert negative_reps_data["errors"][0]["code"] == "INVALID_INPUT"
-
-    out_of_range_confidence = schema.execute_sync(
-        pub_mutation,
-        variable_values={"input": {"sessionId": session_id, "poseConfidence": 1.5}},
-        context_value=DummyContext(user=user),
-    )
-    assert out_of_range_confidence.data["publishTransientSessionUpdate"]["success"] is False
-    assert (
-        out_of_range_confidence.data["publishTransientSessionUpdate"]["errors"][0]["code"]
-        == "INVALID_INPUT"
-    )
-
-    # An unrecognized visibilityStatus value is rejected at the GraphQL
-    # enum-parsing layer itself, before the resolver ever runs.
-    invalid_enum = schema.execute_sync(
-        pub_mutation,
-        variable_values={"input": {"sessionId": session_id, "visibilityStatus": "GHOST"}},
-        context_value=DummyContext(user=user),
-    )
-    assert invalid_enum.errors is not None
+    assert result.errors is not None
+    assert any("publishTransientSessionUpdate" in str(error) for error in result.errors)
 
 
 def test_redis_store_handles_exceptions_safely():

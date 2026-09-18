@@ -151,16 +151,6 @@ export interface SessionResult {
   errors: DomainError[];
 }
 
-export interface TransientSessionUpdateInput {
-  sessionId: string;
-  activeExerciseId?: string;
-  currentRepetitions?: number;
-  currentDurationSeconds?: number;
-  poseConfidence?: number;
-  visibilityStatus?: string;
-  timestamp?: string;
-}
-
 export interface TransientSessionUpdate {
   sessionId: string;
   activeExerciseId?: string | null;
@@ -546,14 +536,15 @@ const sessionQuery = `
   }
 `;
 
-const publishTransientSessionUpdateMutation = `
-  mutation PublishTransientSessionUpdate($input: TransientSessionUpdateInput!) {
-    publishTransientSessionUpdate(input: $input) {
-      success
-      errors { code message field }
-    }
-  }
-`;
+// There is deliberately no publishTransientSessionUpdate operation here.
+// TransientSessionUpdate is server-produced only (published exclusively
+// by the backend's PollVisionObservationsUseCase polling real Vision
+// observations); a prior mutation let any authenticated owner of a
+// session with a confirmed target submit arbitrary values, forging a
+// "live Vision result", and has been removed from the server's schema
+// rather than access-controlled further. fetchTransientSessionState and
+// subscribeToTransientSessionUpdates remain the read-only ways to
+// observe it.
 
 const transientSessionStateQuery = `
   query TransientSessionState($sessionId: ID!) {
@@ -1221,20 +1212,6 @@ export async function fetchSession(
     return { session: null, errors: result.errors };
   }
   return { session: result.data?.session ?? null, errors: [] };
-}
-
-export async function publishTransientSessionUpdate(
-  endpoint: string,
-  input: TransientSessionUpdateInput,
-  authorization?: string,
-): Promise<{ success: boolean; errors: DomainError[] }> {
-  const result = await executeGraphQL<{
-    publishTransientSessionUpdate: { success: boolean; errors: DomainError[] };
-  }>(endpoint, publishTransientSessionUpdateMutation, { input }, authorization);
-  if (result.errors) {
-    return { success: false, errors: result.errors };
-  }
-  return result.data?.publishTransientSessionUpdate ?? { success: false, errors: [] };
 }
 
 export async function fetchTransientSessionState(

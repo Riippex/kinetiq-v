@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as indexModule from './index.ts';
 import {
   abandonSession,
   confirmSessionTarget,
@@ -15,7 +16,6 @@ import {
   isUnsupportedLimitationError,
   parseLimitationsInput,
   pauseSession,
-  publishTransientSessionUpdate,
   recordSessionFeedback,
   resumeSession,
   startSession,
@@ -545,33 +545,19 @@ test('startSession surfaces domain error when revision conflict occurs', async (
   }
 });
 
-test('publishTransientSessionUpdate sends mutation and returns status', async () => {
-  const originalFetch = globalThis.fetch;
-  const calls: Array<{ url: string; body: { query: string; variables: unknown } }> = [];
-  globalThis.fetch = (async (url: string, options: { body: string }) => {
-    calls.push({ url, body: JSON.parse(options.body) });
-    return {
-      ok: true,
-      json: async () => ({
-        data: {
-          publishTransientSessionUpdate: { success: true, errors: [] },
-        },
-      }),
-    } as Response;
-  }) as typeof fetch;
-
-  try {
-    const result = await publishTransientSessionUpdate('/api/graphql', {
-      sessionId: 'sess-001',
-      activeExerciseId: 'goblet-squat',
-      currentRepetitions: 5,
-    });
-    assert.equal(result.success, true);
-    assert.deepEqual(result.errors, []);
-    assert.match(calls[0].body.query, /mutation PublishTransientSessionUpdate/);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+// Regression test for the Block 4 finding: publishTransientSessionUpdate
+// let any authenticated owner of a session with a confirmed target
+// forge arbitrary "live Vision result" values. TransientSessionUpdate is
+// now server-produced only (PollVisionObservationsUseCase polling real
+// Vision observations), so this client must not expose any operation
+// that publishes one -- only fetchTransientSessionState and
+// subscribeToTransientSessionUpdates remain, both read-only.
+test('does not export a publishTransientSessionUpdate operation', () => {
+  assert.equal(
+    'publishTransientSessionUpdate' in indexModule,
+    false,
+    'transient session updates must be server-produced only',
+  );
 });
 
 test('syncSessionState restores from committed PostgreSQL when transient state is null (Redis loss)', async () => {
