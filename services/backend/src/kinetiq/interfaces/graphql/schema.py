@@ -1467,20 +1467,23 @@ def _failure(code: str, message: str, field: str | None = None) -> SessionResult
 
 @strawberry.type
 class Subscription:
-    """The intended fan-out path for live transient session progress:
-    clients subscribe to receive server-validated updates rather than each
-    other publishing arbitrary values via `publishTransientSessionUpdate`.
+    """The fan-out path for live transient session progress: clients
+    subscribe to receive server-validated updates rather than each other
+    publishing arbitrary values via `publishTransientSessionUpdate`.
     Reuses the same Redis Pub/Sub channel `RedisSessionTransientStore`
-    already publishes validated `TransientSessionUpdate`s to.
+    already publishes validated `TransientSessionUpdate`s to -- now fed for
+    real by `PollVisionObservationsUseCase` (see
+    workouts/application/observation_ingestion.py) rather than only by the
+    manual mutation.
 
-    Disclosed limitation: this resolver is not yet reachable by a real
-    client. The GraphQL endpoint is served synchronously via
-    `strawberry.django.views.GraphQLView` over plain HTTP
-    (bootstrap/urls.py); GraphQL subscriptions need a websocket transport,
-    and wiring one (an ASGI websocket route/consumer) is a separate,
-    substantial infrastructure change not made in this pass. This is
-    unit-testable directly against the schema (as a query/mutation would
-    be) without that transport.
+    Reachable by a real client over the authenticated ASGI websocket
+    transport wired in `bootstrap/asgi.py`
+    (`AuthenticatedGraphQLWSConsumer` + `channels.auth.AuthMiddlewareStack`
+    at `ws://<host>/graphql`), in addition to being unit-testable directly
+    against the schema (as a query/mutation would be) without that
+    transport. The plain-HTTP endpoint in `bootstrap/urls.py`
+    (`strawberry.django.views.GraphQLView`) remains query/mutation-only;
+    subscriptions require the websocket transport.
     """
 
     @strawberry.subscription
