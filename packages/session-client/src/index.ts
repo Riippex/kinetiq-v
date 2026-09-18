@@ -173,6 +173,35 @@ export interface SessionStateSync {
   errors: DomainError[];
 }
 
+/**
+ * Minimal surface of the standard WebSocket API this client depends on,
+ * so callers (or tests) can inject a substitute implementation instead of
+ * relying on a global `WebSocket` -- useful on runtimes where it isn't
+ * ambient (older Node, some React Native configurations) and for
+ * deterministic unit tests that never open a real socket.
+ */
+export interface WebSocketLike {
+  readyState: number;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: string, listener: (event: any) => void): void;
+  removeEventListener(type: string, listener: (event: any) => void): void;
+}
+
+export type WebSocketFactory = (url: string, protocol: string) => WebSocketLike;
+
+export interface TransientSessionUpdateSubscription {
+  /** Sends graphql-transport-ws `complete` and closes the socket. */
+  unsubscribe: () => void;
+}
+
+export interface SubscribeToTransientSessionUpdatesOptions {
+  onError?: (errors: DomainError[]) => void;
+  onComplete?: () => void;
+  authorization?: string;
+  webSocketFactory?: WebSocketFactory;
+}
+
 
 export interface RoutineExercise {
   id: string;
@@ -507,6 +536,20 @@ const publishTransientSessionUpdateMutation = `
 const transientSessionStateQuery = `
   query TransientSessionState($sessionId: ID!) {
     transientSessionState(sessionId: $sessionId) {
+      sessionId
+      activeExerciseId
+      currentRepetitions
+      currentDurationSeconds
+      poseConfidence
+      visibilityStatus
+      timestamp
+    }
+  }
+`;
+
+const transientSessionUpdatesSubscription = `
+  subscription TransientSessionUpdates($sessionId: ID!) {
+    transientSessionUpdates(sessionId: $sessionId) {
       sessionId
       activeExerciseId
       currentRepetitions
@@ -1138,6 +1181,140 @@ export async function fetchTransientSessionState(
     return { transient: null, errors: result.errors };
   }
   return { transient: result.data?.transientSessionState ?? null, errors: [] };
+}
+
+let subscriptionCounter = 0;
+function nextSubscriptionId(): string {
+  subscriptionCounter += 1;
+  return `sub-${Date.now()}-${subscriptionCounter}`;
+}
+
+/**
+ * Subscribes to live transient session updates over the graphql-transport-ws
+ * protocol (https://github.com/enisdenjo/graphql-ws/blob/master/PROTOCOL.md),
+ * the subprotocol the backend's websocket transport
+ * (bootstrap/asgi.py's AuthenticatedGraphQLWSConsumer) accepts.
+ *
+ * Implemented directly against the standard WebSocket API rather than a
+ * graphql-ws/Apollo client dependency, matching this package's existing
+ * zero-runtime-dependency `fetch`-based design. Only the handful of
+ * message types this client actually needs (connection_init/ack,
+ * subscribe, next, error, complete) are handled.
+ *
+ * `wsEndpoint` is the websocket URL (e.g. `wss://api.example.com/graphql`),
+ * distinct from the HTTP endpoint the rest of this module posts to.
+ */
+export function subscribeToTransientSessionUpdates(
+  wsEndpoint: string,
+  sessionId: string,
+  onUpdate: (update: TransientSessionUpdate) => void,
+  options: SubscribeToTransientSessionUpdatesOptions = {},
+): TransientSessionUpdateSubscription {
+  const factory: WebSocketFactory =
+    options.webSocketFactory ??
+    ((url, protocol) => new (globalThis as any).WebSocket(url, protocol) as WebSocketLike);
+
+  const socket = factory(wsEndpoint, 'graphql-transport-ws');
+  const subscriptionId = nextSubscriptionId();
+  let completed = false;
+
+  const cleanup = () => {
+    socket.removeEventListener('open', onOpen);
+    socket.removeEventListener('message', onMessage);
+    socket.removeEventListener('close', onClose);
+    socket.removeEventListener('error', onSocketError);
+  };
+
+  function onOpen(): void {
+    socket.send(
+      JSON.stringify({
+        type: 'connection_init',
+        ...(options.authorization ? { payload: { authorization: options.authorization } } : {}),
+      }),
+    );
+  }
+
+  function onMessage(event: { data: string }): void {
+    let message: { type?: string; id?: string; payload?: unknown };
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    switch (message.type) {
+      case 'connection_ack':
+        socket.send(
+          JSON.stringify({
+            type: 'subscribe',
+            id: subscriptionId,
+            payload: {
+              query: transientSessionUpdatesSubscription,
+              variables: { sessionId },
+            },
+          }),
+        );
+        break;
+      case 'next': {
+        if (message.id !== subscriptionId) break;
+        const payload = message.payload as { data?: { transientSessionUpdates?: TransientSessionUpdate } };
+        const update = payload?.data?.transientSessionUpdates;
+        if (update) onUpdate(update);
+        break;
+      }
+      case 'error': {
+        if (message.id !== subscriptionId) break;
+        const errors = (Array.isArray(message.payload) ? message.payload : [message.payload]).map(
+          (e: any) => ({
+            code: 'SUBSCRIPTION_ERROR',
+            message: e?.message ?? 'The subscription reported an error',
+          }),
+        );
+        options.onError?.(errors);
+        break;
+      }
+      case 'complete':
+        if (message.id !== subscriptionId) break;
+        completed = true;
+        cleanup();
+        options.onComplete?.();
+        break;
+      default:
+        break;
+    }
+  }
+
+  function onClose(): void {
+    cleanup();
+    if (!completed) {
+      options.onError?.([{ code: 'TRANSPORT_ERROR', message: 'The subscription connection closed' }]);
+    }
+  }
+
+  function onSocketError(): void {
+    cleanup();
+    options.onError?.([{ code: 'TRANSPORT_ERROR', message: 'The subscription connection failed' }]);
+  }
+
+  socket.addEventListener('open', onOpen);
+  socket.addEventListener('message', onMessage);
+  socket.addEventListener('close', onClose);
+  socket.addEventListener('error', onSocketError);
+
+  return {
+    unsubscribe: () => {
+      if (completed) return;
+      completed = true;
+      try {
+        if (socket.readyState === 1) {
+          socket.send(JSON.stringify({ type: 'complete', id: subscriptionId }));
+        }
+      } finally {
+        cleanup();
+        socket.close();
+      }
+    },
+  };
 }
 
 export async function syncSessionState(

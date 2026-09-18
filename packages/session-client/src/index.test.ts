@@ -18,11 +18,13 @@ import {
   recordSessionFeedback,
   resumeSession,
   startSession,
+  subscribeToTransientSessionUpdates,
   syncSessionState,
   toggleExclusion,
   updateProfile,
   type DomainError,
   type SessionCommand,
+  type WebSocketLike,
 } from './index.ts';
 
 
@@ -669,5 +671,229 @@ test('confirmSessionTarget surfaces domain error when session not found', async 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// --- subscribeToTransientSessionUpdates -------------------------------------
+
+class FakeWebSocket implements WebSocketLike {
+  readyState = 0;
+  sent: string[] = [];
+  private listeners: Record<string, Array<(event: any) => void>> = {};
+
+  addEventListener(type: string, listener: (event: any) => void): void {
+    (this.listeners[type] ??= []).push(listener);
+  }
+
+  removeEventListener(type: string, listener: (event: any) => void): void {
+    this.listeners[type] = (this.listeners[type] ?? []).filter((l) => l !== listener);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(): void {
+    this.readyState = 3;
+    this.emit('close', {});
+  }
+
+  emit(type: string, event: any): void {
+    for (const listener of this.listeners[type] ?? []) listener(event);
+  }
+
+  simulateOpen(): void {
+    this.readyState = 1;
+    this.emit('open', {});
+  }
+
+  simulateMessage(message: unknown): void {
+    this.emit('message', { data: JSON.stringify(message) });
+  }
+
+  lastSent(): any {
+    return JSON.parse(this.sent[this.sent.length - 1]);
+  }
+}
+
+test('subscribeToTransientSessionUpdates sends connection_init on open, then subscribe on ack', () => {
+  let created: FakeWebSocket | undefined;
+  subscribeToTransientSessionUpdates(
+    'wss://api.example.com/graphql',
+    'sess-100',
+    () => {},
+    {
+      webSocketFactory: (url, protocol) => {
+        assert.equal(url, 'wss://api.example.com/graphql');
+        assert.equal(protocol, 'graphql-transport-ws');
+        created = new FakeWebSocket();
+        return created;
+      },
+    },
+  );
+
+  const socket = created!;
+  socket.simulateOpen();
+  assert.deepEqual(socket.lastSent(), { type: 'connection_init' });
+
+  socket.simulateMessage({ type: 'connection_ack' });
+  const subscribeMessage = socket.lastSent();
+  assert.equal(subscribeMessage.type, 'subscribe');
+  assert.equal(subscribeMessage.payload.variables.sessionId, 'sess-100');
+  assert.match(subscribeMessage.payload.query, /subscription TransientSessionUpdates/);
+});
+
+test('subscribeToTransientSessionUpdates delivers next messages to onUpdate', () => {
+  let created: FakeWebSocket | undefined;
+  const received: unknown[] = [];
+  subscribeToTransientSessionUpdates(
+    'wss://api.example.com/graphql',
+    'sess-101',
+    (update) => received.push(update),
+    {
+      webSocketFactory: () => {
+        created = new FakeWebSocket();
+        return created;
+      },
+    },
+  );
+
+  const socket = created!;
+  socket.simulateOpen();
+  socket.simulateMessage({ type: 'connection_ack' });
+  const subscribeId = socket.lastSent().id;
+
+  socket.simulateMessage({
+    type: 'next',
+    id: subscribeId,
+    payload: {
+      data: {
+        transientSessionUpdates: {
+          sessionId: 'sess-101',
+          currentRepetitions: 5,
+          visibilityStatus: 'VISIBLE',
+        },
+      },
+    },
+  });
+
+  assert.equal(received.length, 1);
+  assert.deepEqual(received[0], {
+    sessionId: 'sess-101',
+    currentRepetitions: 5,
+    visibilityStatus: 'VISIBLE',
+  });
+});
+
+test('subscribeToTransientSessionUpdates surfaces graphql-transport-ws error messages', () => {
+  let created: FakeWebSocket | undefined;
+  const errors: DomainError[][] = [];
+  subscribeToTransientSessionUpdates(
+    'wss://api.example.com/graphql',
+    'sess-102',
+    () => {},
+    {
+      onError: (e) => errors.push(e),
+      webSocketFactory: () => {
+        created = new FakeWebSocket();
+        return created;
+      },
+    },
+  );
+
+  const socket = created!;
+  socket.simulateOpen();
+  socket.simulateMessage({ type: 'connection_ack' });
+  const subscribeId = socket.lastSent().id;
+
+  socket.simulateMessage({
+    type: 'error',
+    id: subscribeId,
+    payload: [{ message: 'Workout session not found' }],
+  });
+
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0][0].code, 'SUBSCRIPTION_ERROR');
+  assert.equal(errors[0][0].message, 'Workout session not found');
+});
+
+test('subscribeToTransientSessionUpdates unsubscribe sends complete and closes the socket', () => {
+  let created: FakeWebSocket | undefined;
+  const subscription = subscribeToTransientSessionUpdates(
+    'wss://api.example.com/graphql',
+    'sess-103',
+    () => {},
+    {
+      webSocketFactory: () => {
+        created = new FakeWebSocket();
+        return created;
+      },
+    },
+  );
+
+  const socket = created!;
+  socket.simulateOpen();
+  socket.simulateMessage({ type: 'connection_ack' });
+  const subscribeId = socket.lastSent().id;
+
+  subscription.unsubscribe();
+
+  assert.deepEqual(socket.lastSent(), { type: 'complete', id: subscribeId });
+  assert.equal(socket.readyState, 3);
+});
+
+test('subscribeToTransientSessionUpdates reports a transport error on unexpected close', () => {
+  let created: FakeWebSocket | undefined;
+  const errors: DomainError[][] = [];
+  subscribeToTransientSessionUpdates(
+    'wss://api.example.com/graphql',
+    'sess-104',
+    () => {},
+    {
+      onError: (e) => errors.push(e),
+      webSocketFactory: () => {
+        created = new FakeWebSocket();
+        return created;
+      },
+    },
+  );
+
+  const socket = created!;
+  socket.simulateOpen();
+  socket.emit('close', {});
+
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0][0].code, 'TRANSPORT_ERROR');
+});
+
+test('subscribeToTransientSessionUpdates does not report an error after a clean complete', () => {
+  let created: FakeWebSocket | undefined;
+  const errors: DomainError[][] = [];
+  let completed = false;
+  subscribeToTransientSessionUpdates(
+    'wss://api.example.com/graphql',
+    'sess-105',
+    () => {},
+    {
+      onError: (e) => errors.push(e),
+      onComplete: () => {
+        completed = true;
+      },
+      webSocketFactory: () => {
+        created = new FakeWebSocket();
+        return created;
+      },
+    },
+  );
+
+  const socket = created!;
+  socket.simulateOpen();
+  socket.simulateMessage({ type: 'connection_ack' });
+  const subscribeId = socket.lastSent().id;
+
+  socket.simulateMessage({ type: 'complete', id: subscribeId });
+  socket.emit('close', {});
+
+  assert.equal(completed, true);
+  assert.equal(errors.length, 0);
 });
 
