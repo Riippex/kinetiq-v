@@ -25,10 +25,12 @@ from kinetiq.modules.workouts.application import (
     DisableDynamicModeUseCase,
     FinishWorkoutSessionUseCase,
     GetWorkoutSessionUseCase,
+    ListVisionCandidatesUseCase,
     PauseWorkoutSessionUseCase,
     PrepareWorkoutSession,
     RecordSessionFeedbackUseCase,
     ResumeWorkoutSessionUseCase,
+    StartSessionVisionAnalysisUseCase,
     StartWorkoutSessionUseCase,
 )
 from kinetiq.modules.workouts.application.ports import SessionTransientStore
@@ -63,7 +65,19 @@ def prepare_workout_session() -> PrepareWorkoutSession:
 
 def confirm_session_target() -> ConfirmSessionTargetUseCase:
     return ConfirmSessionTargetUseCase(
+        DjangoSessionLifecycleRepository(), get_vision_rest_adapter()
+    )
+
+
+def start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
+    return StartSessionVisionAnalysisUseCase(
         DjangoSessionLifecycleRepository(), get_vision_rest_adapter(), DjangoRoutineItemLookup()
+    )
+
+
+def list_vision_candidates() -> ListVisionCandidatesUseCase:
+    return ListVisionCandidatesUseCase(
+        DjangoSessionLifecycleRepository(), get_vision_rest_adapter()
     )
 
 

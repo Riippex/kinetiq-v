@@ -8,7 +8,10 @@ from django.core.cache import cache
 from kinetiq.interfaces.graphql.schema import schema
 from kinetiq.modules.identity.infrastructure.models import User
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
-from kinetiq.modules.workouts.application import ConfirmSessionTargetUseCase
+from kinetiq.modules.workouts.application import (
+    ConfirmSessionTargetUseCase,
+    StartSessionVisionAnalysisUseCase,
+)
 from kinetiq.modules.workouts.application.ports import (
     TransientSessionUpdate,
     VisionAnalysisHandle,
@@ -52,6 +55,13 @@ def _fake_confirm_session_target() -> ConfirmSessionTargetUseCase:
     return ConfirmSessionTargetUseCase(
         DjangoSessionLifecycleRepository(),
         _FakeVisionSessionAnalysisPort(),
+    )
+
+
+def _fake_start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
+    return StartSessionVisionAnalysisUseCase(
+        DjangoSessionLifecycleRepository(),
+        _FakeVisionSessionAnalysisPort(),
         DjangoRoutineItemLookup(),
     )
 
@@ -59,6 +69,35 @@ def _fake_confirm_session_target() -> ConfirmSessionTargetUseCase:
 def _confirm_target(
     session_id: str, user: User, *, expected_revision: int, idempotency_key: str
 ) -> None:
+    """Starts the session's Vision analysis (the now-mandatory first step
+    of the split target-enrollment lifecycle) and then confirms a target,
+    bumping the revision once for each of those two steps."""
+    start_mutation = """
+    mutation StartSessionVisionAnalysis($command: SessionCommandInput!) {
+      startSessionVisionAnalysis(command: $command) {
+        session { id revision }
+        errors { code message field }
+      }
+    }
+    """
+    with patch(
+        "kinetiq.interfaces.graphql.schema.start_session_vision_analysis",
+        _fake_start_session_vision_analysis,
+    ):
+        start_result = schema.execute_sync(
+            start_mutation,
+            variable_values={
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": expected_revision,
+                    "idempotencyKey": f"{idempotency_key}-start",
+                }
+            },
+            context_value=DummyContext(user=user),
+        )
+    assert start_result.errors is None
+    assert start_result.data["startSessionVisionAnalysis"]["errors"] == []
+
     confirm_mutation = """
     mutation ConfirmSessionTarget($command: SessionCommandInput!, $targetPersonId: String!) {
       confirmSessionTarget(command: $command, targetPersonId: $targetPersonId) {
@@ -75,7 +114,7 @@ def _confirm_target(
             variable_values={
                 "command": {
                     "sessionId": session_id,
-                    "expectedRevision": expected_revision,
+                    "expectedRevision": expected_revision + 1,
                     "idempotencyKey": idempotency_key,
                 },
                 "targetPersonId": "vision-target-01",
@@ -240,7 +279,9 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
 
     # Confirm target: transient updates require a Vision-confirmed target.
     # Must happen before finish (target cannot be confirmed on a finished
-    # session), which shifts the start/finish revisions below by one.
+    # session). _confirm_target performs two revision-bumping steps
+    # (startSessionVisionAnalysis, then confirmSessionTarget), which shifts
+    # the start/finish revisions below by two.
     _confirm_target(session_id, user, expected_revision=1, idempotency_key="transient-confirm-02")
 
     # Start session
@@ -257,7 +298,7 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
         variable_values={
             "command": {
                 "sessionId": session_id,
-                "expectedRevision": 2,
+                "expectedRevision": 3,
                 "idempotencyKey": "start-02",
             }
         },
@@ -281,7 +322,7 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
         variable_values={
             "command": {
                 "sessionId": session_id,
-                "expectedRevision": 3,
+                "expectedRevision": 4,
                 "idempotencyKey": "finish-02",
             },
             "performedSets": [

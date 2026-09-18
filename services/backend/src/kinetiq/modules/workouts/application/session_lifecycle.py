@@ -8,6 +8,7 @@ from kinetiq.modules.workouts.application.ports import (
     RoutineItemLookup,
     SessionLifecycleRepository,
     UnknownVisionCandidateError,
+    VisionCandidateInfo,
     VisionSessionAnalysisPort,
 )
 from kinetiq.modules.workouts.domain import (
@@ -35,6 +36,22 @@ class UnknownRoutineExerciseError(ValueError):
 class InconsistentPerformedSetMeasurementError(ValueError):
     """Raised when a performed set's measurement (repetitions vs. duration)
     does not match how the accepted routine prescribes that exercise."""
+
+
+class VisionAnalysisNotStartedError(ValueError):
+    """Raised when confirming a target before a Vision analysis has been
+    started and persisted for the session via
+    StartSessionVisionAnalysisUseCase. Confirming a target requires an
+    analysis_id to address on Vision's side; there is no implicit fallback
+    that creates one, since that would reintroduce the "confirm creates a
+    fresh analysis on every retry" defect this split was meant to remove."""
+
+    def __init__(self, session_id: UUID) -> None:
+        super().__init__(
+            f"Session '{session_id}' has no Vision analysis started; call "
+            "startSessionVisionAnalysis before confirming a target"
+        )
+        self.session_id = session_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,21 +333,44 @@ class AbandonWorkoutSessionUseCase(BaseSessionLifecycleUseCase):
         )
 
 
-class ConfirmSessionTargetUseCase(BaseSessionLifecycleUseCase):
-    """Confirms a Vision-detected candidate as the session's target.
+def _resolve_exercise_key(
+    *, routine_items: RoutineItemLookup, owner_id: UUID, session: WorkoutSession
+) -> str:
+    items = routine_items.get_accepted_routine_items(
+        owner_id=owner_id, routine_id=session.routine_id, version=session.routine_version
+    )
+    if not items:
+        raise ValueError(
+            f"No accepted routine items found for session '{session.id}'; "
+            "cannot determine which exercise to start a Vision analysis for"
+        )
+    # Simplification, disclosed: one Vision analysis per session is
+    # started against the routine's first prescribed exercise. Catalog
+    # exercise IDs and Vision's exercise_key vocabulary are the same
+    # reconciled strings (bodyweight_squat, push_up, plank,
+    # glute_bridge -- see VV-101/contract adoption), so this is a
+    # direct pass-through, not a guess. Per-exercise Vision analysis
+    # switching as the session progresses through the routine is not
+    # implemented; the same analysis (and its exercise_key) is reused
+    # for the whole session until VV-501 exercise engines exist.
+    return items[0].exercise_id
 
-    Unlike the other lifecycle transitions, this one has a genuine external
-    dependency: it must select a candidate that Vision actually detected
-    for an active analysis, not merely persist whatever string a client
-    supplies. It creates (idempotently, reusing an already-attached
-    analysis if one exists) a Vision analysis for the session's capture
-    device, verifies the requested candidate_id is currently among
-    Vision's detected candidates, and only then confirms it via Vision's
-    own `/v1/analyses/{id}/target` (which independently enforces
-    expected_epoch and can raise VisionStaleEpochError), before persisting
-    the result. The Vision calls happen outside `_execute_transition`'s
-    locked retry loop -- they are not pure and must not run more than the
-    minimum necessary times per request.
+
+class StartSessionVisionAnalysisUseCase(BaseSessionLifecycleUseCase):
+    """Starts (idempotently) the Vision analysis for a session's capture
+    device -- the first step of the target-enrollment lifecycle, split out
+    from confirmation so a client can start an analysis, let frames stream
+    into it on the Vision side (populating candidates via Vision's own
+    frame-ingestion endpoint), query the detected candidates, and only then
+    confirm one -- instead of one combined mutation that both starts and
+    confirms, which cannot express "no candidates yet" without either
+    failing outright or silently creating a fresh Vision analysis on every
+    retry.
+
+    Validates the local revision and idempotency command against
+    PostgreSQL (`check_transition_precondition`) BEFORE calling Vision, so
+    a stale `expected_revision` or a replayed idempotency key never reaches
+    Vision at all.
     """
 
     def __init__(
@@ -343,12 +383,131 @@ class ConfirmSessionTargetUseCase(BaseSessionLifecycleUseCase):
         self._vision = vision_client
         self._routine_items = routine_items
 
-    def execute(self, *, owner_id: UUID, command: ConfirmTargetCommand) -> WorkoutSession:
-        session = self._repository.get_session(owner_id=owner_id, session_id=command.session_id)
-        if session is None:
-            raise SessionNotFound(f"Workout session '{command.session_id}' not found")
+    def execute(self, *, owner_id: UUID, command: SessionLifecycleCommand) -> WorkoutSession:
+        if not command.idempotency_key.strip():
+            raise ValueError("An idempotency key is required")
+        if command.expected_revision < 1:
+            raise ValueError("Expected revision must be positive")
 
-        analysis_id, epoch = self._ensure_vision_analysis(owner_id=owner_id, session=session)
+        precondition = self._repository.check_transition_precondition(
+            owner_id=owner_id,
+            session_id=command.session_id,
+            expected_revision=command.expected_revision,
+            operation="workouts.start_vision_analysis",
+            idempotency_key=command.idempotency_key,
+            request_fingerprint=command.fingerprint(),
+        )
+        if precondition.already_applied:
+            return precondition.session
+
+        session = precondition.session
+        if session.vision_analysis_id is not None:
+            # Already started -- nothing to do locally, and calling Vision
+            # again would be redundant (Vision's own idempotency key would
+            # just resolve to the same analysis, but the point of this
+            # early return is to avoid the network call altogether).
+            return session
+
+        exercise_key = _resolve_exercise_key(
+            routine_items=self._routine_items, owner_id=owner_id, session=session
+        )
+        # Deterministic idempotency key: retries or concurrent requests for
+        # the same session must not create duplicate Vision analyses --
+        # Vision's contract guarantees POST /v1/analyses is idempotent on
+        # this key.
+        created = self._vision.create_analysis(
+            session_id=session.id,
+            source_id=session.configuration.capture_device_id,
+            exercise_key=exercise_key,
+            exercise_version=1,
+            idempotency_key=f"session-analysis-{session.id}",
+        )
+
+        return self._execute_transition(
+            owner_id=owner_id,
+            command=command,
+            operation="workouts.start_vision_analysis",
+            transition=lambda s: s.attach_vision_analysis(
+                vision_analysis_id=created.analysis_id, vision_epoch=created.epoch
+            ),
+        )
+
+
+class ListVisionCandidatesUseCase:
+    """Read-only boundary onto Vision's currently detected candidates for
+    the analysis already attached to a session. Returns an empty tuple,
+    never an error, when no analysis has been started yet or Vision has
+    not detected anyone so far -- letting a client poll this safely while
+    frames are still streaming in, without special-casing "not started"."""
+
+    def __init__(
+        self, repository: SessionLifecycleRepository, vision_client: VisionSessionAnalysisPort
+    ) -> None:
+        self._repository = repository
+        self._vision = vision_client
+
+    def execute(
+        self, *, owner_id: UUID, session_id: UUID
+    ) -> tuple[VisionCandidateInfo, ...]:
+        session = self._repository.get_session(owner_id=owner_id, session_id=session_id)
+        if session is None:
+            raise SessionNotFound(f"Workout session '{session_id}' not found")
+        if session.vision_analysis_id is None:
+            return ()
+        return self._vision.list_candidates(analysis_id=session.vision_analysis_id)
+
+
+class ConfirmSessionTargetUseCase(BaseSessionLifecycleUseCase):
+    """Confirms a Vision-detected candidate as the session's target.
+
+    Requires a Vision analysis to already be attached to the session (via
+    StartSessionVisionAnalysisUseCase) -- this use case no longer creates
+    one itself; see that class and ListVisionCandidatesUseCase for the
+    preceding steps of the split target-enrollment lifecycle.
+
+    Validates the local revision and idempotency command against
+    PostgreSQL (`check_transition_precondition`) BEFORE calling Vision, so
+    a stale `expected_revision` is caught before Vision's own
+    `/v1/analyses/{id}/target` is ever called. Then verifies the requested
+    candidate_id is currently among Vision's detected candidates, confirms
+    it via Vision (which independently enforces expected_epoch and can
+    raise VisionStaleEpochError), and only then completes the local
+    transition. The Vision calls happen outside `_execute_transition`'s
+    locked retry loop -- they are not pure and must not run more than the
+    minimum necessary times per request.
+    """
+
+    def __init__(
+        self,
+        repository: SessionLifecycleRepository,
+        vision_client: VisionSessionAnalysisPort,
+    ) -> None:
+        super().__init__(repository)
+        self._vision = vision_client
+
+    def execute(self, *, owner_id: UUID, command: ConfirmTargetCommand) -> WorkoutSession:
+        if not command.idempotency_key.strip():
+            raise ValueError("An idempotency key is required")
+        if command.expected_revision < 1:
+            raise ValueError("Expected revision must be positive")
+
+        precondition = self._repository.check_transition_precondition(
+            owner_id=owner_id,
+            session_id=command.session_id,
+            expected_revision=command.expected_revision,
+            operation="workouts.confirm_target",
+            idempotency_key=command.idempotency_key,
+            request_fingerprint=command.fingerprint(),
+        )
+        if precondition.already_applied:
+            return precondition.session
+
+        session = precondition.session
+        if session.vision_analysis_id is None:
+            raise VisionAnalysisNotStartedError(session.id)
+
+        analysis_id = session.vision_analysis_id
+        epoch = session.vision_epoch or 1
 
         candidates = self._vision.list_candidates(analysis_id=analysis_id)
         if command.target_person_id not in {c.candidate_id for c in candidates}:
@@ -367,51 +526,9 @@ class ConfirmSessionTargetUseCase(BaseSessionLifecycleUseCase):
             operation="workouts.confirm_target",
             transition=lambda s: s.confirm_target(
                 confirmation.target_person_id,
-                vision_analysis_id=analysis_id,
                 vision_epoch=confirmation.epoch,
             ),
         )
-
-    def _ensure_vision_analysis(
-        self, *, owner_id: UUID, session: WorkoutSession
-    ) -> tuple[str, int]:
-        if session.vision_analysis_id is not None:
-            return session.vision_analysis_id, session.vision_epoch or 1
-
-        exercise_key = self._resolve_exercise_key(owner_id=owner_id, session=session)
-        # Deterministic idempotency key: retries or concurrent requests for
-        # the same session must not create duplicate Vision analyses --
-        # Vision's contract guarantees POST /v1/analyses is idempotent on
-        # this key.
-        created = self._vision.create_analysis(
-            session_id=session.id,
-            source_id=session.configuration.capture_device_id,
-            exercise_key=exercise_key,
-            exercise_version=1,
-            idempotency_key=f"session-analysis-{session.id}",
-        )
-        return created.analysis_id, created.epoch
-
-    def _resolve_exercise_key(self, *, owner_id: UUID, session: WorkoutSession) -> str:
-        items = self._routine_items.get_accepted_routine_items(
-            owner_id=owner_id, routine_id=session.routine_id, version=session.routine_version
-        )
-        if not items:
-            raise ValueError(
-                f"No accepted routine items found for session '{session.id}'; "
-                "cannot determine which exercise to start a Vision analysis for"
-            )
-        # Simplification, disclosed: one Vision analysis per session is
-        # started against the routine's first prescribed exercise. Catalog
-        # exercise IDs and Vision's exercise_key vocabulary are the same
-        # reconciled strings (bodyweight_squat, push_up, plank,
-        # glute_bridge -- see VV-101/contract adoption), so this is a
-        # direct pass-through, not a guess. Per-exercise Vision analysis
-        # switching as the session progresses through the routine is not
-        # implemented; the same analysis (and its exercise_key) is reused
-        # for the whole session until VV-501 exercise engines exist.
-        return items[0].exercise_id
-
 
 
 class GetWorkoutSessionUseCase:

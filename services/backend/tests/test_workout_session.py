@@ -310,8 +310,35 @@ class SessionPreparationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ObservationCoverage(coverage_ratio=-0.1, tracked_seconds=10, total_seconds=10)
 
-    def test_confirm_target_on_ready_and_active_session(self) -> None:
+    def test_attach_vision_analysis_persists_analysis_id_and_epoch(self) -> None:
         ready = prepared_session(SessionMode.NORMAL)
+        self.assertIsNone(ready.vision_analysis_id)
+
+        started = ready.attach_vision_analysis(vision_analysis_id="an_1", vision_epoch=1)
+        self.assertEqual("an_1", started.vision_analysis_id)
+        self.assertEqual(1, started.vision_epoch)
+        self.assertEqual(ready.revision + 1, started.revision)
+
+    def test_attach_vision_analysis_rejects_completed_or_abandoned_session(self) -> None:
+        completed = prepared_session(SessionMode.NORMAL).start().finish()
+        with self.assertRaises(InvalidSessionStateTransition):
+            completed.attach_vision_analysis(vision_analysis_id="an_1", vision_epoch=1)
+
+        abandoned = prepared_session(SessionMode.NORMAL).abandon()
+        with self.assertRaises(InvalidSessionStateTransition):
+            abandoned.attach_vision_analysis(vision_analysis_id="an_1", vision_epoch=1)
+
+    def test_confirm_target_requires_a_started_vision_analysis(self) -> None:
+        """A candidate cannot be confirmed before startSessionVisionAnalysis
+        has attached a Vision analysis -- there is no implicit fallback."""
+        ready = prepared_session(SessionMode.NORMAL)
+        with self.assertRaises(InvalidSessionStateTransition):
+            ready.confirm_target("person-123")
+
+    def test_confirm_target_on_ready_and_active_session(self) -> None:
+        ready = prepared_session(SessionMode.NORMAL).attach_vision_analysis(
+            vision_analysis_id="an_1", vision_epoch=1
+        )
         self.assertIsNone(ready.target_person_id)
 
         confirmed_ready = ready.confirm_target("person-123")
@@ -324,18 +351,29 @@ class SessionPreparationTests(unittest.TestCase):
         self.assertEqual(active.revision + 1, confirmed_active.revision)
 
     def test_confirm_target_rejects_empty_target_person_id(self) -> None:
-        ready = prepared_session(SessionMode.NORMAL)
+        ready = prepared_session(SessionMode.NORMAL).attach_vision_analysis(
+            vision_analysis_id="an_1", vision_epoch=1
+        )
         with self.assertRaises(ValueError):
             ready.confirm_target("")
         with self.assertRaises(ValueError):
             ready.confirm_target("   ")
 
     def test_confirm_target_rejects_completed_or_abandoned_session(self) -> None:
-        completed = prepared_session(SessionMode.NORMAL).start().finish()
+        completed = (
+            prepared_session(SessionMode.NORMAL)
+            .attach_vision_analysis(vision_analysis_id="an_1", vision_epoch=1)
+            .start()
+            .finish()
+        )
         with self.assertRaises(InvalidSessionStateTransition):
             completed.confirm_target("person-123")
 
-        abandoned = prepared_session(SessionMode.NORMAL).abandon()
+        abandoned = (
+            prepared_session(SessionMode.NORMAL)
+            .attach_vision_analysis(vision_analysis_id="an_1", vision_epoch=1)
+            .abandon()
+        )
         with self.assertRaises(InvalidSessionStateTransition):
             abandoned.confirm_target("person-123")
 

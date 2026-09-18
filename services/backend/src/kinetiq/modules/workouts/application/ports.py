@@ -28,10 +28,48 @@ class SessionPreparationRepository(Protocol):
     ) -> WorkoutSession: ...
 
 
+@dataclass(frozen=True, slots=True)
+class TransitionPrecondition:
+    """Result of validating a lifecycle command against the persisted
+    session before any external (e.g. Vision) side effect runs.
+
+    `already_applied=True` means an idempotency receipt for this exact
+    (operation, idempotency_key) already exists and `session` is its
+    resolved result -- the caller must return it directly and must not
+    call out to Vision again, or a retry would leak a duplicate Vision
+    mutation (e.g. a second analysis) on every replay.
+
+    `already_applied=False` means no receipt exists and `session.revision`
+    matched `expected_revision` at the time of the check -- the caller may
+    proceed to call Vision, then finish with `apply_transition`. This is a
+    check-then-act validation, not a lock held across the network call: a
+    concurrent write could still land between this check and the final
+    `apply_transition`, which re-validates both conditions again before
+    persisting. It closes the common case (a stale revision known upfront)
+    rather than guaranteeing perfect cross-system atomicity, which would
+    require holding a PostgreSQL row lock open across an external Vision
+    HTTP call.
+    """
+
+    already_applied: bool
+    session: WorkoutSession
+
+
 class SessionLifecycleRepository(Protocol):
     def get_session(
         self, *, owner_id: UUID, session_id: UUID
     ) -> WorkoutSession | None: ...
+
+    def check_transition_precondition(
+        self,
+        *,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_revision: int,
+        operation: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> TransitionPrecondition: ...
 
     def apply_transition(
         self,

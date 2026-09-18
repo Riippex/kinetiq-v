@@ -24,12 +24,14 @@ from kinetiq.bootstrap.container import (
     get_workout_session,
     list_catalog_exercises,
     list_goal_revisions,
+    list_vision_candidates,
     pause_workout_session,
     prepare_workout_session,
     propose_routine,
     record_session_feedback,
     resume_workout_session,
     set_goal,
+    start_session_vision_analysis,
     start_workout_session,
     update_profile,
 )
@@ -62,6 +64,7 @@ from kinetiq.modules.workouts.application import (
     TransientSessionUpdate,
     UnknownRoutineExerciseError,
     UnknownVisionCandidateError,
+    VisionAnalysisNotStartedError,
 )
 from kinetiq.modules.workouts.domain import (
     CoachingTone,
@@ -293,6 +296,12 @@ class SessionResultType:
     errors: list[DomainError]
 
 
+@strawberry.type(name="VisionCandidate")
+class VisionCandidateType:
+    candidate_id: str
+    confidence: float
+
+
 @strawberry.type(name="RoutineResult")
 class RoutineResultType:
     routine: RoutineType | None
@@ -456,6 +465,31 @@ class Query:
         if routine is None:
             return None
         return _to_workout_session_graphql(session, routine)
+
+    @strawberry.field
+    def vision_candidates(
+        self, info: Info[Any, None], session_id: strawberry.ID
+    ) -> list[VisionCandidateType]:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError(
+                "AUTHENTICATION_REQUIRED: Sign in before accessing Vision candidates"
+            )
+        try:
+            session_uuid = UUID(str(session_id))
+        except (ValueError, TypeError):
+            return []
+
+        try:
+            candidates = list_vision_candidates().execute(
+                owner_id=owner_id, session_id=session_uuid
+            )
+        except SessionNotFound:
+            return []
+        return [
+            VisionCandidateType(candidate_id=c.candidate_id, confidence=c.confidence)
+            for c in candidates
+        ]
 
     @strawberry.field
     def goals(self, info: Info[Any, None]) -> list[GoalType]:
@@ -805,6 +839,47 @@ class Mutation:
         )
 
     @strawberry.mutation
+    def start_session_vision_analysis(
+        self, info: Info[Any, None], command: SessionCommandInput
+    ) -> SessionResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return _failure("AUTHENTICATION_REQUIRED", "Sign in before modifying a session")
+
+        try:
+            session_uuid = UUID(str(command.session_id))
+        except (ValueError, TypeError) as error:
+            return _failure("INVALID_INPUT", f"Invalid session ID: {error}", "sessionId")
+
+        try:
+            cmd = SessionLifecycleCommand(
+                session_id=session_uuid,
+                expected_revision=command.expected_revision,
+                idempotency_key=command.idempotency_key,
+            )
+            session = start_session_vision_analysis().execute(owner_id=owner_id, command=cmd)
+            record = (
+                WorkoutSessionRecord.objects.select_related(
+                    "routine", "observation_coverage", "feedback"
+                )
+                .prefetch_related("performed_sets")
+                .get(pk=session.id)
+            )
+            return SessionResultType(session=_to_graphql(record), errors=[])
+        except SessionNotFound as error:
+            return _failure("SESSION_NOT_FOUND", str(error), "sessionId")
+        except RevisionConflict as error:
+            return _failure("REVISION_CONFLICT", str(error), "expectedRevision")
+        except IdempotencyConflict as error:
+            return _failure("IDEMPOTENCY_CONFLICT", str(error), "idempotencyKey")
+        except InvalidSessionStateTransition as error:
+            return _failure("INVALID_SESSION_STATE", str(error))
+        except VisionAdapterError as error:
+            return _failure("VISION_UNAVAILABLE", str(error))
+        except (ValueError, TypeError) as error:
+            return _failure("INVALID_INPUT", str(error))
+
+    @strawberry.mutation
     def confirm_session_target(
         self,
         info: Info[Any, None],
@@ -844,6 +919,8 @@ class Mutation:
             return _failure("IDEMPOTENCY_CONFLICT", str(error), "idempotencyKey")
         except InvalidSessionStateTransition as error:
             return _failure("INVALID_SESSION_STATE", str(error))
+        except VisionAnalysisNotStartedError as error:
+            return _failure("VISION_ANALYSIS_NOT_STARTED", str(error), "sessionId")
         except UnknownVisionCandidateError as error:
             return _failure("UNKNOWN_VISION_CANDIDATE", str(error), "targetPersonId")
         except VisionStaleEpochError as error:

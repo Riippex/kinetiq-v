@@ -19,6 +19,7 @@ from .session_lifecycle import (
     FinishWorkoutSessionUseCase,
     GetWorkoutSessionUseCase,
     InconsistentPerformedSetMeasurementError,
+    ListVisionCandidatesUseCase,
     PauseWorkoutSessionUseCase,
     RecordSessionFeedbackCommand,
     RecordSessionFeedbackUseCase,
@@ -26,8 +27,10 @@ from .session_lifecycle import (
     RevisionConflict,
     SessionLifecycleCommand,
     SessionNotFound,
+    StartSessionVisionAnalysisUseCase,
     StartWorkoutSessionUseCase,
     UnknownRoutineExerciseError,
+    VisionAnalysisNotStartedError,
 )
 
 __all__ = [
@@ -40,6 +43,7 @@ __all__ = [
     "GetWorkoutSessionUseCase",
     "IdempotencyConflict",
     "InconsistentPerformedSetMeasurementError",
+    "ListVisionCandidatesUseCase",
     "PauseWorkoutSessionUseCase",
     "PrepareSessionCommand",
     "PrepareWorkoutSession",
@@ -51,10 +55,12 @@ __all__ = [
     "SessionLifecycleCommand",
     "SessionNotFound",
     "SessionTransientStore",
+    "StartSessionVisionAnalysisUseCase",
     "StartWorkoutSessionUseCase",
     "TransientSessionUpdate",
     "UnknownRoutineExerciseError",
     "UnknownVisionCandidateError",
+    "VisionAnalysisNotStartedError",
     "VisionSessionAnalysisPort",
 ]
 

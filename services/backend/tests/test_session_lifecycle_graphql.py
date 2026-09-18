@@ -6,7 +6,10 @@ from django.test import Client
 
 from kinetiq.modules.identity.infrastructure.models import User
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
-from kinetiq.modules.workouts.application import ConfirmSessionTargetUseCase
+from kinetiq.modules.workouts.application import (
+    ConfirmSessionTargetUseCase,
+    StartSessionVisionAnalysisUseCase,
+)
 from kinetiq.modules.workouts.application.ports import (
     VisionAnalysisHandle,
     VisionCandidateInfo,
@@ -56,6 +59,13 @@ class FakeVisionSessionAnalysisPort:
 
 def _fake_confirm_session_target() -> ConfirmSessionTargetUseCase:
     return ConfirmSessionTargetUseCase(
+        DjangoSessionLifecycleRepository(),
+        FakeVisionSessionAnalysisPort(),
+    )
+
+
+def _fake_start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
+    return StartSessionVisionAnalysisUseCase(
         DjangoSessionLifecycleRepository(),
         FakeVisionSessionAnalysisPort(),
         DjangoRoutineItemLookup(),
@@ -126,6 +136,19 @@ mutation ResumeSession($command: SessionCommandInput!) {
         requestedMode
         activeMode
       }
+    }
+    errors { code message field }
+  }
+}
+"""
+
+START_SESSION_VISION_ANALYSIS = """
+mutation StartSessionVisionAnalysis($command: SessionCommandInput!) {
+  startSessionVisionAnalysis(command: $command) {
+    session {
+      id
+      revision
+      state
     }
     errors { code message field }
   }
@@ -744,6 +767,10 @@ def test_invalid_uuid_rejected(athlete: User) -> None:
 
 @pytest.mark.django_db
 @patch("kinetiq.interfaces.graphql.schema.confirm_session_target", _fake_confirm_session_target)
+@patch(
+    "kinetiq.interfaces.graphql.schema.start_session_vision_analysis",
+    _fake_start_session_vision_analysis,
+)
 def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: RoutineRecord) -> None:
     client = Client()
     client.force_login(athlete)
@@ -752,8 +779,8 @@ def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: Routi
     session_id = session["id"]
     assert session["revision"] == 1
 
-    # Confirm target on READY session
-    response = client.post(
+    # Confirming before a Vision analysis has been started is rejected.
+    premature_resp = client.post(
         "/graphql/",
         data={
             "query": CONFIRM_SESSION_TARGET,
@@ -761,6 +788,44 @@ def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: Routi
                 "command": {
                     "sessionId": session_id,
                     "expectedRevision": 1,
+                    "idempotencyKey": "confirm-too-early",
+                },
+                "targetPersonId": "person-target-alpha",
+            },
+        },
+        content_type="application/json",
+    ).json()["data"]["confirmSessionTarget"]
+    assert premature_resp["session"] is None
+    assert premature_resp["errors"][0]["code"] == "VISION_ANALYSIS_NOT_STARTED"
+
+    # Start the Vision analysis first -- the split enrollment lifecycle's
+    # first step (revision 1 -> 2).
+    start_analysis_resp = client.post(
+        "/graphql/",
+        data={
+            "query": START_SESSION_VISION_ANALYSIS,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": 1,
+                    "idempotencyKey": "start-analysis-1",
+                }
+            },
+        },
+        content_type="application/json",
+    ).json()["data"]["startSessionVisionAnalysis"]
+    assert start_analysis_resp["errors"] == []
+    assert start_analysis_resp["session"]["revision"] == 2
+
+    # Confirm target now that an analysis exists (revision 2 -> 3)
+    response = client.post(
+        "/graphql/",
+        data={
+            "query": CONFIRM_SESSION_TARGET,
+            "variables": {
+                "command": {
+                    "sessionId": session_id,
+                    "expectedRevision": 2,
                     "idempotencyKey": "confirm-target-1",
                 },
                 "targetPersonId": "person-target-alpha",
@@ -771,7 +836,7 @@ def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: Routi
 
     assert response["errors"] == []
     assert response["session"]["id"] == session_id
-    assert response["session"]["revision"] == 2
+    assert response["session"]["revision"] == 3
     assert response["session"]["targetPersonId"] == "person-target-alpha"
 
     # Verify session query also returns targetPersonId
@@ -799,7 +864,7 @@ def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: Routi
             "variables": {
                 "command": {
                     "sessionId": session_id,
-                    "expectedRevision": 1,
+                    "expectedRevision": 2,
                     "idempotencyKey": "confirm-target-1",
                 },
                 "targetPersonId": "person-target-alpha",
@@ -809,7 +874,7 @@ def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: Routi
     ).json()["data"]["confirmSessionTarget"]
 
     assert idempotent_resp["errors"] == []
-    assert idempotent_resp["session"]["revision"] == 2
+    assert idempotent_resp["session"]["revision"] == 3
     assert idempotent_resp["session"]["targetPersonId"] == "person-target-alpha"
 
     # Revision conflict with stale expectedRevision
@@ -820,7 +885,7 @@ def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: Routi
             "variables": {
                 "command": {
                     "sessionId": session_id,
-                    "expectedRevision": 1,
+                    "expectedRevision": 2,
                     "idempotencyKey": "confirm-target-2",
                 },
                 "targetPersonId": "person-target-beta",

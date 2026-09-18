@@ -215,20 +215,38 @@ class WorkoutSession:
         self,
         target_person_id: str,
         *,
-        vision_analysis_id: str | None = None,
         vision_epoch: int | None = None,
     ) -> WorkoutSession:
         if not target_person_id.strip():
             raise ValueError("Target person ID cannot be empty")
         if self.state in (SessionState.COMPLETED, SessionState.ABANDONED):
             raise InvalidSessionStateTransition("Cannot confirm target on a finished session")
+        if self.vision_analysis_id is None:
+            raise InvalidSessionStateTransition(
+                "Cannot confirm a target before a Vision analysis has been started "
+                "for this session"
+            )
         return replace(
             self,
             target_person_id=target_person_id,
-            vision_analysis_id=(
-                vision_analysis_id if vision_analysis_id is not None else self.vision_analysis_id
-            ),
             vision_epoch=vision_epoch if vision_epoch is not None else self.vision_epoch,
+            revision=self.revision + 1,
+        )
+
+    def attach_vision_analysis(
+        self, *, vision_analysis_id: str, vision_epoch: int
+    ) -> WorkoutSession:
+        """Persists the Vision analysis started for this session's capture
+        device -- the first step of the target-enrollment lifecycle,
+        performed before any candidate has been selected."""
+        if self.state in (SessionState.COMPLETED, SessionState.ABANDONED):
+            raise InvalidSessionStateTransition(
+                "Cannot start a Vision analysis on a finished session"
+            )
+        return replace(
+            self,
+            vision_analysis_id=vision_analysis_id,
+            vision_epoch=vision_epoch,
             revision=self.revision + 1,
         )
 

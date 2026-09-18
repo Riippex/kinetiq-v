@@ -5,7 +5,11 @@ from uuid import UUID
 from django.db import IntegrityError, transaction
 
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
-from kinetiq.modules.workouts.application.ports import AcceptedRoutine, AcceptedRoutineItem
+from kinetiq.modules.workouts.application.ports import (
+    AcceptedRoutine,
+    AcceptedRoutineItem,
+    TransitionPrecondition,
+)
 from kinetiq.modules.workouts.application.prepare_session import IdempotencyConflict
 from kinetiq.modules.workouts.application.session_lifecycle import RevisionConflict, SessionNotFound
 from kinetiq.modules.workouts.domain import (
@@ -162,6 +166,58 @@ class DjangoSessionLifecycleRepository:
         if record is None:
             return None
         return _to_domain(record)
+
+    def check_transition_precondition(
+        self,
+        *,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_revision: int,
+        operation: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> TransitionPrecondition:
+        """Validates the revision and idempotency command against the
+        persisted session WITHOUT applying any transition or external side
+        effect -- used to check whether it is safe to proceed to call
+        Vision before actually calling it. Takes the same row lock
+        `apply_transition` does (for a consistent read), but releases it
+        immediately afterward since nothing is written; it does not hold
+        the lock across the caller's subsequent Vision call. See
+        `TransitionPrecondition` for what this does and does not guarantee.
+        """
+        existing = self._find_receipt(owner_id, operation, idempotency_key)
+        if existing is not None:
+            return TransitionPrecondition(
+                already_applied=True,
+                session=self._resolve_receipt(existing, request_fingerprint),
+            )
+
+        with transaction.atomic():
+            record = (
+                WorkoutSessionRecord.objects.select_for_update(of=("self",))
+                .select_related("routine", "observation_coverage", "feedback")
+                .prefetch_related("performed_sets")
+                .filter(id=session_id, owner_id=owner_id)
+                .first()
+            )
+            if record is None:
+                raise SessionNotFound(f"Workout session {session_id} not found")
+
+            existing = self._find_receipt(owner_id, operation, idempotency_key)
+            if existing is not None:
+                return TransitionPrecondition(
+                    already_applied=True,
+                    session=self._resolve_receipt(existing, request_fingerprint),
+                )
+
+            if record.revision != expected_revision:
+                raise RevisionConflict(
+                    f"Session revision conflict: expected {expected_revision}, "
+                    f"current is {record.revision}"
+                )
+
+            return TransitionPrecondition(already_applied=False, session=_to_domain(record))
 
     def apply_transition(
         self,
