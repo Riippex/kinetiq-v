@@ -35,6 +35,7 @@ from .session_lifecycle import (
     StartWorkoutSessionUseCase,
     UnknownRoutineExerciseError,
     VisionAnalysisNotStartedError,
+    VisionOperationInProgressError,
 )
 
 __all__ = [
@@ -70,6 +71,7 @@ __all__ = [
     "VisionObservationInfo",
     "VisionObservationSourcePort",
     "VisionObservationsPage",
+    "VisionOperationInProgressError",
     "VisionSessionAnalysisPort",
 ]
 

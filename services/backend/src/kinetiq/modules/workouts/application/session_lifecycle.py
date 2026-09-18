@@ -54,6 +54,39 @@ class VisionAnalysisNotStartedError(ValueError):
         self.session_id = session_id
 
 
+VISION_LEASE_TTL_SECONDS = 30
+"""How long a Vision lease may be held before another request may steal it.
+
+Must comfortably exceed the slowest expected Vision call (create_analysis
+or select_target); if a process holding the lease crashes or hangs, the
+lease self-expires after this many seconds rather than blocking that
+session's Vision operations forever."""
+
+
+class VisionOperationInProgressError(ValueError):
+    """Raised when a Vision-mutating command (startSessionVisionAnalysis,
+    confirmSessionTarget) cannot acquire the session's Vision lease because
+    another such command is already in flight for the same session.
+
+    This is the actual fix for the check-then-act race: `check_transition_
+    precondition` validates revision/idempotency but releases its row lock
+    before the Vision network call, so two different commands with the
+    same `expected_revision` could previously both pass that check and
+    both call Vision before the loser's local transition failed --
+    potentially leaving Vision holding a different target than the one
+    Product ultimately persisted. The lease makes the Vision call itself
+    exclusive per session: only the command holding the lease may call
+    Vision, so a second concurrent command fails fast here, before it
+    ever reaches Vision, rather than racing it."""
+
+    def __init__(self, session_id: UUID) -> None:
+        super().__init__(
+            f"Another Vision operation is already in progress for session '{session_id}'; "
+            "retry shortly"
+        )
+        self.session_id = session_id
+
+
 @dataclass(frozen=True, slots=True)
 class SessionLifecycleCommand:
     session_id: UUID
@@ -389,48 +422,66 @@ class StartSessionVisionAnalysisUseCase(BaseSessionLifecycleUseCase):
         if command.expected_revision < 1:
             raise ValueError("Expected revision must be positive")
 
-        precondition = self._repository.check_transition_precondition(
-            owner_id=owner_id,
-            session_id=command.session_id,
-            expected_revision=command.expected_revision,
-            operation="workouts.start_vision_analysis",
-            idempotency_key=command.idempotency_key,
-            request_fingerprint=command.fingerprint(),
+        # Acquire the lease BEFORE checking the precondition, not after:
+        # holding it across the whole precondition-check-through-Vision-
+        # through-apply_transition sequence means no other Vision-mutating
+        # command for this session can even read a revision that is about
+        # to become stale while we are mid-flight -- it fails fast on the
+        # lease instead. See VisionOperationInProgressError.
+        lease_token = self._repository.acquire_vision_lease(
+            owner_id=owner_id, session_id=command.session_id, ttl_seconds=VISION_LEASE_TTL_SECONDS
         )
-        if precondition.already_applied:
-            return precondition.session
+        if lease_token is None:
+            raise VisionOperationInProgressError(command.session_id)
 
-        session = precondition.session
-        if session.vision_analysis_id is not None:
-            # Already started -- nothing to do locally, and calling Vision
-            # again would be redundant (Vision's own idempotency key would
-            # just resolve to the same analysis, but the point of this
-            # early return is to avoid the network call altogether).
-            return session
+        try:
+            precondition = self._repository.check_transition_precondition(
+                owner_id=owner_id,
+                session_id=command.session_id,
+                expected_revision=command.expected_revision,
+                operation="workouts.start_vision_analysis",
+                idempotency_key=command.idempotency_key,
+                request_fingerprint=command.fingerprint(),
+            )
+            if precondition.already_applied:
+                return precondition.session
 
-        exercise_key = _resolve_exercise_key(
-            routine_items=self._routine_items, owner_id=owner_id, session=session
-        )
-        # Deterministic idempotency key: retries or concurrent requests for
-        # the same session must not create duplicate Vision analyses --
-        # Vision's contract guarantees POST /v1/analyses is idempotent on
-        # this key.
-        created = self._vision.create_analysis(
-            session_id=session.id,
-            source_id=session.configuration.capture_device_id,
-            exercise_key=exercise_key,
-            exercise_version=1,
-            idempotency_key=f"session-analysis-{session.id}",
-        )
+            session = precondition.session
+            if session.vision_analysis_id is not None:
+                # Already started -- nothing to do locally, and calling
+                # Vision again would be redundant (Vision's own idempotency
+                # key would just resolve to the same analysis, but the
+                # point of this early return is to avoid the network call
+                # altogether).
+                return session
 
-        return self._execute_transition(
-            owner_id=owner_id,
-            command=command,
-            operation="workouts.start_vision_analysis",
-            transition=lambda s: s.attach_vision_analysis(
-                vision_analysis_id=created.analysis_id, vision_epoch=created.epoch
-            ),
-        )
+            exercise_key = _resolve_exercise_key(
+                routine_items=self._routine_items, owner_id=owner_id, session=session
+            )
+            # Deterministic idempotency key: retries or concurrent requests
+            # for the same session must not create duplicate Vision
+            # analyses -- Vision's contract guarantees POST /v1/analyses is
+            # idempotent on this key.
+            created = self._vision.create_analysis(
+                session_id=session.id,
+                source_id=session.configuration.capture_device_id,
+                exercise_key=exercise_key,
+                exercise_version=1,
+                idempotency_key=f"session-analysis-{session.id}",
+            )
+
+            return self._execute_transition(
+                owner_id=owner_id,
+                command=command,
+                operation="workouts.start_vision_analysis",
+                transition=lambda s: s.attach_vision_analysis(
+                    vision_analysis_id=created.analysis_id, vision_epoch=created.epoch
+                ),
+            )
+        finally:
+            self._repository.release_vision_lease(
+                owner_id=owner_id, session_id=command.session_id, lease_token=lease_token
+            )
 
 
 class ListVisionCandidatesUseCase:
@@ -491,44 +542,62 @@ class ConfirmSessionTargetUseCase(BaseSessionLifecycleUseCase):
         if command.expected_revision < 1:
             raise ValueError("Expected revision must be positive")
 
-        precondition = self._repository.check_transition_precondition(
-            owner_id=owner_id,
-            session_id=command.session_id,
-            expected_revision=command.expected_revision,
-            operation="workouts.confirm_target",
-            idempotency_key=command.idempotency_key,
-            request_fingerprint=command.fingerprint(),
+        # Acquire the lease BEFORE checking the precondition -- see the
+        # identical comment in StartSessionVisionAnalysisUseCase.execute().
+        # This is what makes two different candidates racing on the same
+        # expected_revision safe: only the lease holder ever reaches
+        # Vision's list_candidates/select_target, so a losing concurrent
+        # request fails on VisionOperationInProgressError before it can
+        # mutate Vision at all.
+        lease_token = self._repository.acquire_vision_lease(
+            owner_id=owner_id, session_id=command.session_id, ttl_seconds=VISION_LEASE_TTL_SECONDS
         )
-        if precondition.already_applied:
-            return precondition.session
+        if lease_token is None:
+            raise VisionOperationInProgressError(command.session_id)
 
-        session = precondition.session
-        if session.vision_analysis_id is None:
-            raise VisionAnalysisNotStartedError(session.id)
+        try:
+            precondition = self._repository.check_transition_precondition(
+                owner_id=owner_id,
+                session_id=command.session_id,
+                expected_revision=command.expected_revision,
+                operation="workouts.confirm_target",
+                idempotency_key=command.idempotency_key,
+                request_fingerprint=command.fingerprint(),
+            )
+            if precondition.already_applied:
+                return precondition.session
 
-        analysis_id = session.vision_analysis_id
-        epoch = session.vision_epoch or 1
+            session = precondition.session
+            if session.vision_analysis_id is None:
+                raise VisionAnalysisNotStartedError(session.id)
 
-        candidates = self._vision.list_candidates(analysis_id=analysis_id)
-        if command.target_person_id not in {c.candidate_id for c in candidates}:
-            raise UnknownVisionCandidateError(command.target_person_id, analysis_id)
+            analysis_id = session.vision_analysis_id
+            epoch = session.vision_epoch or 1
 
-        confirmation = self._vision.select_target(
-            analysis_id=analysis_id,
-            candidate_id=command.target_person_id,
-            expected_epoch=epoch,
-            idempotency_key=command.idempotency_key,
-        )
+            candidates = self._vision.list_candidates(analysis_id=analysis_id)
+            if command.target_person_id not in {c.candidate_id for c in candidates}:
+                raise UnknownVisionCandidateError(command.target_person_id, analysis_id)
 
-        return self._execute_transition(
-            owner_id=owner_id,
-            command=command,
-            operation="workouts.confirm_target",
-            transition=lambda s: s.confirm_target(
-                confirmation.target_person_id,
-                vision_epoch=confirmation.epoch,
-            ),
-        )
+            confirmation = self._vision.select_target(
+                analysis_id=analysis_id,
+                candidate_id=command.target_person_id,
+                expected_epoch=epoch,
+                idempotency_key=command.idempotency_key,
+            )
+
+            return self._execute_transition(
+                owner_id=owner_id,
+                command=command,
+                operation="workouts.confirm_target",
+                transition=lambda s: s.confirm_target(
+                    confirmation.target_person_id,
+                    vision_epoch=confirmation.epoch,
+                ),
+            )
+        finally:
+            self._repository.release_vision_lease(
+                owner_id=owner_id, session_id=command.session_id, lease_token=lease_token
+            )
 
 
 class GetWorkoutSessionUseCase:

@@ -1,8 +1,11 @@
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from django.db import IntegrityError, transaction
+from django.db.models import Q
+from django.utils import timezone
 
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application.ports import (
@@ -361,6 +364,85 @@ class DjangoSessionLifecycleRepository:
             raise IdempotencyConflict("The idempotency key was already used for another command")
         return _to_domain(receipt.session)
 
+    def acquire_vision_lease(
+        self, *, owner_id: UUID, session_id: UUID, ttl_seconds: int
+    ) -> str | None:
+        return self._acquire_lease(
+            owner_id=owner_id,
+            session_id=session_id,
+            ttl_seconds=ttl_seconds,
+            token_field="vision_lease_token",
+            expires_field="vision_lease_expires_at",
+        )
+
+    def release_vision_lease(
+        self, *, owner_id: UUID, session_id: UUID, lease_token: str
+    ) -> None:
+        self._release_lease(
+            owner_id=owner_id,
+            session_id=session_id,
+            lease_token=lease_token,
+            token_field="vision_lease_token",
+            expires_field="vision_lease_expires_at",
+        )
+
+    def acquire_vision_poll_lease(
+        self, *, owner_id: UUID, session_id: UUID, ttl_seconds: int
+    ) -> str | None:
+        return self._acquire_lease(
+            owner_id=owner_id,
+            session_id=session_id,
+            ttl_seconds=ttl_seconds,
+            token_field="vision_poll_lease_token",
+            expires_field="vision_poll_lease_expires_at",
+        )
+
+    def release_vision_poll_lease(
+        self, *, owner_id: UUID, session_id: UUID, lease_token: str
+    ) -> None:
+        self._release_lease(
+            owner_id=owner_id,
+            session_id=session_id,
+            lease_token=lease_token,
+            token_field="vision_poll_lease_token",
+            expires_field="vision_poll_lease_expires_at",
+        )
+
+    @staticmethod
+    def _acquire_lease(
+        *, owner_id: UUID, session_id: UUID, ttl_seconds: int, token_field: str, expires_field: str
+    ) -> str | None:
+        """Atomically claims a per-session lease with a single UPDATE,
+        without holding any transaction open across whatever the caller
+        does while holding it (a Vision HTTP call, an observation poll).
+        PostgreSQL executes one UPDATE as a single atomic statement: either
+        exactly one caller's UPDATE matches the WHERE clause and wins the
+        lease, or it matches zero rows and the caller must not proceed.
+        Returns the new lease token on success, None if another live
+        lease is already held (the caller must fail fast, not retry
+        indefinitely while holding anything open)."""
+        token = str(uuid4())
+        now = timezone.now()
+        updated = (
+            WorkoutSessionRecord.objects.filter(id=session_id, owner_id=owner_id)
+            .filter(Q(**{f"{token_field}__isnull": True}) | Q(**{f"{expires_field}__lt": now}))
+            .update(**{token_field: token, expires_field: now + timedelta(seconds=ttl_seconds)})
+        )
+        return token if updated == 1 else None
+
+    @staticmethod
+    def _release_lease(
+        *, owner_id: UUID, session_id: UUID, lease_token: str, token_field: str, expires_field: str
+    ) -> None:
+        """Clears a held lease so a retry does not have to wait for TTL
+        expiry. Only clears it if the token still matches -- if it
+        doesn't (this lease already expired and was claimed by someone
+        else), clearing it would incorrectly release a lease we no longer
+        own."""
+        WorkoutSessionRecord.objects.filter(
+            id=session_id, owner_id=owner_id, **{token_field: lease_token}
+        ).update(**{token_field: None, expires_field: None})
+
     def list_sessions_polling_vision(self) -> tuple[WorkoutSession, ...]:
         """Sessions eligible for Vision observation polling: still
         active/paused, with a Vision analysis started and a target
@@ -384,15 +466,32 @@ class DjangoSessionLifecycleRepository:
         )
 
     def advance_vision_observation_cursor(
-        self, *, owner_id: UUID, session_id: UUID, cursor: str
-    ) -> None:
+        self,
+        *,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_previous_cursor: str | None,
+        new_cursor: str,
+    ) -> bool:
         """Persists how far Vision observation polling has progressed for
         a session, without bumping its revision or requiring an
         idempotency key -- this is system-internal bookkeeping for a
         background worker, not a user-facing command subject to the
-        optimistic-concurrency contract apply_transition enforces. Still
-        takes the row lock so it cannot race a concurrent apply_transition
-        into losing either write to the same configuration JSON blob."""
+        optimistic-concurrency contract apply_transition enforces.
+
+        Compare-and-swap: only writes if the currently persisted cursor
+        still equals `expected_previous_cursor` (the value the caller read
+        before polling Vision). The per-session poll lease
+        (`acquire_vision_poll_lease`) already prevents two workers from
+        polling the same session concurrently, but this CAS is the
+        defense-in-depth backstop for the case a lease expired mid-poll
+        (e.g. a slow Vision response past the TTL) and was claimed by a
+        second worker: whichever worker's write loses the race to observe
+        a stale `expected_previous_cursor` fails the swap and must not
+        overwrite what the other worker already advanced to -- an older,
+        lagging worker can never regress the cursor backward. Returns
+        whether the swap succeeded.
+        """
         with transaction.atomic():
             record = (
                 WorkoutSessionRecord.objects.select_for_update(of=("self",))
@@ -400,12 +499,16 @@ class DjangoSessionLifecycleRepository:
                 .first()
             )
             if record is None:
-                return
+                return False
+            current_cursor = record.configuration.get("vision_observation_cursor")
+            if current_cursor != expected_previous_cursor:
+                return False
             record.configuration = {
                 **record.configuration,
-                "vision_observation_cursor": cursor,
+                "vision_observation_cursor": new_cursor,
             }
             record.save(update_fields=["configuration", "updated_at"])
+            return True
 
 
 def _serialize_configuration(

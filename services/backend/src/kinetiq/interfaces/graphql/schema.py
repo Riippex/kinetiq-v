@@ -65,6 +65,7 @@ from kinetiq.modules.workouts.application import (
     UnknownRoutineExerciseError,
     UnknownVisionCandidateError,
     VisionAnalysisNotStartedError,
+    VisionOperationInProgressError,
 )
 from kinetiq.modules.workouts.domain import (
     CoachingTone,
@@ -874,6 +875,8 @@ class Mutation:
             return _failure("IDEMPOTENCY_CONFLICT", str(error), "idempotencyKey")
         except InvalidSessionStateTransition as error:
             return _failure("INVALID_SESSION_STATE", str(error))
+        except VisionOperationInProgressError as error:
+            return _failure("VISION_OPERATION_IN_PROGRESS", str(error), "sessionId")
         except VisionAdapterError as error:
             return _failure("VISION_UNAVAILABLE", str(error))
         except (ValueError, TypeError) as error:
@@ -921,6 +924,8 @@ class Mutation:
             return _failure("INVALID_SESSION_STATE", str(error))
         except VisionAnalysisNotStartedError as error:
             return _failure("VISION_ANALYSIS_NOT_STARTED", str(error), "sessionId")
+        except VisionOperationInProgressError as error:
+            return _failure("VISION_OPERATION_IN_PROGRESS", str(error), "sessionId")
         except UnknownVisionCandidateError as error:
             return _failure("UNKNOWN_VISION_CANDIDATE", str(error), "targetPersonId")
         except VisionStaleEpochError as error:

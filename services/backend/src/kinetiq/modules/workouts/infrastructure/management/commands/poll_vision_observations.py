@@ -66,10 +66,17 @@ class Command(BaseCommand):
                     session=session, active_exercise_id=active_exercise_id, limit=limit
                 )
                 total_published += result.published_count
-                if (
+                if result.lease_contended:
+                    logger.info(
+                        "vision_observation_poll_lease_contended",
+                        extra={"session_id": str(session.id)},
+                    )
+                elif (
                     result.published_count
                     or result.skipped_stale_epoch
                     or result.skipped_duplicate_sequence
+                    or result.publish_failed
+                    or not result.cursor_advanced
                 ):
                     logger.info(
                         "vision_observations_polled",
@@ -79,6 +86,8 @@ class Command(BaseCommand):
                             "skipped_stale_epoch": result.skipped_stale_epoch,
                             "skipped_duplicate_sequence": result.skipped_duplicate_sequence,
                             "next_cursor": result.next_cursor,
+                            "publish_failed": result.publish_failed,
+                            "cursor_advanced": result.cursor_advanced,
                         },
                     )
             except VisionAdapterError:

@@ -257,15 +257,124 @@ def test_advance_vision_observation_cursor_does_not_bump_revision(
     before = repo.get_session(owner_id=athlete.pk, session_id=UUID(session_id))
     assert before is not None
 
-    repo.advance_vision_observation_cursor(
-        owner_id=athlete.pk, session_id=UUID(session_id), cursor="4:12"
+    swapped = repo.advance_vision_observation_cursor(
+        owner_id=athlete.pk,
+        session_id=UUID(session_id),
+        expected_previous_cursor=before.vision_observation_cursor,
+        new_cursor="4:12",
     )
+    assert swapped is True
 
     after = repo.get_session(owner_id=athlete.pk, session_id=UUID(session_id))
     assert after is not None
     assert after.vision_observation_cursor == "4:12"
     assert after.revision == before.revision
     assert after.target_person_id == before.target_person_id
+
+
+@pytest.mark.django_db
+def test_advance_vision_observation_cursor_cas_rejects_stale_expected_cursor(
+    athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    """Regression test for cursor monotonicity: a caller working from an
+    outdated view of the cursor (e.g. an older, lagging worker) must not
+    be able to overwrite a cursor another worker already advanced past
+    that point."""
+    client = Client()
+    client.force_login(athlete)
+    session_id = _tracking_session_id(client, accepted_routine)
+
+    repo = DjangoSessionLifecycleRepository()
+    before = repo.get_session(owner_id=athlete.pk, session_id=UUID(session_id))
+    assert before is not None
+
+    first_swap = repo.advance_vision_observation_cursor(
+        owner_id=athlete.pk,
+        session_id=UUID(session_id),
+        expected_previous_cursor=before.vision_observation_cursor,
+        new_cursor="4:12",
+    )
+    assert first_swap is True
+
+    # A second worker, still holding a stale view of the cursor (as it was
+    # before the first swap), must fail its own swap rather than regress it.
+    stale_swap = repo.advance_vision_observation_cursor(
+        owner_id=athlete.pk,
+        session_id=UUID(session_id),
+        expected_previous_cursor=before.vision_observation_cursor,
+        new_cursor="4:9",
+    )
+    assert stale_swap is False
+
+    after = repo.get_session(owner_id=athlete.pk, session_id=UUID(session_id))
+    assert after is not None
+    assert after.vision_observation_cursor == "4:12"
+
+
+@pytest.mark.django_db
+def test_acquire_and_release_vision_lease_real_repository(
+    athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    client = Client()
+    client.force_login(athlete)
+    session_id = _tracking_session_id(client, accepted_routine)
+
+    repo = DjangoSessionLifecycleRepository()
+    session_uuid = UUID(session_id)
+
+    token = repo.acquire_vision_lease(owner_id=athlete.pk, session_id=session_uuid, ttl_seconds=30)
+    assert token is not None
+
+    # Held: a second acquisition attempt must fail.
+    contended = repo.acquire_vision_lease(
+        owner_id=athlete.pk, session_id=session_uuid, ttl_seconds=30
+    )
+    assert contended is None
+
+    repo.release_vision_lease(owner_id=athlete.pk, session_id=session_uuid, lease_token=token)
+
+    # Released: acquisition succeeds again with a fresh token.
+    second_token = repo.acquire_vision_lease(
+        owner_id=athlete.pk, session_id=session_uuid, ttl_seconds=30
+    )
+    assert second_token is not None
+    assert second_token != token
+
+
+@pytest.mark.django_db
+def test_acquire_and_release_vision_poll_lease_real_repository(
+    athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    """The observation-polling lease is independent of the command lease
+    above -- holding one must not block the other."""
+    client = Client()
+    client.force_login(athlete)
+    session_id = _tracking_session_id(client, accepted_routine)
+
+    repo = DjangoSessionLifecycleRepository()
+    session_uuid = UUID(session_id)
+
+    command_token = repo.acquire_vision_lease(
+        owner_id=athlete.pk, session_id=session_uuid, ttl_seconds=30
+    )
+    assert command_token is not None
+
+    poll_token = repo.acquire_vision_poll_lease(
+        owner_id=athlete.pk, session_id=session_uuid, ttl_seconds=30
+    )
+    assert poll_token is not None
+
+    assert (
+        repo.acquire_vision_poll_lease(owner_id=athlete.pk, session_id=session_uuid, ttl_seconds=30)
+        is None
+    )
+
+    repo.release_vision_lease(
+        owner_id=athlete.pk, session_id=session_uuid, lease_token=command_token
+    )
+    repo.release_vision_poll_lease(
+        owner_id=athlete.pk, session_id=session_uuid, lease_token=poll_token
+    )
 
 
 @pytest.mark.django_db

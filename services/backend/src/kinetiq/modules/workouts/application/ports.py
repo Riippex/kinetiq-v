@@ -83,11 +83,32 @@ class SessionLifecycleRepository(Protocol):
         transition: Callable[[WorkoutSession], WorkoutSession],
     ) -> WorkoutSession: ...
 
+    def acquire_vision_lease(
+        self, *, owner_id: UUID, session_id: UUID, ttl_seconds: int
+    ) -> str | None: ...
+
+    def release_vision_lease(
+        self, *, owner_id: UUID, session_id: UUID, lease_token: str
+    ) -> None: ...
+
     def list_sessions_polling_vision(self) -> tuple[WorkoutSession, ...]: ...
 
-    def advance_vision_observation_cursor(
-        self, *, owner_id: UUID, session_id: UUID, cursor: str
+    def acquire_vision_poll_lease(
+        self, *, owner_id: UUID, session_id: UUID, ttl_seconds: int
+    ) -> str | None: ...
+
+    def release_vision_poll_lease(
+        self, *, owner_id: UUID, session_id: UUID, lease_token: str
     ) -> None: ...
+
+    def advance_vision_observation_cursor(
+        self,
+        *,
+        owner_id: UUID,
+        session_id: UUID,
+        expected_previous_cursor: str | None,
+        new_cursor: str,
+    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)

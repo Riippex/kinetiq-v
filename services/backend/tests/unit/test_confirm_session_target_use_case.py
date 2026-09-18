@@ -22,6 +22,7 @@ from kinetiq.modules.workouts.application.session_lifecycle import (
     SessionNotFound,
     StartSessionVisionAnalysisUseCase,
     VisionAnalysisNotStartedError,
+    VisionOperationInProgressError,
 )
 from kinetiq.modules.workouts.domain import (
     CoachingTone,
@@ -41,12 +42,30 @@ class FakeSessionLifecycleRepository:
     check_transition_precondition's "validate before mutating Vision"
     contract and apply_transition's final safe-completion contract."""
 
-    def __init__(self, session: WorkoutSession | None) -> None:
+    def __init__(self, session: WorkoutSession | None, *, lease_held: bool = False) -> None:
         self.session = session
         self._receipts: dict[tuple[str, str], tuple[str, WorkoutSession]] = {}
+        self._lease_held = lease_held
+        self.lease_acquire_calls = 0
+        self.lease_release_calls = 0
 
     def get_session(self, *, owner_id: UUID, session_id: UUID) -> WorkoutSession | None:
         return self.session
+
+    def acquire_vision_lease(
+        self, *, owner_id: UUID, session_id: UUID, ttl_seconds: int
+    ) -> str | None:
+        self.lease_acquire_calls += 1
+        if self._lease_held:
+            return None
+        self._lease_held = True
+        return "fake-lease-token"
+
+    def release_vision_lease(
+        self, *, owner_id: UUID, session_id: UUID, lease_token: str
+    ) -> None:
+        self.lease_release_calls += 1
+        self._lease_held = False
 
     def check_transition_precondition(
         self,
@@ -404,3 +423,54 @@ def test_confirm_target_idempotent_retry_does_not_recall_vision() -> None:
     assert first.target_person_id == second.target_person_id == "cand_1"
     assert second.revision == first.revision
     assert vision.select_target_calls == [("an_existing", "cand_1", 3)]
+
+
+def test_confirm_target_holds_and_releases_the_vision_lease() -> None:
+    session = session_with_analysis(analysis_id="an_existing", epoch=3)
+    vision = FakeVisionSessionAnalysisPort(
+        candidates=(VisionCandidateInfo(candidate_id="cand_1", confidence=0.9),)
+    )
+    repo = FakeSessionLifecycleRepository(session)
+    use_case = ConfirmSessionTargetUseCase(repo, vision)
+
+    use_case.execute(owner_id=session.owner_id, command=make_confirm_command(session))
+
+    assert repo.lease_acquire_calls == 1
+    assert repo.lease_release_calls == 1
+    assert repo._lease_held is False
+
+
+def test_confirm_target_fails_fast_when_lease_already_held() -> None:
+    """Regression test for the check-then-act race: when another Vision-
+    mutating command already holds this session's lease, a second command
+    must fail immediately on VisionOperationInProgressError and must never
+    reach Vision's list_candidates/select_target at all -- this is what
+    makes two different candidates racing on the same expected_revision
+    safe, since only the lease holder can ever call Vision."""
+    session = session_with_analysis(analysis_id="an_existing", epoch=3)
+    vision = FakeVisionSessionAnalysisPort(
+        candidates=(VisionCandidateInfo(candidate_id="cand_1", confidence=0.9),)
+    )
+    repo = FakeSessionLifecycleRepository(session, lease_held=True)
+    use_case = ConfirmSessionTargetUseCase(repo, vision)
+
+    with pytest.raises(VisionOperationInProgressError):
+        use_case.execute(owner_id=session.owner_id, command=make_confirm_command(session))
+
+    assert vision.list_candidates_calls == 0
+    assert vision.select_target_calls == []
+    # The failed acquisition attempt has nothing to release.
+    assert repo.lease_release_calls == 0
+
+
+def test_start_vision_analysis_fails_fast_when_lease_already_held() -> None:
+    session = ready_session()
+    vision = FakeVisionSessionAnalysisPort()
+    repo = FakeSessionLifecycleRepository(session, lease_held=True)
+    use_case = StartSessionVisionAnalysisUseCase(repo, vision, FakeRoutineItemLookup(ROUTINE_ITEMS))
+
+    with pytest.raises(VisionOperationInProgressError):
+        use_case.execute(owner_id=session.owner_id, command=make_start_command(session))
+
+    assert vision.create_analysis_calls == 0
+    assert repo.lease_release_calls == 0

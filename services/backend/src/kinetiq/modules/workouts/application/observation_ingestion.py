@@ -18,6 +18,12 @@ _VISIBILITY_STATE_TO_STATUS = {
     "ABSENT": "NOT_VISIBLE",
 }
 
+POLL_LEASE_TTL_SECONDS = 30
+"""Must comfortably exceed one poll-and-publish pass (a Vision GET plus up
+to `limit` Redis publishes); if a worker crashes or hangs mid-pass, the
+lease self-expires after this many seconds rather than starving that
+session's observations forever."""
+
 
 @dataclass(frozen=True, slots=True)
 class ObservationIngestionResult:
@@ -26,6 +32,9 @@ class ObservationIngestionResult:
     skipped_stale_epoch: int
     skipped_duplicate_sequence: int
     next_cursor: str | None
+    lease_contended: bool = False
+    publish_failed: bool = False
+    cursor_advanced: bool = True
 
 
 def _parse_cursor(cursor: str | None) -> tuple[int, int] | None:
@@ -78,8 +87,23 @@ class PollVisionObservationsUseCase:
     Rejects observations from a stale epoch (the session was re-targeted
     since Vision produced them) and duplicate or out-of-order sequences
     (the persisted cursor already advanced past them, e.g. an overlapping
-    poll), so a retried or concurrent poll cannot double-publish or regress
-    the session's observation cursor.
+    poll).
+
+    Retry-safety (this pass): a per-session poll lease
+    (`acquire_vision_poll_lease`) is held for the whole pass so two worker
+    processes can never poll and publish the same session concurrently --
+    fixing the previous version, which had no such guard and could
+    double-publish or race its own cursor advance against another worker.
+    `publish_transient_update`'s return value is now respected: on a
+    failed publish (e.g. Redis unreachable), the pass stops immediately
+    and the cursor is advanced only up to the last *successfully*
+    published observation, never past the failure -- a retry will
+    naturally re-attempt the failed observation rather than silently
+    skipping it. The cursor write itself is a compare-and-swap
+    (`advance_vision_observation_cursor`) against the cursor value this
+    pass started from, so a worker whose poll lease expired mid-pass (and
+    was then claimed by a second worker that has since advanced further)
+    cannot regress the cursor backward when it finally finishes.
 
     Scoping decision, disclosed: this maps Vision's per-observation
     tracking/visibility state onto `TransientSessionUpdate.visibility_status`
@@ -117,50 +141,84 @@ class PollVisionObservationsUseCase:
                 next_cursor=session.vision_observation_cursor,
             )
 
-        last_cursor = _parse_cursor(session.vision_observation_cursor)
-        page = self._vision_observations.poll_observations(
-            analysis_id=session.vision_analysis_id,
-            after_cursor=session.vision_observation_cursor,
-            limit=limit,
+        lease_token = self._repository.acquire_vision_poll_lease(
+            owner_id=session.owner_id, session_id=session.id, ttl_seconds=POLL_LEASE_TTL_SECONDS
         )
-
-        published = 0
-        skipped_stale_epoch = 0
-        skipped_duplicate_sequence = 0
-        latest_cursor = session.vision_observation_cursor
-
-        for observation in page.observations:
-            if observation.epoch != session.vision_epoch:
-                skipped_stale_epoch += 1
-                continue
-            if (
-                last_cursor is not None
-                and last_cursor[0] == observation.epoch
-                and observation.sequence <= last_cursor[1]
-            ):
-                skipped_duplicate_sequence += 1
-                continue
-
-            update = _to_transient_update(
+        if lease_token is None:
+            # Another worker is already polling/publishing this session --
+            # fail fast rather than risk a concurrent double-publish.
+            return ObservationIngestionResult(
                 session_id=session.id,
-                active_exercise_id=active_exercise_id,
-                observation=observation,
-            )
-            self._transient_store.publish_transient_update(update)
-
-            published += 1
-            last_cursor = (observation.epoch, observation.sequence)
-            latest_cursor = f"{observation.epoch}:{observation.sequence}"
-
-        if latest_cursor != session.vision_observation_cursor:
-            self._repository.advance_vision_observation_cursor(
-                owner_id=session.owner_id, session_id=session.id, cursor=latest_cursor
+                published_count=0,
+                skipped_stale_epoch=0,
+                skipped_duplicate_sequence=0,
+                next_cursor=session.vision_observation_cursor,
+                lease_contended=True,
             )
 
-        return ObservationIngestionResult(
-            session_id=session.id,
-            published_count=published,
-            skipped_stale_epoch=skipped_stale_epoch,
-            skipped_duplicate_sequence=skipped_duplicate_sequence,
-            next_cursor=latest_cursor,
-        )
+        try:
+            starting_cursor = session.vision_observation_cursor
+            last_cursor = _parse_cursor(starting_cursor)
+            page = self._vision_observations.poll_observations(
+                analysis_id=session.vision_analysis_id,
+                after_cursor=starting_cursor,
+                limit=limit,
+            )
+
+            published = 0
+            skipped_stale_epoch = 0
+            skipped_duplicate_sequence = 0
+            publish_failed = False
+            latest_cursor = starting_cursor
+
+            for observation in page.observations:
+                if observation.epoch != session.vision_epoch:
+                    skipped_stale_epoch += 1
+                    continue
+                if (
+                    last_cursor is not None
+                    and last_cursor[0] == observation.epoch
+                    and observation.sequence <= last_cursor[1]
+                ):
+                    skipped_duplicate_sequence += 1
+                    continue
+
+                update = _to_transient_update(
+                    session_id=session.id,
+                    active_exercise_id=active_exercise_id,
+                    observation=observation,
+                )
+                if not self._transient_store.publish_transient_update(update):
+                    # Never advance the cursor past a failed publication:
+                    # stop here so a retry re-fetches and re-attempts this
+                    # exact observation instead of silently skipping it.
+                    publish_failed = True
+                    break
+
+                published += 1
+                last_cursor = (observation.epoch, observation.sequence)
+                latest_cursor = f"{observation.epoch}:{observation.sequence}"
+
+            cursor_advanced = True
+            if latest_cursor != starting_cursor:
+                assert latest_cursor is not None
+                cursor_advanced = self._repository.advance_vision_observation_cursor(
+                    owner_id=session.owner_id,
+                    session_id=session.id,
+                    expected_previous_cursor=starting_cursor,
+                    new_cursor=latest_cursor,
+                )
+
+            return ObservationIngestionResult(
+                session_id=session.id,
+                published_count=published,
+                skipped_stale_epoch=skipped_stale_epoch,
+                skipped_duplicate_sequence=skipped_duplicate_sequence,
+                next_cursor=latest_cursor if cursor_advanced else starting_cursor,
+                publish_failed=publish_failed,
+                cursor_advanced=cursor_advanced,
+            )
+        finally:
+            self._repository.release_vision_poll_lease(
+                owner_id=session.owner_id, session_id=session.id, lease_token=lease_token
+            )

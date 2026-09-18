@@ -15,6 +15,21 @@ class WorkoutSessionRecord(models.Model):
     pause_reason = models.CharField(max_length=32, null=True, blank=True)
     configuration = models.JSONField()
     confirmed_repetitions = models.PositiveIntegerField(default=0)
+    # Per-session lease serializing Vision-mutating operations
+    # (startSessionVisionAnalysis, confirmSessionTarget): a single atomic
+    # UPDATE claims the lease without holding any transaction open across
+    # the Vision network call, closing the window where two concurrent
+    # requests with the same expected_revision could each mutate Vision
+    # before the local optimistic-concurrency check serialized them. See
+    # DjangoSessionLifecycleRepository.acquire_vision_lease.
+    vision_lease_token = models.CharField(max_length=36, null=True, blank=True)
+    vision_lease_expires_at = models.DateTimeField(null=True, blank=True)
+    # Separate lease serializing the observation-polling worker per
+    # session (distinct from vision_lease_* above, which serializes
+    # user-facing Vision-mutating commands): prevents two worker processes
+    # from polling and publishing the same session's observations at once.
+    vision_poll_lease_token = models.CharField(max_length=36, null=True, blank=True)
+    vision_poll_lease_expires_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
