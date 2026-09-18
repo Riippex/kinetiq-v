@@ -361,6 +361,52 @@ class DjangoSessionLifecycleRepository:
             raise IdempotencyConflict("The idempotency key was already used for another command")
         return _to_domain(receipt.session)
 
+    def list_sessions_polling_vision(self) -> tuple[WorkoutSession, ...]:
+        """Sessions eligible for Vision observation polling: still
+        active/paused, with a Vision analysis started and a target
+        confirmed. target_person_id/vision_analysis_id live inside the
+        configuration JSON rather than indexed columns, so this filters by
+        state at the SQL level and finishes the eligibility check in
+        Python -- a disclosed simplification, fine at current session
+        volumes but not a query that scales to a large fleet of concurrent
+        sessions without an index on those JSON keys."""
+        records = (
+            WorkoutSessionRecord.objects.select_related(
+                "routine", "observation_coverage", "feedback"
+            )
+            .prefetch_related("performed_sets")
+            .filter(state__in=[SessionState.ACTIVE.value, SessionState.PAUSED.value])
+        )
+        return tuple(
+            session
+            for session in (_to_domain(record) for record in records)
+            if session.vision_analysis_id is not None and session.target_person_id is not None
+        )
+
+    def advance_vision_observation_cursor(
+        self, *, owner_id: UUID, session_id: UUID, cursor: str
+    ) -> None:
+        """Persists how far Vision observation polling has progressed for
+        a session, without bumping its revision or requiring an
+        idempotency key -- this is system-internal bookkeeping for a
+        background worker, not a user-facing command subject to the
+        optimistic-concurrency contract apply_transition enforces. Still
+        takes the row lock so it cannot race a concurrent apply_transition
+        into losing either write to the same configuration JSON blob."""
+        with transaction.atomic():
+            record = (
+                WorkoutSessionRecord.objects.select_for_update(of=("self",))
+                .filter(id=session_id, owner_id=owner_id)
+                .first()
+            )
+            if record is None:
+                return
+            record.configuration = {
+                **record.configuration,
+                "vision_observation_cursor": cursor,
+            }
+            record.save(update_fields=["configuration", "updated_at"])
+
 
 def _serialize_configuration(
     configuration: SessionConfiguration,

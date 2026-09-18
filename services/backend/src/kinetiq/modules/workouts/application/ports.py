@@ -83,6 +83,12 @@ class SessionLifecycleRepository(Protocol):
         transition: Callable[[WorkoutSession], WorkoutSession],
     ) -> WorkoutSession: ...
 
+    def list_sessions_polling_vision(self) -> tuple[WorkoutSession, ...]: ...
+
+    def advance_vision_observation_cursor(
+        self, *, owner_id: UUID, session_id: UUID, cursor: str
+    ) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class AcceptedRoutineItem:
@@ -210,6 +216,42 @@ class SessionTransientStore(Protocol):
     def publish_transient_update(self, update: TransientSessionUpdate) -> bool: ...
 
     def get_transient_update(self, session_id: UUID) -> TransientSessionUpdate | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class VisionObservationInfo:
+    """Flattened read model of a single Vision observation, scoped to
+    exactly what observation ingestion needs to derive a
+    TransientSessionUpdate and to reject stale/duplicate observations.
+    Deliberately decoupled from the Vision adapter's own DTOs (mirrors the
+    same pattern as VisionCandidateInfo/VisionAnalysisHandle above): an
+    infrastructure adapter translates into this shape."""
+
+    epoch: int
+    sequence: int
+    tracking_state: str
+    visibility_state: str
+    reason_code: str
+    confirmed_repetitions: int
+    hold_elapsed_seconds: float | None = None
+    hold_confidence: float | None = None
+    last_repetition_confidence: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VisionObservationsPage:
+    observations: tuple[VisionObservationInfo, ...]
+    next_cursor: str | None
+    has_more: bool
+
+
+class VisionObservationSourcePort(Protocol):
+    """Read boundary onto Vision's `/v1/analyses/{id}/observations` cursor
+    feed, scoped to exactly what observation ingestion needs."""
+
+    def poll_observations(
+        self, *, analysis_id: str, after_cursor: str | None, limit: int
+    ) -> VisionObservationsPage: ...
 
 
 

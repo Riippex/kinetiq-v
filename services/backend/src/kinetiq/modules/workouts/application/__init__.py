@@ -1,7 +1,11 @@
+from .observation_ingestion import ObservationIngestionResult, PollVisionObservationsUseCase
 from .ports import (
     SessionTransientStore,
     TransientSessionUpdate,
     UnknownVisionCandidateError,
+    VisionObservationInfo,
+    VisionObservationSourcePort,
+    VisionObservationsPage,
     VisionSessionAnalysisPort,
 )
 from .prepare_session import (
@@ -44,7 +48,9 @@ __all__ = [
     "IdempotencyConflict",
     "InconsistentPerformedSetMeasurementError",
     "ListVisionCandidatesUseCase",
+    "ObservationIngestionResult",
     "PauseWorkoutSessionUseCase",
+    "PollVisionObservationsUseCase",
     "PrepareSessionCommand",
     "PrepareWorkoutSession",
     "RecordSessionFeedbackCommand",
@@ -61,6 +67,9 @@ __all__ = [
     "UnknownRoutineExerciseError",
     "UnknownVisionCandidateError",
     "VisionAnalysisNotStartedError",
+    "VisionObservationInfo",
+    "VisionObservationSourcePort",
+    "VisionObservationsPage",
     "VisionSessionAnalysisPort",
 ]
 

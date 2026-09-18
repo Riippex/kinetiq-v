@@ -27,6 +27,7 @@ from kinetiq.modules.workouts.application import (
     GetWorkoutSessionUseCase,
     ListVisionCandidatesUseCase,
     PauseWorkoutSessionUseCase,
+    PollVisionObservationsUseCase,
     PrepareWorkoutSession,
     RecordSessionFeedbackUseCase,
     ResumeWorkoutSessionUseCase,
@@ -40,6 +41,9 @@ from kinetiq.modules.workouts.infrastructure.repositories import (
     DjangoSessionPreparationRepository,
 )
 from kinetiq.modules.workouts.infrastructure.transient_store import RedisSessionTransientStore
+from kinetiq.modules.workouts.infrastructure.vision_observation_adapter import (
+    VisionRestObservationAdapter,
+)
 
 
 def get_session_transient_store() -> SessionTransientStore:
@@ -78,6 +82,14 @@ def start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
 def list_vision_candidates() -> ListVisionCandidatesUseCase:
     return ListVisionCandidatesUseCase(
         DjangoSessionLifecycleRepository(), get_vision_rest_adapter()
+    )
+
+
+def poll_vision_observations() -> PollVisionObservationsUseCase:
+    return PollVisionObservationsUseCase(
+        DjangoSessionLifecycleRepository(),
+        VisionRestObservationAdapter(get_vision_rest_adapter()),
+        get_session_transient_store(),
     )
 
 
