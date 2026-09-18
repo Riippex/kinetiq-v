@@ -31,6 +31,7 @@ import pytest
 from kinetiq.modules.integrations.vision_adapter import (
     VisionAnalysisNotFoundError,
     VisionClientConfig,
+    VisionIdempotencyConflictError,
     VisionRestAdapter,
 )
 
@@ -174,23 +175,13 @@ def test_get_analysis_status_404_on_real_service(adapter: VisionRestAdapter) -> 
         adapter.get_analysis_status(analysis_id=f"never-existed-{uuid4()}")
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Real defect confirmed against the live service, not a test bug: "
-        "kinetiq-v-vision's CreateAnalysisUseCase.execute() "
-        "(application/use_cases/create_analysis.py) accepts "
-        "command.idempotency_key but never uses it -- every call creates a "
-        "new Analysis with a fresh analysis_id regardless of a repeated "
-        "key, contradicting contracts/v1/rest-api.md's own documented "
-        "contract ('Idempotent on key'). Disclosed, not fixed, in this "
-        "pass (out of scope for the kinetiq-v Block 4 review this test was "
-        "added for); tracked as a new kinetiq-v-vision defect."
-    ),
-    strict=True,
-)
 def test_create_analysis_is_idempotent_on_key_against_real_service(
     adapter: VisionRestAdapter,
 ) -> None:
+    """Was a confirmed real defect (CreateAnalysisUseCase ignored
+    idempotency_key entirely); fixed in kinetiq-v-vision via a persisted
+    idempotency-key -> (analysis_id, request_fingerprint) mapping
+    (InMemoryAnalysisRepository.create_or_get_by_idempotency_key)."""
     session_id = uuid4()
     idempotency_key = f"contract-idem-{session_id}"
 
@@ -210,3 +201,31 @@ def test_create_analysis_is_idempotent_on_key_against_real_service(
     )
 
     assert first.analysis_id == second.analysis_id
+
+
+def test_create_analysis_rejects_key_reuse_with_conflicting_input(
+    adapter: VisionRestAdapter,
+) -> None:
+    """Reusing an idempotency_key with different request parameters must be
+    rejected (409 IDEMPOTENCY_CONFLICT), not silently resolved to either
+    request's analysis."""
+    session_id = uuid4()
+    idempotency_key = f"contract-idem-conflict-{session_id}"
+
+    adapter.create_analysis(
+        session_id=session_id,
+        source_id="cross-repo-contract-test-camera",
+        exercise_key="push_up",
+        exercise_version=1,
+        idempotency_key=idempotency_key,
+    )
+
+    with pytest.raises(VisionIdempotencyConflictError) as excinfo:
+        adapter.create_analysis(
+            session_id=session_id,
+            source_id="cross-repo-contract-test-camera",
+            exercise_key="plank",  # different exercise_key -> conflicting request
+            exercise_version=1,
+            idempotency_key=idempotency_key,
+        )
+    assert excinfo.value.idempotency_key == idempotency_key

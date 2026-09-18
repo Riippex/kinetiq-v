@@ -1,3 +1,5 @@
+from django.conf import settings as django_settings
+
 from kinetiq.modules.catalog.domain.entities import Exercise
 from kinetiq.modules.catalog.infrastructure.repositories import DjangoCatalogRepository
 from kinetiq.modules.goals.application import (
@@ -6,7 +8,7 @@ from kinetiq.modules.goals.application import (
     SetGoalUseCase,
 )
 from kinetiq.modules.goals.infrastructure.repositories import DjangoGoalRepository
-from kinetiq.modules.integrations import VisionRestAdapter
+from kinetiq.modules.integrations import VisionClientConfig, VisionRestAdapter
 from kinetiq.modules.profiles.application import GetProfileUseCase, UpdateProfileUseCase
 from kinetiq.modules.profiles.infrastructure.repositories import DjangoProfileRepository
 from kinetiq.modules.routines.application import (
@@ -43,7 +45,16 @@ def get_session_transient_store() -> SessionTransientStore:
 
 
 def get_vision_rest_adapter() -> VisionRestAdapter:
-    return VisionRestAdapter()
+    headers: dict[str, str] = {}
+    if django_settings.VISION_SERVICE_CREDENTIAL:
+        headers["Authorization"] = f"Bearer {django_settings.VISION_SERVICE_CREDENTIAL}"
+    return VisionRestAdapter(
+        config=VisionClientConfig(
+            base_url=django_settings.VISION_BASE_URL,
+            timeout_seconds=django_settings.VISION_TIMEOUT_SECONDS,
+            default_headers=headers,
+        )
+    )
 
 
 def prepare_workout_session() -> PrepareWorkoutSession:

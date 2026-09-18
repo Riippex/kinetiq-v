@@ -12,6 +12,7 @@ from kinetiq.modules.integrations.vision_adapter import (
     VisionConnectionError,
     VisionCursorExpiredError,
     VisionHttpError,
+    VisionIdempotencyConflictError,
     VisionObservationDTO,
     VisionRestAdapter,
     VisionSchemaValidationError,
@@ -172,6 +173,26 @@ class VisionRestAdapterAnalysesRoutesTests(unittest.TestCase):
             self.adapter.select_target(analysis_id="an_1", candidate_id="cand_1", expected_epoch=1)
         self.assertEqual(1, ctx.exception.expected_epoch)
         self.assertEqual(2, ctx.exception.current_epoch)
+
+    @patch("urllib.request.urlopen")
+    def test_create_analysis_idempotency_conflict_raises_typed_error(self, mock_urlopen) -> None:
+        mock_urlopen.side_effect = _http_error(
+            "http://vision-service.local:8080/v1/analyses",
+            409,
+            {
+                "error": {
+                    "code": "IDEMPOTENCY_CONFLICT",
+                    "message": "Idempotency key 'k1' was already used for a different request",
+                    "details": {"idempotency_key": "k1"},
+                }
+            },
+        )
+
+        with self.assertRaises(VisionIdempotencyConflictError) as ctx:
+            self.adapter.create_analysis(
+                session_id=uuid4(), source_id="cam", exercise_key="push_up", idempotency_key="k1"
+            )
+        self.assertEqual("k1", ctx.exception.idempotency_key)
 
     @patch("urllib.request.urlopen")
     def test_get_analysis_status_not_found_raises_typed_error(self, mock_urlopen) -> None:

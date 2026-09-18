@@ -33,7 +33,9 @@ export function App() {
   const [mode, setMode] = useState<SessionMode>('NORMAL');
   const [intensity, setIntensity] = useState<SessionIntensity>('PLANNED');
   const [screen, setScreen] = useState<Screen>('PREPARE');
-  const [liveState, setLiveState] = useState<LiveSessionState>({
+  // Mock/demo data (see the file header note): there is no backend to push
+  // live updates from yet, so this is a fixed snapshot with no setter.
+  const [liveState] = useState<LiveSessionState>({
     exerciseName: 'Goblet Squat',
     confirmedReps: 10,
     visibilityStatus: 'VISIBLE',

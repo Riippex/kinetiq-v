@@ -76,6 +76,16 @@ class VisionCursorExpiredError(VisionAdapterError):
         self.oldest_cursor = oldest_cursor
 
 
+class VisionIdempotencyConflictError(VisionAdapterError):
+    """Raised on 409 IDEMPOTENCY_CONFLICT: an idempotency_key was reused
+    with different request parameters than the request that originally
+    claimed it."""
+
+    def __init__(self, message: str, idempotency_key: str | None = None) -> None:
+        super().__init__(message)
+        self.idempotency_key = idempotency_key
+
+
 @dataclass(frozen=True, slots=True)
 class VisionRepetitionDTO:
     repetition_index: int
@@ -304,6 +314,10 @@ class VisionRestAdapter:
                 message,
                 requested_cursor=details.get("requested_cursor", ""),
                 oldest_cursor=details.get("oldest_cursor"),
+            )
+        if code == "IDEMPOTENCY_CONFLICT":
+            return VisionIdempotencyConflictError(
+                message, idempotency_key=details.get("idempotency_key")
             )
         return VisionHttpError(message, status_code=status_code)
 

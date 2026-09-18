@@ -4,6 +4,8 @@ from pathlib import Path
 import dj_database_url
 from dotenv import load_dotenv
 
+from kinetiq.bootstrap.vision_settings import resolve_vision_settings
+
 BASE_DIR = Path(__file__).resolve().parents[3]
 REPOSITORY_ROOT = BASE_DIR.parents[1]
 load_dotenv(REPOSITORY_ROOT / ".env")
@@ -82,6 +84,22 @@ CHANNEL_LAYERS = {
         "CONFIG": {"hosts": [REDIS_URL]},
     }
 }
+
+# Vision (kinetiq-v-vision) service client configuration. Validated eagerly
+# at settings-import time (resolve_vision_settings) so a misconfigured
+# deployment fails fast at startup rather than on the first Vision-dependent
+# request. VISION_SERVICE_CREDENTIAL is a scoped service-to-service
+# credential sent as a bearer token (see
+# bootstrap/container.py:get_vision_rest_adapter); empty by default for
+# local development against an unauthenticated Vision instance.
+_vision_settings = resolve_vision_settings(
+    base_url=os.getenv("VISION_BASE_URL", "http://127.0.0.1:8001"),
+    timeout_seconds_raw=os.getenv("VISION_TIMEOUT_SECONDS", "5.0"),
+    service_credential=os.getenv("VISION_SERVICE_CREDENTIAL", ""),
+)
+VISION_BASE_URL = _vision_settings.base_url
+VISION_TIMEOUT_SECONDS = _vision_settings.timeout_seconds
+VISION_SERVICE_CREDENTIAL = _vision_settings.service_credential
 
 AUTH_PASSWORD_VALIDATORS: list[dict[str, str]] = []
 LANGUAGE_CODE = "en-us"

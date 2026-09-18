@@ -28,7 +28,14 @@ describe('App', () => {
     fireEvent.press(screen.getByTestId('start-session'));
 
     expect(screen.getByTestId('ready-screen')).toBeTruthy();
-    expect(screen.getByTestId('prepared-summary').children[0]).toBe('DYNAMIC · CHALLENGING');
+    // `{mode} · {intensity}` renders as three separate Text children
+    // (`mode`, the literal ' · ', and `intensity`), not one concatenated
+    // string, so `.children[0]` alone only ever contains the first
+    // fragment ("DYNAMIC"). toHaveTextContent joins all child text nodes,
+    // which is the correct way to assert the full rendered text.
+    expect(screen.getByTestId('prepared-summary')).toHaveTextContent(
+      'DYNAMIC · CHALLENGING',
+    );
 
     fireEvent.press(screen.getByTestId('back-to-preparation'));
     expect(screen.getByTestId('preparation-screen')).toBeTruthy();
