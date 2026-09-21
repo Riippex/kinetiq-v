@@ -168,6 +168,22 @@ class DjangoUserProfileLookup:
         return tuple(str(item) for item in record.exclusions if isinstance(item, str))
 
 
+class DjangoLatestSessionReader:
+    """`LatestSessionReader` returning the owner's most recently updated session."""
+
+    def get_latest_session(self, *, owner_id: UUID) -> WorkoutSession | None:
+        record = (
+            WorkoutSessionRecord.objects.select_related(
+                "routine", "observation_coverage", "feedback"
+            )
+            .prefetch_related("performed_sets")
+            .filter(owner_id=owner_id)
+            .order_by("-updated_at", "-created_at")
+            .first()
+        )
+        return None if record is None else _to_domain(record)
+
+
 class DjangoSessionLifecycleRepository:
     def get_session(self, *, owner_id: UUID, session_id: UUID) -> WorkoutSession | None:
         record = (

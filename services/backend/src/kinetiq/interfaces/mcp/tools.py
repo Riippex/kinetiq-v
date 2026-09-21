@@ -24,9 +24,10 @@ from kinetiq.bootstrap.container import (
     finish_workout_session,
     get_active_goal,
     get_current_routine,
+    get_idempotent_tool_runner,
+    get_latest_workout_session,
     get_profile,
     get_progress_summary,
-    get_workout_session,
     list_goal_revisions,
     pause_workout_session,
     prepare_workout_session,
@@ -38,12 +39,11 @@ from kinetiq.bootstrap.container import (
     update_profile,
 )
 from kinetiq.interfaces.mcp.auth import AuthenticationRequiredError, resolve_mcp_owner_id
-from kinetiq.interfaces.mcp.idempotency import (
+from kinetiq.modules.goals.application import SetGoalCommand
+from kinetiq.modules.integrations.application import (
     IdempotencyConflictError,
-    run_idempotent,
     validate_idempotency_key,
 )
-from kinetiq.modules.goals.application import SetGoalCommand
 from kinetiq.modules.profiles.application import UpdateProfileCommand
 from kinetiq.modules.profiles.domain.entities import ExperienceLevel, UserProfile
 from kinetiq.modules.routines.domain.errors import RoutineDomainError
@@ -55,7 +55,6 @@ from kinetiq.modules.workouts.application import (
 )
 from kinetiq.modules.workouts.domain import SessionIntensity, SessionMode
 from kinetiq.modules.workouts.domain.session import CoachingTone, SessionFeedback, WorkoutSession
-from kinetiq.modules.workouts.infrastructure.models import WorkoutSessionRecord
 
 # Anticipated business failures (not found, stale revision, invalid input,
 # idempotency conflicts) reach the caller as readable tool errors; anything
@@ -90,7 +89,7 @@ async def _idempotent(
     payload: dict[str, Any],
     effect: Callable[[], dict[str, Any]],
 ) -> dict[str, Any]:
-    return await sync_to_async(run_idempotent, thread_sensitive=True)(
+    return await sync_to_async(get_idempotent_tool_runner().run, thread_sensitive=True)(
         owner_id=owner_id, tool=tool, key=idempotency_key, payload=payload, effect=effect
     )
 
@@ -330,15 +329,8 @@ async def mcp_accept_routine(idempotency_key: str, routine_id: str, version: int
 # --- Workout Session Tools ---
 
 
-def _sync_get_latest_session(owner_id: UUID) -> dict[str, Any] | None:
-    latest_record = (
-        WorkoutSessionRecord.objects.filter(owner_id=owner_id)
-        .order_by("-updated_at", "-created_at")
-        .first()
-    )
-    if latest_record is None:
-        return None
-    session = get_workout_session().execute(owner_id=owner_id, session_id=latest_record.id)
+def _latest_session_payload(owner_id: UUID) -> dict[str, Any] | None:
+    session = get_latest_workout_session().execute(owner_id=owner_id)
     if session is None:
         return None
     return {
@@ -373,7 +365,7 @@ def _sync_get_latest_session(owner_id: UUID) -> dict[str, Any] | None:
 async def mcp_get_latest_session() -> dict[str, Any] | None:
     """Retrieve the athlete's most recent workout session details, state, and results."""
     owner_id = await _owner_id()
-    return await sync_to_async(_sync_get_latest_session, thread_sensitive=True)(owner_id)
+    return await sync_to_async(_latest_session_payload, thread_sensitive=True)(owner_id)
 
 
 @tool_errors
@@ -476,36 +468,46 @@ async def mcp_finish_session(
 ) -> dict[str, Any]:
     """Finish an active workout session, optionally recording perceived effort and comments.
 
-    `idempotency_key` is required; optional feedback is recorded under a key
-    derived from it, so a retry repeats neither the finish nor the feedback.
+    `idempotency_key` is required and identifies the complete request
+    (`session_id`, `expected_revision`, `perceived_effort` and `comments`). An
+    identical retry replays the same final response; reusing the key with any
+    different argument is an IDEMPOTENCY_CONFLICT and has no effect. The finish
+    and the optional feedback commit together or not at all.
     """
     key = validate_idempotency_key(idempotency_key)
     owner_id = await _owner_id()
-    command = FinishSessionCommand(
-        session_id=UUID(session_id),
-        expected_revision=expected_revision,
-        idempotency_key=key,
-        performed_sets=(),
-    )
-    session = await sync_to_async(finish_workout_session().execute, thread_sensitive=True)(
-        owner_id=owner_id, command=command
-    )
+    session_uuid = UUID(session_id)
 
-    if perceived_effort is not None or comments is not None:
-        feedback_command = RecordSessionFeedbackCommand(
-            session_id=UUID(session_id),
-            # Finishing advances the revision by exactly one. Deriving the
-            # feedback revision from the request (not from the possibly
-            # replayed finish result) keeps a retried command identical.
-            expected_revision=expected_revision + 1,
-            idempotency_key=f"{key}:feedback",
-            feedback=SessionFeedback(perceived_effort=perceived_effort, comments=comments),
+    def effect() -> dict[str, Any]:
+        session = finish_workout_session().execute(
+            owner_id=owner_id,
+            command=FinishSessionCommand(
+                session_id=session_uuid,
+                expected_revision=expected_revision,
+                idempotency_key=key,
+                performed_sets=(),
+            ),
         )
-        session = await sync_to_async(record_session_feedback().execute, thread_sensitive=True)(
-            owner_id=owner_id, command=feedback_command
-        )
+        if perceived_effort is not None or comments is not None:
+            session = record_session_feedback().execute(
+                owner_id=owner_id,
+                command=RecordSessionFeedbackCommand(
+                    session_id=session_uuid,
+                    # Finishing advances the revision by exactly one.
+                    expected_revision=expected_revision + 1,
+                    idempotency_key=f"{key}:feedback",
+                    feedback=SessionFeedback(perceived_effort=perceived_effort, comments=comments),
+                ),
+            )
+        return _session_payload(session)
 
-    return _session_payload(session)
+    payload = {
+        "session_id": str(session_uuid),
+        "expected_revision": expected_revision,
+        "perceived_effort": perceived_effort,
+        "comments": comments,
+    }
+    return await _idempotent(owner_id, "finish_session", key, payload, effect)
 
 
 # --- Progress Tools ---

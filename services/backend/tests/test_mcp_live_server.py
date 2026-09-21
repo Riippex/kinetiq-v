@@ -12,13 +12,11 @@ import asyncio
 import json
 import socket
 import threading
-import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
-import uvicorn
 from httpx2 import AsyncClient
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -39,6 +37,7 @@ from kinetiq.modules.goals.infrastructure.models import GoalRevisionRecord
 from kinetiq.modules.identity.infrastructure.models import User
 from mcp_support import (
     ATTACKER_KEY,
+    UvicornThread,
     make_app,
     mint_token,
     oidc_settings,
@@ -87,24 +86,22 @@ def mcp_uvicorn_url(jwks_url: str) -> Iterator[str]:
         resource_url="http://127.0.0.1/mcp",
         allowed_hosts=["127.0.0.1", "127.0.0.1:*"],
     )
-    port = _free_port()
-    config = uvicorn.Config(
-        app, host="127.0.0.1", port=port, lifespan="on", log_level="warning"
-    )
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 15
-    while not server.started:
-        assert time.monotonic() < deadline, "uvicorn did not start"
-        time.sleep(0.05)
+    baseline_threads = set(threading.enumerate())
+    harness = UvicornThread(app, _free_port())
+    harness.start()
 
-    yield f"http://127.0.0.1:{port}/mcp"
+    yield f"http://127.0.0.1:{harness.port}/mcp"
 
-    server.should_exit = True
-    thread.join(timeout=15)
-    # Lifespan shutdown must complete: the server thread ends cleanly.
-    assert not thread.is_alive(), "uvicorn did not shut down (lifespan shutdown hung)"
+    # Lifespan shutdown must complete, the loop must close with no unexpected
+    # pending task, and no thread started by the server may outlive it.
+    harness.stop()
+    lingering = [
+        t for t in set(threading.enumerate()) - baseline_threads
+        if t.is_alive() and not t.name.startswith(("ThreadPoolExecutor", "asgiref"))
+    ]
+    for thread in lingering:
+        thread.join(timeout=5)
+    assert [t.name for t in lingering if t.is_alive()] == []
 
 
 async def _alexa_call(session: ClientSession, tool: str, **arguments: Any) -> Any:

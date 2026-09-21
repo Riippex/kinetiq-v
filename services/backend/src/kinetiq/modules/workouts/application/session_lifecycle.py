@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from kinetiq.modules.workouts.application.ports import (
+    LatestSessionReader,
     RoutineItemLookup,
     SessionLifecycleRepository,
     UnknownVisionCandidateError,
@@ -605,3 +606,14 @@ class GetWorkoutSessionUseCase:
 
     def execute(self, *, owner_id: UUID, session_id: UUID) -> WorkoutSession | None:
         return self._repository.get_session(owner_id=owner_id, session_id=session_id)
+
+
+class GetLatestWorkoutSessionUseCase:
+    """Reads the owner's most recently updated workout session through a
+    reader port, so interface adapters never query workouts tables directly."""
+
+    def __init__(self, reader: LatestSessionReader) -> None:
+        self._reader = reader
+
+    def execute(self, *, owner_id: UUID) -> WorkoutSession | None:
+        return self._reader.get_latest_session(owner_id=owner_id)

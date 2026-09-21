@@ -10,6 +10,7 @@ from .dynamic_challenges import (
 )
 from .observation_ingestion import ObservationIngestionResult, PollVisionObservationsUseCase
 from .ports import (
+    LatestSessionReader,
     SessionTransientStore,
     TransientSessionUpdate,
     UnknownVisionCandidateError,
@@ -32,6 +33,7 @@ from .session_lifecycle import (
     DisableDynamicModeUseCase,
     FinishSessionCommand,
     FinishWorkoutSessionUseCase,
+    GetLatestWorkoutSessionUseCase,
     GetWorkoutSessionUseCase,
     InconsistentPerformedSetMeasurementError,
     ListVisionCandidatesUseCase,
@@ -58,11 +60,13 @@ __all__ = [
     "FinishSessionCommand",
     "FinishWorkoutSessionUseCase",
     "GetDisplaySessionStateUseCase",
+    "GetLatestWorkoutSessionUseCase",
     "GetSessionDynamicChallengesUseCase",
     "GetWorkoutSessionUseCase",
     "IdempotencyConflict",
     "InconsistentPerformedSetMeasurementError",
     "IssueDisplayPairingCodeUseCase",
+    "LatestSessionReader",
     "ListVisionCandidatesUseCase",
     "ObservationIngestionResult",
     "PairDisplayDeviceUseCase",

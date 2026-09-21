@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from asgiref.sync import sync_to_async
 from mcp.client.session import ClientSession
 
 from kinetiq.modules.catalog.application.seed_catalog import SeedCatalogUseCase
@@ -25,7 +26,10 @@ from kinetiq.modules.identity.infrastructure.models import User
 from kinetiq.modules.integrations.infrastructure.models import McpToolReceipt
 from kinetiq.modules.media.infrastructure.models import ProgressPhotoRecord
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
-from kinetiq.modules.workouts.infrastructure.models import WorkoutSessionRecord
+from kinetiq.modules.workouts.infrastructure.models import (
+    SessionFeedbackRecord,
+    WorkoutSessionRecord,
+)
 from mcp_support import (
     LifespanRunner,
     error_text,
@@ -259,23 +263,6 @@ def test_set_goal_retry_replays_instead_of_adding_a_revision(alice: User) -> Non
 
 
 @pytest.mark.django_db(transaction=True)
-def test_concurrent_identical_set_goal_calls_have_one_effect(alice: User) -> None:
-    async def scenario(s: ClientSession) -> None:
-        results = await asyncio.gather(
-            *[
-                s.call_tool(
-                    "set_goal", {"idempotency_key": "goal-race", "description": "Race goal"}
-                )
-                for _ in range(4)
-            ]
-        )
-        assert len({json.dumps(result_payload(r), sort_keys=True) for r in results}) == 1
-
-    run_as(SUB_A, scenario=scenario)
-    assert GoalRevisionRecord.objects.filter(owner_id=alice.id).count() == 1
-
-
-@pytest.mark.django_db(transaction=True)
 def test_update_profile_retry_replays_the_first_response(alice: User) -> None:
     async def scenario(s: ClientSession) -> None:
         first = await call(
@@ -387,6 +374,199 @@ def test_same_idempotency_key_is_scoped_per_user(alice: User, bob: User) -> None
         assert goal_b["description"] == "B goal"
 
     run_as(SUB_A, SUB_B, scenario=scenario)
+
+
+# --- finish_session: the key covers the complete request ---
+
+
+async def active_session(s: ClientSession, prefix: str, routine: dict[str, Any]) -> dict[str, Any]:
+    prep = await call(
+        s, "prepare_session", idempotency_key=f"{prefix}-prepare",
+        routine_id=routine["routine_id"], routine_version=routine["version"],
+    )
+    return await call(
+        s, "start_session", idempotency_key=f"{prefix}-start",
+        session_id=prep["session_id"], expected_revision=prep["revision"],
+    )
+
+
+def finish_receipts(owner: User) -> int:
+    return McpToolReceipt.objects.filter(owner_id=owner.id, tool="finish_session").count()
+
+
+def feedback_of(session_id: str) -> tuple[int | None, str | None] | None:
+    record = SessionFeedbackRecord.objects.filter(session_id=session_id).first()
+    return None if record is None else (record.perceived_effort, record.comments)
+
+
+def session_row(session_id: str) -> tuple[str, int]:
+    record = WorkoutSessionRecord.objects.get(id=session_id)
+    return record.state, record.revision
+
+
+async def afeedback_of(session_id: str) -> tuple[int | None, str | None] | None:
+    return await sync_to_async(feedback_of)(session_id)
+
+
+async def asession_row(session_id: str) -> tuple[str, int]:
+    return await sync_to_async(session_row)(session_id)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_finish_same_key_and_identical_payload_replays_the_exact_final_response(
+    alice: User, seed_catalog: None
+) -> None:
+    async def scenario(s: ClientSession) -> None:
+        routine = await accepted_routine(s, "fin-replay")
+        started = await active_session(s, "fin-replay", routine)
+        args = {
+            "idempotency_key": "fin-replay-finish", "session_id": started["session_id"],
+            "expected_revision": started["revision"], "perceived_effort": 7,
+            "comments": "felt strong",
+        }
+        first = await call(s, "finish_session", **args)
+        for _ in range(3):
+            assert await call(s, "finish_session", **args) == first
+        assert first["status"] == "COMPLETED"
+        assert first["revision"] == started["revision"] + 2  # finish + feedback
+
+    run_as(SUB_A, scenario=scenario)
+    record = WorkoutSessionRecord.objects.get(owner_id=alice.id)
+    # Prepare, start, finish and feedback were each applied exactly once.
+    assert record.revision == 1 + 1 + 1 + 1
+    assert feedback_of(str(record.id)) == (7, "felt strong")
+    assert finish_receipts(alice) == 1
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "change", ["session_id", "expected_revision", "perceived_effort", "comments"]
+)
+def test_finish_same_key_with_any_different_argument_conflicts_without_effect(
+    alice: User, seed_catalog: None, change: str
+) -> None:
+    async def scenario(s: ClientSession) -> None:
+        routine = await accepted_routine(s, f"fin-conflict-{change}")
+        first_session = await active_session(s, f"fin-a-{change}", routine)
+        other_session = await active_session(s, f"fin-b-{change}", routine)
+        args: dict[str, Any] = {
+            "idempotency_key": "fin-conflict-key", "session_id": first_session["session_id"],
+            "expected_revision": first_session["revision"], "perceived_effort": 5,
+            "comments": "original",
+        }
+        first = await call(s, "finish_session", **args)
+
+        different = dict(args)
+        if change == "session_id":
+            different["session_id"] = other_session["session_id"]
+            different["expected_revision"] = other_session["revision"]
+        elif change == "expected_revision":
+            different["expected_revision"] = args["expected_revision"] + 1
+        elif change == "perceived_effort":
+            different["perceived_effort"] = 9
+        else:
+            different["comments"] = "changed"
+
+        assert "IDEMPOTENCY_CONFLICT" in await call_error(s, "finish_session", **different)
+
+        # No second effect: the first session is unchanged, and the other
+        # session (targeted by the conflicting request) is still active.
+        assert await call(s, "finish_session", **args) == first
+        assert await afeedback_of(first_session["session_id"]) == (5, "original")
+        assert await asession_row(other_session["session_id"]) == (
+            "ACTIVE",
+            other_session["revision"],
+        )
+
+    run_as(SUB_A, scenario=scenario)
+    assert finish_receipts(alice) == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_finish_without_feedback_then_same_key_with_feedback_adds_no_feedback(
+    alice: User, seed_catalog: None
+) -> None:
+    async def scenario(s: ClientSession) -> None:
+        routine = await accepted_routine(s, "fin-nofb")
+        started = await active_session(s, "fin-nofb", routine)
+        base = {
+            "idempotency_key": "fin-nofb-finish", "session_id": started["session_id"],
+            "expected_revision": started["revision"],
+        }
+        first = await call(s, "finish_session", **base)
+        assert first["status"] == "COMPLETED"
+        assert await afeedback_of(started["session_id"]) is None
+
+        conflict = await call_error(
+            s, "finish_session", **base, perceived_effort=8, comments="late feedback"
+        )
+        assert "IDEMPOTENCY_CONFLICT" in conflict
+        assert await afeedback_of(started["session_id"]) is None
+        latest = await call(s, "get_latest_session")
+        assert latest["feedback"] is None
+        assert latest["revision"] == first["revision"]
+
+        # The original request still replays exactly.
+        assert await call(s, "finish_session", **base) == first
+
+    run_as(SUB_A, scenario=scenario)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_finish_with_feedback_then_same_key_without_or_different_feedback_is_not_stale(
+    alice: User, seed_catalog: None
+) -> None:
+    async def scenario(s: ClientSession) -> None:
+        routine = await accepted_routine(s, "fin-withfb")
+        started = await active_session(s, "fin-withfb", routine)
+        base = {
+            "idempotency_key": "fin-withfb-finish", "session_id": started["session_id"],
+            "expected_revision": started["revision"],
+        }
+        first = await call(
+            s, "finish_session", **base, perceived_effort=6, comments="original note"
+        )
+
+        for retry in (
+            {},  # feedback omitted
+            {"perceived_effort": 6},  # partially omitted
+            {"perceived_effort": 6, "comments": "different note"},
+            {"perceived_effort": 10, "comments": "original note"},
+        ):
+            assert "IDEMPOTENCY_CONFLICT" in await call_error(s, "finish_session", **base, **retry)
+            latest = await call(s, "get_latest_session")
+            assert latest["revision"] == first["revision"]
+            assert latest["feedback"] == {"perceived_effort": 6, "comments": "original note"}
+
+        replay = await call(
+            s, "finish_session", **base, perceived_effort=6, comments="original note"
+        )
+        assert replay == first
+
+    run_as(SUB_A, scenario=scenario)
+    assert finish_receipts(alice) == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_finish_is_atomic_when_feedback_is_rejected(alice: User, seed_catalog: None) -> None:
+    """Invalid feedback rolls back the finish and its receipt, so a corrected
+    retry with the same key is a fresh request, not a conflict."""
+
+    async def scenario(s: ClientSession) -> None:
+        routine = await accepted_routine(s, "fin-atomic")
+        started = await active_session(s, "fin-atomic", routine)
+        base = {
+            "idempotency_key": "fin-atomic-finish", "session_id": started["session_id"],
+            "expected_revision": started["revision"],
+        }
+        assert await call_error(s, "finish_session", **base, perceived_effort=99)
+        assert await asession_row(started["session_id"]) == ("ACTIVE", started["revision"])
+
+        fixed = await call(s, "finish_session", **base, perceived_effort=4)
+        assert fixed["status"] == "COMPLETED"
+
+    run_as(SUB_A, scenario=scenario)
+    assert finish_receipts(alice) == 1
 
 
 # --- Cross-user isolation ---

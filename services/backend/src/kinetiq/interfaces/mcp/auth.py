@@ -15,9 +15,10 @@ from uuid import UUID
 import anyio.to_thread
 import jwt
 from asgiref.sync import sync_to_async
-from django.contrib.auth import get_user_model
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
+
+from kinetiq.bootstrap.container import get_subject_directory
 
 logger = logging.getLogger(__name__)
 
@@ -58,15 +59,7 @@ class JWKSClientResolver:
 
 def local_user_id_for_subject(subject: str) -> UUID | None:
     """Map a validated token `sub` to an active local user."""
-    if not subject:
-        return None
-    user_model = get_user_model()
-    user_id: UUID | None = (
-        user_model.objects.filter(cognito_subject=subject, is_active=True)
-        .values_list("id", flat=True)
-        .first()
-    )
-    return user_id
+    return get_subject_directory().active_user_id_for_subject(subject)
 
 
 def _token_scopes(claims: dict[str, Any]) -> list[str]:

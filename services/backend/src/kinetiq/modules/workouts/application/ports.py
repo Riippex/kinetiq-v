@@ -279,3 +279,9 @@ class VisionObservationSourcePort(Protocol):
     def poll_observations(
         self, *, analysis_id: str, after_cursor: str | None, limit: int
     ) -> VisionObservationsPage: ...
+
+
+class LatestSessionReader(Protocol):
+    """Owner-scoped read of the athlete's most recent workout session."""
+
+    def get_latest_session(self, *, owner_id: UUID) -> WorkoutSession | None: ...

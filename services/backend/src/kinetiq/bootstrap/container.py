@@ -8,7 +8,11 @@ from kinetiq.modules.goals.application import (
     SetGoalUseCase,
 )
 from kinetiq.modules.goals.infrastructure.repositories import DjangoGoalRepository
+from kinetiq.modules.identity.application import SubjectDirectory
+from kinetiq.modules.identity.infrastructure.subject_directory import DjangoSubjectDirectory
 from kinetiq.modules.integrations import VisionClientConfig, VisionRestAdapter
+from kinetiq.modules.integrations.application import IdempotentToolRunner
+from kinetiq.modules.integrations.infrastructure.receipt_store import DjangoToolReceiptStore
 from kinetiq.modules.media.application import (
     DeleteProgressPhotoUseCase,
     FinalizeProgressPhotoUseCase,
@@ -53,6 +57,7 @@ from kinetiq.modules.workouts.application import (
     DisableDynamicModeUseCase,
     FinishWorkoutSessionUseCase,
     GetDisplaySessionStateUseCase,
+    GetLatestWorkoutSessionUseCase,
     GetSessionDynamicChallengesUseCase,
     GetWorkoutSessionUseCase,
     IssueDisplayPairingCodeUseCase,
@@ -73,6 +78,7 @@ from kinetiq.modules.workouts.infrastructure.display_pairing_store import (
     RedisDisplayPairingStore,
 )
 from kinetiq.modules.workouts.infrastructure.repositories import (
+    DjangoLatestSessionReader,
     DjangoRoutineItemLookup,
     DjangoSessionLifecycleRepository,
     DjangoSessionPreparationRepository,
@@ -180,6 +186,18 @@ def finish_workout_session() -> FinishWorkoutSessionUseCase:
 
 def get_workout_session() -> GetWorkoutSessionUseCase:
     return GetWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
+
+
+def get_latest_workout_session() -> GetLatestWorkoutSessionUseCase:
+    return GetLatestWorkoutSessionUseCase(DjangoLatestSessionReader())
+
+
+def get_idempotent_tool_runner() -> IdempotentToolRunner:
+    return IdempotentToolRunner(DjangoToolReceiptStore())
+
+
+def get_subject_directory() -> SubjectDirectory:
+    return DjangoSubjectDirectory()
 
 
 def record_session_feedback() -> RecordSessionFeedbackUseCase:

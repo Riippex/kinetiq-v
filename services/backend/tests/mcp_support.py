@@ -3,12 +3,14 @@ lifespan runner, and an authenticated MCP client session."""
 
 import asyncio
 import json
+import threading
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
 import jwt
+import uvicorn
 from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx2 import ASGITransport, AsyncClient
 from mcp.client.session import ClientSession
@@ -191,3 +193,86 @@ async def raw_mcp_post(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://localhost") as client:
         return await client.post("/mcp", json=body, headers=request_headers)
+
+
+# Tasks that legitimately outlive `Server.serve()` and are cancelled when the
+# server thread's event loop is torn down: sse-starlette runs exactly one
+# shutdown watcher per event loop.
+_ALLOWED_LEFTOVER_TASKS = {"_shutdown_watcher"}
+
+
+class UvicornThread:
+    """Runs a uvicorn server (lifespan on) in a thread and proves it stops.
+
+    `stop()` requests shutdown, joins the thread, and then verifies that the
+    thread ended, its event loop is closed, and that no unexpected task was
+    still pending when the server returned. On a hang it fails with the
+    server's own state and the stuck tasks instead of just timing out.
+
+    The server thread runs a selector event loop: on Windows' default Proactor
+    loop under Python 3.12, `Server.shutdown()` can block forever in
+    `asyncio.Server.wait_closed()` (transports of already-closed client
+    connections are never detached) before uvicorn ever sends
+    `lifespan.shutdown`, even though uvicorn reports zero open connections.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        port: int,
+        loop_factory: Callable[[], asyncio.AbstractEventLoop] = asyncio.SelectorEventLoop,
+    ) -> None:
+        self.port = port
+        self._loop_factory = loop_factory
+        self.server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=port, lifespan="on", log_level="warning")
+        )
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.leftover_tasks: list[str] = []
+        self._thread = threading.Thread(target=self._run, name=f"uvicorn-{port}", daemon=True)
+
+    def _run(self) -> None:
+        loop = self._loop_factory()
+        self.loop = loop
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self.server.serve())
+        finally:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            self.leftover_tasks = [t.get_coro().__name__ for t in pending]  # type: ignore[union-attr]
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+
+    def start(self, timeout: float = 15.0) -> None:
+        self._thread.start()
+        deadline = time.monotonic() + timeout
+        while not self.server.started:
+            assert self._thread.is_alive(), "uvicorn thread died during startup"
+            assert time.monotonic() < deadline, "uvicorn did not start"
+            time.sleep(0.02)
+
+    def _diagnostics(self) -> str:
+        server = self.server
+        lines = [
+            f"should_exit={server.should_exit} lifespan.should_exit={server.lifespan.should_exit}",
+            f"uvicorn connections={len(server.server_state.connections)} "
+            f"tasks={len(server.server_state.tasks)}",
+        ]
+        if self.loop is not None:
+            for task in asyncio.all_tasks(self.loop):
+                lines.append(f"pending task: {task.get_name()} {task.get_coro()!r}")
+        return "\n".join(lines)
+
+    def stop(self, timeout: float = 15.0) -> None:
+        self.server.should_exit = True
+        self._thread.join(timeout=timeout)
+        assert not self._thread.is_alive(), (
+            "uvicorn did not shut down:\n" + self._diagnostics()
+        )
+        assert self.loop is not None and self.loop.is_closed()
+        unexpected = [n for n in self.leftover_tasks if n not in _ALLOWED_LEFTOVER_TASKS]
+        assert unexpected == [], f"tasks still pending at server exit: {unexpected}"
