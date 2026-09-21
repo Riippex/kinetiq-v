@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 from channels.auth import AuthMiddlewareStack
 from channels.routing import ProtocolTypeRouter, URLRouter
@@ -15,10 +16,26 @@ django_asgi_app = get_asgi_application()
 
 from kinetiq.interfaces.graphql.schema import schema  # noqa: E402
 from kinetiq.interfaces.graphql.websocket import AuthenticatedGraphQLWSConsumer  # noqa: E402
+from kinetiq.interfaces.mcp import create_mcp_asgi_app  # noqa: E402
 
-application = ProtocolTypeRouter(
+# The MCP app owns its session manager through the standard ASGI lifespan
+# protocol: run this module under an ASGI server that speaks lifespan (uvicorn).
+mcp_asgi_app = create_mcp_asgi_app(path="/mcp")
+
+_MCP_PATHS = ("/mcp", "/.well-known/oauth-protected-resource/mcp")
+
+
+async def http_dispatcher(scope: Any, receive: Any, send: Any) -> None:
+    path = scope.get("path", "")
+    if any(path == mcp_path or path.startswith(f"{mcp_path}/") for mcp_path in _MCP_PATHS):
+        await mcp_asgi_app(scope, receive, send)
+    else:
+        await django_asgi_app(scope, receive, send)
+
+
+_protocol_router = ProtocolTypeRouter(
     {
-        "http": django_asgi_app,
+        "http": http_dispatcher,
         # AllowedHostsOriginValidator rejects the WebSocket handshake
         # outright (before AuthMiddlewareStack or the consumer ever run)
         # unless the connection's Origin header matches ALLOWED_HOSTS --
@@ -52,3 +69,11 @@ application = ProtocolTypeRouter(
         ),
     }
 )
+
+
+async def application(scope: Any, receive: Any, send: Any) -> None:
+    if scope["type"] == "lifespan":
+        # Startup/shutdown drive the MCP session manager (and only it).
+        await mcp_asgi_app(scope, receive, send)
+    else:
+        await _protocol_router(scope, receive, send)

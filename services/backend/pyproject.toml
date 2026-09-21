@@ -9,6 +9,8 @@ dependencies = [
     "dj-database-url>=3,<4",
     "django>=5.2,<5.3",
     "django-redis>=6,<7",
+    "mcp>=2.2,<3",
+    "pyjwt[crypto]>=2.8,<3",
     "psycopg[binary]>=3.2,<4",
     "python-dotenv>=1.2,<2",
     "strawberry-graphql-django>=0.88.0",
@@ -35,6 +37,9 @@ extend-exclude = ["**/migrations/*.py"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["kinetiq", "mcp_support"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
@@ -47,6 +52,7 @@ django_settings_module = "kinetiq.bootstrap.settings"
 dev = [
     "daphne>=4.2.3",
     "django-stubs>=6.1.0",
+    "httpx2>=2.13",
     "jsonschema>=4.23.0",
     "mypy>=2.3.1",
     "pytest>=9.1.1",

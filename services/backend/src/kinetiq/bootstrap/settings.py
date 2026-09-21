@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "kinetiq.modules.routines.infrastructure.apps.RoutinesConfig",
     "kinetiq.modules.workouts.infrastructure.apps.WorkoutsConfig",
     "kinetiq.modules.media.infrastructure.apps.MediaConfig",
+    "kinetiq.modules.integrations.infrastructure.apps.IntegrationsConfig",
 ]
 
 MIDDLEWARE = [
@@ -119,3 +120,25 @@ MEDIA_S3_ENDPOINT_URL = os.getenv("MEDIA_S3_ENDPOINT_URL", None)
 USE_IN_MEMORY_MEDIA_STORAGE = (
     os.getenv("USE_IN_MEMORY_MEDIA_STORAGE", "false").lower() == "true"
 )
+
+
+# MCP (Alexa+) runtime endpoint. Bearer tokens must be signed OIDC/JWT access
+# tokens: signature verified against the trusted JWKS, plus issuer, audience,
+# expiry, token use and scope. With no issuer/audience configured the endpoint
+# fails closed and rejects every token.
+def _csv_env(name: str, default: str = "") -> list[str]:
+    return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
+
+
+MCP_OIDC_ISSUER = os.getenv("MCP_OIDC_ISSUER", "")
+MCP_OIDC_AUDIENCE = os.getenv("MCP_OIDC_AUDIENCE", "")
+MCP_OIDC_JWKS_URL = os.getenv("MCP_OIDC_JWKS_URL", "")
+MCP_OIDC_REQUIRED_SCOPE = os.getenv("MCP_OIDC_REQUIRED_SCOPE", "kinetiq/coach")
+MCP_OIDC_TOKEN_USE = os.getenv("MCP_OIDC_TOKEN_USE", "access")
+MCP_RESOURCE_URL = os.getenv("MCP_RESOURCE_URL", "http://localhost:8000/mcp")
+# DNS-rebinding protection: Host and Origin headers must match these lists.
+# Hosts default to the Django allow-list (bare and with any port).
+MCP_ALLOWED_HOSTS = _csv_env("MCP_ALLOWED_HOSTS") or [
+    entry for host in ALLOWED_HOSTS for entry in (host, f"{host}:*")
+]
+MCP_ALLOWED_ORIGINS = _csv_env("MCP_ALLOWED_ORIGINS")
