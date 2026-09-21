@@ -19,9 +19,7 @@ def normalize_excluded_exercise_codes(
     exercise code is dropped rather than guessed at.
     """
     return frozenset(
-        code.strip()
-        for code in raw_exclusions
-        if code and code.strip() in known_exercise_codes
+        code.strip() for code in raw_exclusions if code and code.strip() in known_exercise_codes
     )
 
 
@@ -49,9 +47,7 @@ def template_satisfies_non_item_constraints(
     ):
         return False
 
-    supported_experience = {
-        level.upper() for level in template.supported_experience_levels
-    }
+    supported_experience = {level.upper() for level in template.supported_experience_levels}
     normalized_experience = criteria.experience_level.strip().upper()
     if supported_experience and normalized_experience not in supported_experience:
         return False

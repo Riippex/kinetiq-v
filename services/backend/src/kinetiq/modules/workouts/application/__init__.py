@@ -1,8 +1,19 @@
+from .display_pairing_use_cases import (
+    DisplaySessionState,
+    GetDisplaySessionStateUseCase,
+    IssueDisplayPairingCodeUseCase,
+    PairDisplayDeviceUseCase,
+)
+from .dynamic_challenges import (
+    GetSessionDynamicChallengesUseCase,
+    SkipDynamicChallengeUseCase,
+)
 from .observation_ingestion import ObservationIngestionResult, PollVisionObservationsUseCase
 from .ports import (
     SessionTransientStore,
     TransientSessionUpdate,
     UnknownVisionCandidateError,
+    UserProfileLookup,
     VisionObservationInfo,
     VisionObservationSourcePort,
     VisionObservationsPage,
@@ -43,13 +54,18 @@ __all__ = [
     "ConfirmSessionTargetUseCase",
     "ConfirmTargetCommand",
     "DisableDynamicModeUseCase",
+    "DisplaySessionState",
     "FinishSessionCommand",
     "FinishWorkoutSessionUseCase",
+    "GetDisplaySessionStateUseCase",
+    "GetSessionDynamicChallengesUseCase",
     "GetWorkoutSessionUseCase",
     "IdempotencyConflict",
     "InconsistentPerformedSetMeasurementError",
+    "IssueDisplayPairingCodeUseCase",
     "ListVisionCandidatesUseCase",
     "ObservationIngestionResult",
+    "PairDisplayDeviceUseCase",
     "PauseWorkoutSessionUseCase",
     "PollVisionObservationsUseCase",
     "PrepareSessionCommand",
@@ -62,11 +78,13 @@ __all__ = [
     "SessionLifecycleCommand",
     "SessionNotFound",
     "SessionTransientStore",
+    "SkipDynamicChallengeUseCase",
     "StartSessionVisionAnalysisUseCase",
     "StartWorkoutSessionUseCase",
     "TransientSessionUpdate",
     "UnknownRoutineExerciseError",
     "UnknownVisionCandidateError",
+    "UserProfileLookup",
     "VisionAnalysisNotStartedError",
     "VisionObservationInfo",
     "VisionObservationSourcePort",
@@ -74,4 +92,3 @@ __all__ = [
     "VisionOperationInProgressError",
     "VisionSessionAnalysisPort",
 ]
-

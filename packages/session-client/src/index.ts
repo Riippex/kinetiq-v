@@ -2,13 +2,106 @@ export const sessionModes = ['NORMAL', 'DYNAMIC'] as const;
 export const sessionIntensities = ['LIGHTER', 'PLANNED', 'CHALLENGING'] as const;
 export const coachingTones = ['CALM', 'TECHNICAL', 'MOTIVATIONAL', 'EDGY'] as const;
 export const dynamicChallengeTypes = ['HOLD_POSE', 'MIRROR_POSE', 'QUICK_REPS', 'RECOVERY'] as const;
+export const dynamicChallengeStatuses = ['PENDING', 'COMPLETED', 'SKIPPED'] as const;
 export const experienceLevels = ['STARTING', 'RETURNING', 'REGULAR'] as const;
+export const displayDeviceTypes = ['FIRE_TV', 'VEGA_OS'] as const;
+export const displayPairingStatuses = ['UNPAIRED', 'PAIRED', 'EXPIRED'] as const;
+export const evidenceSources = ['MEASURED', 'SELF_REPORTED', 'ESTIMATED', 'MISSING'] as const;
+export const performanceTrends = ['IMPROVING', 'STABLE', 'DECLINING', 'INSUFFICIENT_DATA'] as const;
 
 export type SessionMode = (typeof sessionModes)[number];
 export type SessionIntensity = (typeof sessionIntensities)[number];
 export type CoachingTone = (typeof coachingTones)[number];
 export type DynamicChallengeType = (typeof dynamicChallengeTypes)[number];
+export type DynamicChallengeStatus = (typeof dynamicChallengeStatuses)[number];
 export type ExperienceLevel = (typeof experienceLevels)[number];
+export type DisplayDeviceType = (typeof displayDeviceTypes)[number];
+export type DisplayPairingStatus = (typeof displayPairingStatuses)[number];
+export type EvidenceSource = (typeof evidenceSources)[number];
+export type PerformanceTrend = (typeof performanceTrends)[number];
+
+export interface ConsistencyMetric {
+  totalSessions: number;
+  plannedSessions: number;
+  consistencyRatio: number;
+  currentStreakDays: number;
+  completedCount: number;
+  abandonedCount: number;
+  skippedCount: number;
+}
+
+export interface PerformanceProjection {
+  exerciseId: string;
+  exerciseName: string;
+  measuredVolume: number;
+  selfReportedVolume: number;
+  estimated1RM?: number | null;
+  evidenceSource: EvidenceSource;
+  trend: PerformanceTrend;
+}
+
+export interface GoalProgress {
+  goalId?: string | null;
+  description?: string | null;
+  baseline?: number | null;
+  target?: number | null;
+  currentValue?: number | null;
+  unit?: string | null;
+  progressRatio?: number | null;
+  evidenceSource: EvidenceSource;
+}
+
+export interface ProgressSummary {
+  fromDate: string;
+  toDate: string;
+  consistency: ConsistencyMetric;
+  performanceProjections: PerformanceProjection[];
+  goalProgress?: GoalProgress | null;
+}
+
+export interface DisplayPairingCode {
+  code: string;
+  deviceType: DisplayDeviceType;
+  createdAt: string;
+  expiresAt: string;
+  status: DisplayPairingStatus;
+  pairedSessionId?: string | null;
+}
+
+export interface DisplaySessionState {
+  sessionId?: string | null;
+  deviceType: DisplayDeviceType;
+  status: DisplayPairingStatus;
+  mode?: SessionMode | null;
+  intensity?: SessionIntensity | null;
+  state?: string | null;
+  activeExercise?: string | null;
+  confirmedReps: number;
+  visibilityStatus?: string | null;
+  pauseReason?: string | null;
+}
+
+export interface DynamicChallenge {
+  id: string;
+  challengeType: DynamicChallengeType;
+  exerciseId: string;
+  targetValue: number;
+  description: string;
+  setOrder: number;
+  status: DynamicChallengeStatus;
+}
+
+export interface SkipDynamicChallengeInput {
+  sessionId: string;
+  expectedRevision: number;
+  challengeId: string;
+  clientMutationId: string;
+}
+
+export interface SkipDynamicChallengeResult {
+  challenges: DynamicChallenge[];
+  errors: DomainError[];
+}
 
 export interface Profile {
   id: string;
@@ -149,6 +242,45 @@ export interface DomainError {
 export interface SessionResult {
   session: PreparedSession | null;
   errors: DomainError[];
+}
+
+export interface ConsistencyMetric {
+  totalSessions: number;
+  plannedSessions: number;
+  consistencyRatio: number;
+  currentStreakDays: number;
+  completedCount: number;
+  abandonedCount: number;
+  skippedCount: number;
+}
+
+export interface PerformanceProjection {
+  exerciseId: string;
+  exerciseName: string;
+  measuredVolume: number;
+  selfReportedVolume: number;
+  estimated1RM?: number | null;
+  evidenceSource: EvidenceSource;
+  trend: PerformanceTrend;
+}
+
+export interface GoalProgress {
+  goalId?: string | null;
+  description?: string | null;
+  baseline?: number | null;
+  target?: number | null;
+  currentValue?: number | null;
+  unit?: string | null;
+  progressRatio?: number | null;
+  evidenceSource: EvidenceSource;
+}
+
+export interface ProgressSummary {
+  fromDate: string;
+  toDate: string;
+  consistency: ConsistencyMetric;
+  performanceProjections: PerformanceProjection[];
+  goalProgress?: GoalProgress | null;
 }
 
 export interface TransientSessionUpdate {
@@ -560,6 +692,37 @@ const transientSessionStateQuery = `
   }
 `;
 
+const sessionDynamicChallengesQuery = `
+  query SessionDynamicChallenges($sessionId: ID!) {
+    sessionDynamicChallenges(sessionId: $sessionId) {
+      id
+      challengeType
+      exerciseId
+      targetValue
+      description
+      setOrder
+      status
+    }
+  }
+`;
+
+const skipDynamicChallengeMutation = `
+  mutation SkipDynamicChallenge($input: SkipDynamicChallengeInput!) {
+    skipDynamicChallenge(input: $input) {
+      challenges {
+        id
+        challengeType
+        exerciseId
+        targetValue
+        description
+        setOrder
+        status
+      }
+      errors { code message field }
+    }
+  }
+`;
+
 const transientSessionUpdatesSubscription = `
   subscription TransientSessionUpdates($sessionId: ID!) {
     transientSessionUpdates(sessionId: $sessionId) {
@@ -570,6 +733,90 @@ const transientSessionUpdatesSubscription = `
       poseConfidence
       visibilityStatus
       timestamp
+    }
+  }
+`;
+
+const issueDisplayPairingCodeMutation = `
+  mutation IssueDisplayPairingCode($deviceType: DisplayDeviceType!) {
+    issueDisplayPairingCode(deviceType: $deviceType) {
+      code
+      deviceType
+      createdAt
+      expiresAt
+      status
+      pairedSessionId
+    }
+  }
+`;
+
+const pairDisplayDeviceMutation = `
+  mutation PairDisplayDevice($code: String!, $sessionId: ID) {
+    pairDisplayDevice(code: $code, sessionId: $sessionId) {
+      sessionId
+      deviceType
+      status
+      mode
+      intensity
+      state
+      activeExercise
+      confirmedReps
+      visibilityStatus
+      pauseReason
+    }
+  }
+`;
+
+const displaySessionStateQuery = `
+  query DisplaySessionState($code: String!) {
+    displaySessionState(code: $code) {
+      sessionId
+      deviceType
+      status
+      mode
+      intensity
+      state
+      activeExercise
+      confirmedReps
+      visibilityStatus
+      pauseReason
+    }
+  }
+`;
+
+const progressQuery = `
+  query GetProgress($fromDate: DateTime!, $toDate: DateTime!) {
+    progress(fromDate: $fromDate, toDate: $toDate) {
+      fromDate
+      toDate
+      consistency {
+        totalSessions
+        plannedSessions
+        consistencyRatio
+        currentStreakDays
+        completedCount
+        abandonedCount
+        skippedCount
+      }
+      performanceProjections {
+        exerciseId
+        exerciseName
+        measuredVolume
+        selfReportedVolume
+        estimated1RM
+        evidenceSource
+        trend
+      }
+      goalProgress {
+        goalId
+        description
+        baseline
+        target
+        currentValue
+        unit
+        progressRatio
+        evidenceSource
+      }
     }
   }
 `;
@@ -1231,6 +1478,40 @@ export async function fetchTransientSessionState(
   return { transient: result.data?.transientSessionState ?? null, errors: [] };
 }
 
+export async function fetchDynamicChallenges(
+  endpoint: string,
+  sessionId: string,
+  authorization?: string,
+): Promise<{ challenges: DynamicChallenge[]; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ sessionDynamicChallenges: DynamicChallenge[] }>(
+    endpoint,
+    sessionDynamicChallengesQuery,
+    { sessionId },
+    authorization,
+  );
+  if (result.errors) {
+    return { challenges: [], errors: result.errors };
+  }
+  return { challenges: result.data?.sessionDynamicChallenges ?? [], errors: [] };
+}
+
+export async function skipDynamicChallenge(
+  endpoint: string,
+  input: SkipDynamicChallengeInput,
+  authorization?: string,
+): Promise<SkipDynamicChallengeResult> {
+  const result = await executeGraphQL<{
+    skipDynamicChallenge: SkipDynamicChallengeResult;
+  }>(endpoint, skipDynamicChallengeMutation, { input }, authorization);
+  if (result.errors) {
+    return { challenges: [], errors: result.errors };
+  }
+  return result.data?.skipDynamicChallenge ?? {
+    challenges: [],
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
+}
+
 let subscriptionCounter = 0;
 function nextSubscriptionId(): string {
   subscriptionCounter += 1;
@@ -1400,6 +1681,76 @@ export async function syncSessionState(
     restoredFromCommitted: transient === null,
     errors: [],
   };
+}
+
+export async function issueDisplayPairingCode(
+  endpoint: string,
+  deviceType: DisplayDeviceType,
+  authorization?: string,
+): Promise<{ pairing: DisplayPairingCode | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ issueDisplayPairingCode: DisplayPairingCode }>(
+    endpoint,
+    issueDisplayPairingCodeMutation,
+    { deviceType },
+    authorization,
+  );
+  if (result.errors) {
+    return { pairing: null, errors: result.errors };
+  }
+  return { pairing: result.data?.issueDisplayPairingCode ?? null, errors: [] };
+}
+
+export async function pairDisplayDevice(
+  endpoint: string,
+  code: string,
+  sessionId?: string,
+  authorization?: string,
+): Promise<{ state: DisplaySessionState | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ pairDisplayDevice: DisplaySessionState }>(
+    endpoint,
+    pairDisplayDeviceMutation,
+    { code, sessionId },
+    authorization,
+  );
+  if (result.errors) {
+    return { state: null, errors: result.errors };
+  }
+  return { state: result.data?.pairDisplayDevice ?? null, errors: [] };
+}
+
+export async function fetchDisplaySessionState(
+  endpoint: string,
+  code: string,
+  authorization?: string,
+): Promise<{ state: DisplaySessionState | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ displaySessionState: DisplaySessionState }>(
+    endpoint,
+    displaySessionStateQuery,
+    { code },
+    authorization,
+  );
+  if (result.errors) {
+    return { state: null, errors: result.errors };
+  }
+  return { state: result.data?.displaySessionState ?? null, errors: [] };
+}
+
+export async function fetchProgressSummary(
+  endpoint: string,
+  fromDate: string,
+  toDate: string,
+  authorization?: string,
+): Promise<{ summary: ProgressSummary | null; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ progress: ProgressSummary }>(
+    endpoint,
+    progressQuery,
+    { fromDate, toDate },
+    authorization,
+  );
+  if (result.errors) {
+    return { summary: null, errors: result.errors };
+  }
+  return { summary: result.data?.progress ?? null, errors: [] };
 }
 
 

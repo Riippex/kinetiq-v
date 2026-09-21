@@ -98,9 +98,7 @@ def sample_templates() -> list[RoutineTemplate]:
             description="Different goal",
             target_goal_code="goal-strength-peak",
             estimated_duration_minutes=15,
-            items=(
-                RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),
-            ),
+            items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
         ),
     ]
 

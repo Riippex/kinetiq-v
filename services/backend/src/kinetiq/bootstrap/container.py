@@ -11,6 +11,16 @@ from kinetiq.modules.goals.infrastructure.repositories import DjangoGoalReposito
 from kinetiq.modules.integrations import VisionClientConfig, VisionRestAdapter
 from kinetiq.modules.profiles.application import GetProfileUseCase, UpdateProfileUseCase
 from kinetiq.modules.profiles.infrastructure.repositories import DjangoProfileRepository
+from kinetiq.modules.progress.application import GetProgressSummaryUseCase
+from kinetiq.modules.progress.infrastructure.repositories import (
+    DjangoGoalLookup as DjangoProgressGoalLookup,
+)
+from kinetiq.modules.progress.infrastructure.repositories import (
+    DjangoProfileLookup as DjangoProgressProfileLookup,
+)
+from kinetiq.modules.progress.infrastructure.repositories import (
+    DjangoSessionHistoryLookup,
+)
 from kinetiq.modules.routines.application import (
     AcceptRoutineUseCase,
     EditRoutineUseCase,
@@ -24,26 +34,61 @@ from kinetiq.modules.workouts.application import (
     ConfirmSessionTargetUseCase,
     DisableDynamicModeUseCase,
     FinishWorkoutSessionUseCase,
+    GetDisplaySessionStateUseCase,
+    GetSessionDynamicChallengesUseCase,
     GetWorkoutSessionUseCase,
+    IssueDisplayPairingCodeUseCase,
     ListVisionCandidatesUseCase,
+    PairDisplayDeviceUseCase,
     PauseWorkoutSessionUseCase,
     PollVisionObservationsUseCase,
     PrepareWorkoutSession,
     RecordSessionFeedbackUseCase,
     ResumeWorkoutSessionUseCase,
+    SkipDynamicChallengeUseCase,
     StartSessionVisionAnalysisUseCase,
     StartWorkoutSessionUseCase,
 )
 from kinetiq.modules.workouts.application.ports import SessionTransientStore
+from kinetiq.modules.workouts.domain.display_pairing import DisplayPairingStore
+from kinetiq.modules.workouts.infrastructure.display_pairing_store import (
+    RedisDisplayPairingStore,
+)
 from kinetiq.modules.workouts.infrastructure.repositories import (
     DjangoRoutineItemLookup,
     DjangoSessionLifecycleRepository,
     DjangoSessionPreparationRepository,
+    DjangoUserProfileLookup,
 )
 from kinetiq.modules.workouts.infrastructure.transient_store import RedisSessionTransientStore
 from kinetiq.modules.workouts.infrastructure.vision_observation_adapter import (
     VisionRestObservationAdapter,
 )
+
+
+def get_display_pairing_store() -> DisplayPairingStore:
+    # A fresh adapter per call, same as `get_session_transient_store()`
+    # below: the shared state lives in Redis, not in this Python object, so
+    # a phone and a TV on different worker processes see the same pairing.
+    return RedisDisplayPairingStore()
+
+
+def issue_display_pairing_code() -> IssueDisplayPairingCodeUseCase:
+    return IssueDisplayPairingCodeUseCase(get_display_pairing_store())
+
+
+def pair_display_device() -> PairDisplayDeviceUseCase:
+    return PairDisplayDeviceUseCase(
+        get_display_pairing_store(), DjangoSessionLifecycleRepository()
+    )
+
+
+def get_display_session_state() -> GetDisplaySessionStateUseCase:
+    return GetDisplaySessionStateUseCase(
+        get_display_pairing_store(),
+        DjangoSessionLifecycleRepository(),
+        get_session_transient_store(),
+    )
 
 
 def get_session_transient_store() -> SessionTransientStore:
@@ -93,8 +138,6 @@ def poll_vision_observations() -> PollVisionObservationsUseCase:
     )
 
 
-
-
 def start_workout_session() -> StartWorkoutSessionUseCase:
     return StartWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
 
@@ -129,6 +172,21 @@ def abandon_workout_session() -> AbandonWorkoutSessionUseCase:
     return AbandonWorkoutSessionUseCase(DjangoSessionLifecycleRepository())
 
 
+def get_session_dynamic_challenges() -> GetSessionDynamicChallengesUseCase:
+    return GetSessionDynamicChallengesUseCase(
+        DjangoSessionLifecycleRepository(),
+        DjangoRoutineItemLookup(),
+        DjangoUserProfileLookup(),
+    )
+
+
+def skip_dynamic_challenge() -> SkipDynamicChallengeUseCase:
+    return SkipDynamicChallengeUseCase(
+        DjangoSessionLifecycleRepository(),
+        DjangoRoutineItemLookup(),
+        DjangoUserProfileLookup(),
+    )
+
 
 def list_catalog_exercises() -> list[Exercise]:
     return DjangoCatalogRepository().list_exercises()
@@ -160,6 +218,7 @@ def propose_routine() -> ProposeRoutineUseCase:
         profile_repo=DjangoProfileRepository(),
         goal_repo=DjangoGoalRepository(),
         routine_repo=DjangoRoutineRepository(),
+        progress_summary_use_case=get_progress_summary(),
     )
 
 
@@ -181,3 +240,11 @@ def get_current_routine() -> GetCurrentRoutineUseCase:
 
 def get_routine_version() -> GetRoutineVersionUseCase:
     return GetRoutineVersionUseCase(routine_repo=DjangoRoutineRepository())
+
+
+def get_progress_summary() -> GetProgressSummaryUseCase:
+    return GetProgressSummaryUseCase(
+        session_history_lookup=DjangoSessionHistoryLookup(),
+        profile_lookup=DjangoProgressProfileLookup(),
+        goal_lookup=DjangoProgressGoalLookup(),
+    )

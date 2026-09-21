@@ -226,9 +226,7 @@ class VisionRestAdapter:
             self._observation_schema = {}
 
         self._observation_validator = (
-            Draft202012Validator(self._observation_schema)
-            if self._observation_schema
-            else None
+            Draft202012Validator(self._observation_schema) if self._observation_schema else None
         )
 
     def _execute_http(
@@ -476,9 +474,5 @@ class VisionRestAdapter:
             has_more=bool(data.get("has_more", False)),
         )
 
-    def delete_analysis(
-        self, *, analysis_id: str, correlation_id: str | None = None
-    ) -> None:
-        self._execute_http(
-            "DELETE", f"/v1/analyses/{analysis_id}", correlation_id=correlation_id
-        )
+    def delete_analysis(self, *, analysis_id: str, correlation_id: str | None = None) -> None:
+        self._execute_http("DELETE", f"/v1/analyses/{analysis_id}", correlation_id=correlation_id)

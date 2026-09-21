@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from kinetiq.modules.catalog.application.ports import CatalogRepository
@@ -28,14 +29,18 @@ from kinetiq.modules.routines.domain.provider import (
 )
 from kinetiq.modules.workouts.domain.session import CoachingTone
 
+if TYPE_CHECKING:
+    from kinetiq.modules.progress.application.get_progress_summary import GetProgressSummaryUseCase
+
 
 class ProposeRoutineUseCase:
     """Proposes an explained routine assembled from eligible catalog templates.
 
     1. Retrieves athlete's current profile and active goal.
     2. Deterministically filters catalog templates against equipment, duration, and goal.
-    3. Invokes coaching provider for ranking and explanation.
-    4. Validates provider output strictly against catalog rules, falling back safely.
+    3. Fetches athlete's progress summary evidence (if available).
+    4. Invokes coaching provider for evidence-based ranking and explanation.
+    5. Validates provider output strictly against catalog rules, falling back safely.
     """
 
     def __init__(
@@ -45,12 +50,14 @@ class ProposeRoutineUseCase:
         goal_repo: GoalRepository,
         routine_repo: RoutineRepository | None = None,
         coaching_provider: RoutineCoachingProvider | None = None,
+        progress_summary_use_case: GetProgressSummaryUseCase | None = None,
     ) -> None:
         self._catalog_repo = catalog_repo
         self._profile_repo = profile_repo
         self._goal_repo = goal_repo
         self._routine_repo = routine_repo
         self._coaching_provider = coaching_provider
+        self._progress_summary_use_case = progress_summary_use_case
         self._fallback_provider = DeterministicCoachingProvider()
 
     def execute(self, athlete_id: UUID) -> RoutineProposal:
@@ -92,8 +99,6 @@ class ProposeRoutineUseCase:
         exercises_by_code = {ex.code: ex for ex in exercises}
 
         # 4. Normalize profile constraints against stable catalog identifiers.
-        # Exclusions are matched exactly against known exercise codes only;
-        # no free-text or fuzzy matching, and no medical inference is performed.
         excluded_exercise_codes = normalize_excluded_exercise_codes(
             profile.exclusions, set(exercises_by_code)
         )
@@ -101,13 +106,13 @@ class ProposeRoutineUseCase:
             limitation.strip() for limitation in profile.limitations if limitation.strip()
         )
 
-        # 5. Self-reported limitations must never be silently ignored: if the
-        # catalog has no template with an explicit adaptation for a reported
-        # limitation, refuse to propose rather than silently drop the limitation.
+        # 5. Self-reported limitations check
         if limitations:
-            all_supported_adaptations: frozenset[str] = frozenset().union(
-                *(t.supported_limitation_adaptations for t in templates)
-            ) if templates else frozenset()
+            all_supported_adaptations: frozenset[str] = (
+                frozenset().union(*(t.supported_limitation_adaptations for t in templates))
+                if templates
+                else frozenset()
+            )
             unsupported = sorted(limitations - all_supported_adaptations)
             if unsupported:
                 raise UnsupportedLimitationError(
@@ -138,19 +143,38 @@ class ProposeRoutineUseCase:
                 f"limitations={sorted(limitations)})"
             )
 
-        # 8. Constrained provider ranking & explanation with strict validation and safe fallback
+        # 8. Fetch progress summary evidence if available
+        progress_summary = None
+        if self._progress_summary_use_case is not None:
+            now = datetime.now(UTC)
+            progress_summary = self._progress_summary_use_case.execute(
+                owner_id=athlete_id,
+                from_date=now - timedelta(days=30),
+                to_date=now,
+            )
+
+        # 9. Constrained provider ranking & explanation with strict validation and safe fallback
         chosen_output = None
         if self._coaching_provider is not None:
             try:
-                raw_output = self._coaching_provider.rank_and_explain(eligible_templates, criteria)
+                try:
+                    raw_output = self._coaching_provider.rank_and_explain(
+                        eligible_templates, criteria, progress_summary
+                    )
+                except TypeError:
+                    raw_output = self._coaching_provider.rank_and_explain(
+                        eligible_templates, criteria
+                    )
                 chosen_output = validate_coaching_output(raw_output, eligible_templates)
             except Exception:
                 chosen_output = None
 
         if chosen_output is None:
-            chosen_output = self._fallback_provider.rank_and_explain(eligible_templates, criteria)
+            chosen_output = self._fallback_provider.rank_and_explain(
+                eligible_templates, criteria, progress_summary
+            )
 
-        # 9. Find selected template
+        # 10. Find selected template
         selected_template = next(
             t for t in eligible_templates if t.code == chosen_output.recommended_template_code
         )

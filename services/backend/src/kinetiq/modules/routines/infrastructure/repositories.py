@@ -29,9 +29,7 @@ class DjangoRoutineRepository(RoutineRepository):
         except RoutineRecord.DoesNotExist:
             return None
 
-    def get_by_routine_id(
-        self, owner_id: UUID, routine_id: UUID, version: int
-    ) -> Routine | None:
+    def get_by_routine_id(self, owner_id: UUID, routine_id: UUID, version: int) -> Routine | None:
         try:
             record = RoutineRecord.objects.get(
                 owner_id=owner_id, routine_id=routine_id, version=version
@@ -41,11 +39,7 @@ class DjangoRoutineRepository(RoutineRepository):
             return None
 
     def get_latest_for_owner(self, owner_id: UUID) -> Routine | None:
-        record = (
-            RoutineRecord.objects.filter(owner_id=owner_id)
-            .order_by("-created_at")
-            .first()
-        )
+        record = RoutineRecord.objects.filter(owner_id=owner_id).order_by("-created_at").first()
         if record is None:
             return None
         return self._to_entity(record)
@@ -61,9 +55,7 @@ class DjangoRoutineRepository(RoutineRepository):
         return self._to_entity(record)
 
     def list_for_owner(self, owner_id: UUID) -> list[Routine]:
-        records = RoutineRecord.objects.filter(owner_id=owner_id).order_by(
-            "-created_at"
-        )
+        records = RoutineRecord.objects.filter(owner_id=owner_id).order_by("-created_at")
         return [self._to_entity(r) for r in records]
 
     @staticmethod

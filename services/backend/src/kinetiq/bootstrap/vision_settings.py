@@ -20,9 +20,7 @@ def resolve_vision_settings(
     for any invalid value.
     """
     if not base_url.startswith(("http://", "https://")):
-        raise ImproperlyConfigured(
-            f"VISION_BASE_URL must be an http(s) URL, got: {base_url!r}"
-        )
+        raise ImproperlyConfigured(f"VISION_BASE_URL must be an http(s) URL, got: {base_url!r}")
 
     try:
         timeout_seconds = float(timeout_seconds_raw)

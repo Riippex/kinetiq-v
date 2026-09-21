@@ -43,9 +43,7 @@ def test_exercises_query_requires_authentication(
     catalog_seeded: DjangoCatalogRepository,
 ) -> None:
     client = Client()
-    response = client.post(
-        "/graphql/", {"query": EXERCISES_QUERY}, content_type="application/json"
-    )
+    response = client.post("/graphql/", {"query": EXERCISES_QUERY}, content_type="application/json")
     data = response.json()
     assert "errors" in data
     assert "AUTHENTICATION_REQUIRED" in data["errors"][0]["message"]
@@ -65,9 +63,7 @@ def test_exercises_query_returns_stable_catalog_ids(
     client = Client()
     client.force_login(user)
 
-    response = client.post(
-        "/graphql/", {"query": EXERCISES_QUERY}, content_type="application/json"
-    )
+    response = client.post("/graphql/", {"query": EXERCISES_QUERY}, content_type="application/json")
     assert response.status_code == 200
     exercises = response.json()["data"]["exercises"]
 

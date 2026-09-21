@@ -66,12 +66,8 @@ def test_canonical_catalog_seeds_idempotently_with_vision_contract() -> None:
     # Explicit workout-space and experience-level metadata must round-trip
     # through persistence, since filtering depends on it being real catalog
     # data rather than an in-memory-only default.
-    assert template.supported_workout_spaces == frozenset(
-        {"LIVING_ROOM", "BEDROOM", "OUTDOOR"}
-    )
-    assert template.supported_experience_levels == frozenset(
-        {"STARTING", "RETURNING", "REGULAR"}
-    )
+    assert template.supported_workout_spaces == frozenset({"LIVING_ROOM", "BEDROOM", "OUTDOOR"})
+    assert template.supported_experience_levels == frozenset({"STARTING", "RETURNING", "REGULAR"})
 
     # Second run (idempotency verification)
     result2 = use_case.execute(

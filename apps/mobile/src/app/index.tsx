@@ -5,19 +5,21 @@ import {
   fetchCurrentRoutine,
   fetchProfile,
   isUnsupportedLimitationError,
+  pairDisplayDevice,
   prepareSession,
   proposeRoutine,
   sessionIntensities,
   sessionModes,
   type CoachingTone,
   type Goal,
+  type PreparedSession,
   type Profile,
   type Routine,
   type SessionIntensity,
   type SessionMode,
 } from '@kinetiq/session-client';
 import {useEffect, useState} from 'react';
-import {Pressable, ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
+import {Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {OnboardingModal} from '../features/onboarding/OnboardingModal';
 
@@ -41,6 +43,12 @@ export default function HomeScreen() {
   // Routine flow
   const [currentRoutine, setCurrentRoutine] = useState<Routine | null>(null);
   const [routineLoading, setRoutineLoading] = useState(false);
+
+  // Display pairing: only possible once a real, owned session exists.
+  const [preparedSession, setPreparedSession] = useState<PreparedSession | null>(null);
+  const [pairingCodeInput, setPairingCodeInput] = useState('');
+  const [pairingMessage, setPairingMessage] = useState<string | null>(null);
+  const [pairing, setPairing] = useState(false);
 
   useEffect(() => {
     if (!endpoint) return;
@@ -142,6 +150,33 @@ export default function HomeScreen() {
         ? `Session ready · revision ${result.session.revision}`
         : (result.errors[0]?.message ?? 'Session preparation failed'),
     );
+    setPreparedSession(result.session ?? null);
+    setPairingMessage(null);
+  }
+
+  async function handlePairDisplay() {
+    if (!endpoint || !preparedSession || !pairingCodeInput.trim()) {
+      return;
+    }
+    setPairing(true);
+    setPairingMessage(null);
+    try {
+      const res = await pairDisplayDevice(
+        endpoint,
+        pairingCodeInput.trim().toUpperCase(),
+        preparedSession.id,
+      );
+      if (res.errors.length) {
+        setPairingMessage(res.errors[0].message);
+      } else if (res.state) {
+        const displayName = res.state.deviceType === 'FIRE_TV' ? 'Fire TV' : 'Vega';
+        setPairingMessage(`Paired with your ${displayName} display.`);
+      }
+    } catch {
+      setPairingMessage('Could not reach the backend. Check your connection and try again.');
+    } finally {
+      setPairing(false);
+    }
   }
 
   return (
@@ -324,6 +359,44 @@ export default function HomeScreen() {
                 : 'Confirm and prepare'}
           </Text>
         </Pressable>
+
+        {preparedSession ? (
+          <View style={styles.pairingSection} testID="pairing-section">
+            <Text style={styles.athleteEyebrow}>PAIR A DISPLAY</Text>
+            <Text style={styles.optionHelp}>
+              Enter the code shown on your Fire TV or Vega display to mirror this session.
+            </Text>
+            <TextInput
+              accessibilityLabel="Display pairing code"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              onChangeText={setPairingCodeInput}
+              placeholder="e.g. FIRE-A1B2C3"
+              placeholderTextColor="#6B7280"
+              style={styles.pairingInput}
+              testID="pairing-code-input"
+              value={pairingCodeInput}
+            />
+            <Pressable
+              accessibilityRole="button"
+              disabled={pairing || !pairingCodeInput.trim()}
+              onPress={handlePairDisplay}
+              style={({pressed}) => [
+                styles.pairButton,
+                pressed && styles.buttonPressed,
+                (pairing || !pairingCodeInput.trim()) && styles.buttonDisabled,
+              ]}
+              testID="pair-display-button"
+            >
+              <Text style={styles.pairButtonText}>{pairing ? 'Pairing…' : 'Pair Display'}</Text>
+            </Pressable>
+            {pairingMessage ? (
+              <Text style={styles.pairingMessage} testID="pairing-message">
+                {pairingMessage}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
       </ScrollView>
 
       <OnboardingModal
@@ -567,4 +640,33 @@ const styles = StyleSheet.create({
   buttonPressed: {opacity: 0.85},
   buttonDisabled: {opacity: 0.55},
   buttonText: {color: '#070B14', fontSize: 16, fontWeight: '800'},
+  pairingSection: {
+    backgroundColor: '#111827',
+    borderColor: '#293244',
+    borderRadius: 18,
+    borderWidth: 1,
+    marginTop: 24,
+    padding: 16,
+  },
+  pairingInput: {
+    backgroundColor: '#0B0F1A',
+    borderColor: '#293244',
+    borderRadius: 12,
+    borderWidth: 1,
+    color: '#F4F7FB',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginTop: 12,
+    padding: 12,
+  },
+  pairButton: {
+    alignItems: 'center',
+    backgroundColor: '#A3FF12',
+    borderRadius: 12,
+    marginTop: 12,
+    padding: 12,
+  },
+  pairButtonText: {color: '#070B14', fontSize: 14, fontWeight: '800'},
+  pairingMessage: {color: '#D1D5DB', fontSize: 13, marginTop: 10},
 });

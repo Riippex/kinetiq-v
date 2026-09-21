@@ -61,9 +61,7 @@ class FakeSessionLifecycleRepository:
         self._lease_held = True
         return "fake-lease-token"
 
-    def release_vision_lease(
-        self, *, owner_id: UUID, session_id: UUID, lease_token: str
-    ) -> None:
+    def release_vision_lease(self, *, owner_id: UUID, session_id: UUID, lease_token: str) -> None:
         self.lease_release_calls += 1
         self._lease_held = False
 
@@ -160,9 +158,7 @@ class FakeVisionSessionAnalysisPort:
         idempotency_key: str,
     ) -> VisionAnalysisHandle:
         self.create_analysis_calls += 1
-        return VisionAnalysisHandle(
-            analysis_id="an_fake_1", epoch=1, state="AWAITING_SELECTION"
-        )
+        return VisionAnalysisHandle(analysis_id="an_fake_1", epoch=1, state="AWAITING_SELECTION")
 
     def list_candidates(self, *, analysis_id: str) -> tuple[VisionCandidateInfo, ...]:
         self.list_candidates_calls += 1
@@ -357,9 +353,7 @@ def test_confirm_target_propagates_stale_epoch_from_vision() -> None:
     session = session_with_analysis()
     vision = FakeVisionSessionAnalysisPort(
         candidates=(VisionCandidateInfo(candidate_id="cand_1", confidence=0.9),),
-        select_target_error=VisionStaleEpochError(
-            "stale", expected_epoch=1, current_epoch=2
-        ),
+        select_target_error=VisionStaleEpochError("stale", expected_epoch=1, current_epoch=2),
     )
     use_case = ConfirmSessionTargetUseCase(FakeSessionLifecycleRepository(session), vision)
 

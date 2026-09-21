@@ -1,3 +1,19 @@
+from .display_pairing import (
+    DisplayDeviceType,
+    DisplayPairingCode,
+    DisplayPairingCodeExpired,
+    DisplayPairingCodeNotFound,
+    DisplayPairingCodePaired,
+    DisplayPairingStatus,
+    DisplayPairingStore,
+    InMemoryDisplayPairingStore,
+)
+from .dynamic_policy import (
+    DynamicChallenge,
+    DynamicChallengePolicy,
+    DynamicChallengeStatus,
+    UnknownDynamicChallengeError,
+)
 from .session import (
     CoachingTone,
     DuplicatePerformedSetError,
@@ -18,10 +34,21 @@ from .session import (
 
 __all__ = [
     "CoachingTone",
+    "DisplayDeviceType",
+    "DisplayPairingCode",
+    "DisplayPairingCodeExpired",
+    "DisplayPairingCodeNotFound",
+    "DisplayPairingCodePaired",
+    "DisplayPairingStatus",
+    "DisplayPairingStore",
     "DuplicatePerformedSetError",
+    "DynamicChallenge",
     "DynamicChallengeFrequency",
+    "DynamicChallengePolicy",
+    "DynamicChallengeStatus",
     "DynamicChallengeType",
     "DynamicSessionConfiguration",
+    "InMemoryDisplayPairingStore",
     "InvalidSessionStateTransition",
     "ObservationCoverage",
     "PauseReason",
@@ -31,5 +58,6 @@ __all__ = [
     "SessionIntensity",
     "SessionMode",
     "SessionState",
+    "UnknownDynamicChallengeError",
     "WorkoutSession",
 ]

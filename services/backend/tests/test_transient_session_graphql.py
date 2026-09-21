@@ -328,9 +328,7 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
                 "expectedRevision": 4,
                 "idempotencyKey": "finish-02",
             },
-            "performedSets": [
-                {"exerciseId": "goblet-squat", "setOrder": 1, "repetitions": 10}
-            ],
+            "performedSets": [{"exerciseId": "goblet-squat", "setOrder": 1, "repetitions": 10}],
         },
         context_value=DummyContext(user=user),
     )

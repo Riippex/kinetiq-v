@@ -139,9 +139,7 @@ class InMemoryRoutineRepository(RoutineRepository):
                 return r
         return None
 
-    def get_by_routine_id(
-        self, owner_id: UUID, routine_id: UUID, version: int
-    ) -> Routine | None:
+    def get_by_routine_id(self, owner_id: UUID, routine_id: UUID, version: int) -> Routine | None:
         for r in self.records:
             if r.owner_id == owner_id and r.routine_id == routine_id and r.version == version:
                 return r
@@ -239,9 +237,7 @@ def catalog() -> InMemoryCatalogRepository:
             description="Bodyweight foundation",
             target_goal_code="goal-habit",
             estimated_duration_minutes=15,
-            items=(
-                RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),
-            ),
+            items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
             supported_workout_spaces=frozenset({"LIVING_ROOM"}),
             supported_experience_levels=frozenset({"RETURNING"}),
         )
@@ -303,9 +299,7 @@ def test_edit_routine_rejects_excluded_exercise(
             athlete_id,
             EditRoutineCommand(
                 routine_id=base_routine.routine_id,
-                items=(
-                    RoutineEditItem(exercise_id="ex-push-up", order=1, sets=3, repetitions=8),
-                ),
+                items=(RoutineEditItem(exercise_id="ex-push-up", order=1, sets=3, repetitions=8),),
             ),
         )
     assert len(routine_repo.records) == 1  # No new revision was persisted
@@ -353,9 +347,7 @@ def test_edit_routine_rejects_when_no_supported_limitation_adaptation(
             athlete_id,
             EditRoutineCommand(
                 routine_id=base_routine.routine_id,
-                items=(
-                    RoutineEditItem(exercise_id="ex-squat", order=1, sets=3, repetitions=10),
-                ),
+                items=(RoutineEditItem(exercise_id="ex-squat", order=1, sets=3, repetitions=10),),
             ),
         )
     assert len(routine_repo.records) == 1
@@ -374,9 +366,7 @@ def test_edit_routine_allows_limitation_with_matching_template_adaptation(
             description="Knee-friendly",
             target_goal_code="goal-habit",
             estimated_duration_minutes=15,
-            items=(
-                RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),
-            ),
+            items=(RoutineTemplateItem(exercise_code="ex-squat", order=1, sets=3, repetitions=10),),
             supported_workout_spaces=frozenset({"LIVING_ROOM"}),
             supported_experience_levels=frozenset({"RETURNING"}),
             supported_limitation_adaptations=frozenset({"KNEE_PAIN"}),
@@ -418,9 +408,7 @@ def test_edit_routine_rejects_when_workout_space_no_longer_supported(
             athlete_id,
             EditRoutineCommand(
                 routine_id=base_routine.routine_id,
-                items=(
-                    RoutineEditItem(exercise_id="ex-squat", order=1, sets=3, repetitions=10),
-                ),
+                items=(RoutineEditItem(exercise_id="ex-squat", order=1, sets=3, repetitions=10),),
             ),
         )
 
@@ -442,9 +430,7 @@ def test_edit_routine_still_rejects_unavailable_equipment(
             athlete_id,
             EditRoutineCommand(
                 routine_id=base_routine.routine_id,
-                items=(
-                    RoutineEditItem(exercise_id="ex-pull-up", order=1, sets=3, repetitions=5),
-                ),
+                items=(RoutineEditItem(exercise_id="ex-pull-up", order=1, sets=3, repetitions=5),),
             ),
         )
 
@@ -467,8 +453,6 @@ def test_edit_routine_enforces_owner_isolation(
             other_athlete_id,
             EditRoutineCommand(
                 routine_id=base_routine.routine_id,
-                items=(
-                    RoutineEditItem(exercise_id="ex-squat", order=1, sets=3, repetitions=10),
-                ),
+                items=(RoutineEditItem(exercise_id="ex-squat", order=1, sets=3, repetitions=10),),
             ),
         )

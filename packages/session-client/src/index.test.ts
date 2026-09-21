@@ -6,6 +6,7 @@ import {
   abandonSession,
   confirmSessionTarget,
   disableDynamicMode,
+  fetchDynamicChallenges,
   fetchExercises,
   fetchProfile,
   fetchSession,
@@ -18,6 +19,7 @@ import {
   pauseSession,
   recordSessionFeedback,
   resumeSession,
+  skipDynamicChallenge,
   startSession,
   startSessionVisionAnalysis,
   subscribeToTransientSessionUpdates,
@@ -1006,4 +1008,207 @@ test('subscribeToTransientSessionUpdates does not report an error after a clean 
   assert.equal(completed, true);
   assert.equal(errors.length, 0);
 });
+
+test('fetchDynamicChallenges queries and returns dynamic challenges for a session', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.variables.sessionId, 'sess-dyn-1');
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            sessionDynamicChallenges: [
+              {
+                id: 'ch-1',
+                challengeType: 'HOLD_POSE',
+                exerciseId: 'exercise-push-up-v1',
+                targetValue: 10,
+                description: 'Hold push-up pose for 10 seconds',
+                setOrder: 1,
+                status: 'PENDING',
+              },
+            ],
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await fetchDynamicChallenges('http://localhost/graphql', 'sess-dyn-1');
+    assert.equal(res.errors.length, 0);
+    assert.equal(res.challenges.length, 1);
+    assert.equal(res.challenges[0].id, 'ch-1');
+    assert.equal(res.challenges[0].status, 'PENDING');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('skipDynamicChallenge executes mutation and returns updated challenge list', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.variables.input.challengeId, 'ch-1');
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            skipDynamicChallenge: {
+              challenges: [
+                {
+                  id: 'ch-1',
+                  challengeType: 'HOLD_POSE',
+                  exerciseId: 'exercise-push-up-v1',
+                  targetValue: 10,
+                  description: 'Hold push-up pose for 10 seconds',
+                  setOrder: 1,
+                  status: 'SKIPPED',
+                },
+              ],
+              errors: [],
+            },
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await skipDynamicChallenge('http://localhost/graphql', {
+      sessionId: 'sess-dyn-1',
+      expectedRevision: 1,
+      challengeId: 'ch-1',
+      clientMutationId: 'mut-1',
+    });
+
+    assert.equal(res.errors.length, 0);
+    assert.equal(res.challenges.length, 1);
+    assert.equal(res.challenges[0].status, 'SKIPPED');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('issueDisplayPairingCode issues pairing code for device type', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.variables.deviceType, 'FIRE_TV');
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            issueDisplayPairingCode: {
+              code: 'FIRE-7892',
+              deviceType: 'FIRE_TV',
+              createdAt: '2026-09-18T12:00:00Z',
+              expiresAt: '2026-09-18T12:15:00Z',
+              status: 'UNPAIRED',
+            },
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await indexModule.issueDisplayPairingCode('http://localhost/graphql', 'FIRE_TV');
+    assert.equal(res.errors.length, 0);
+    assert.equal(res.pairing?.code, 'FIRE-7892');
+    assert.equal(res.pairing?.status, 'UNPAIRED');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchDisplaySessionState queries session state by pairing code', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.variables.code, 'FIRE-7892');
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            displaySessionState: {
+              sessionId: 'sess-123',
+              deviceType: 'FIRE_TV',
+              status: 'PAIRED',
+              mode: 'NORMAL',
+              intensity: 'PLANNED',
+              state: 'ACTIVE',
+              activeExercise: 'Goblet Squat',
+              confirmedReps: 8,
+              visibilityStatus: 'VISIBLE',
+            },
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await indexModule.fetchDisplaySessionState('http://localhost/graphql', 'FIRE-7892');
+    assert.equal(res.errors.length, 0);
+    assert.equal(res.state?.sessionId, 'sess-123');
+    assert.equal(res.state?.status, 'PAIRED');
+    assert.equal(res.state?.confirmedReps, 8);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchProgressSummary queries progress and returns ProgressSummary', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.variables.fromDate, '2026-09-01T00:00:00Z');
+      assert.equal(body.variables.toDate, '2026-09-08T00:00:00Z');
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            progress: {
+              fromDate: '2026-09-01T00:00:00Z',
+              toDate: '2026-09-08T00:00:00Z',
+              consistency: {
+                totalSessions: 3,
+                plannedSessions: 3,
+                consistencyRatio: 1.0,
+                currentStreakDays: 3,
+                completedCount: 3,
+                abandonedCount: 0,
+                skippedCount: 0,
+              },
+              performanceProjections: [
+                {
+                  exerciseId: 'ex-squat',
+                  exerciseName: 'Squat',
+                  measuredVolume: 100,
+                  selfReportedVolume: 0,
+                  estimated1RM: 95.5,
+                  evidenceSource: 'MEASURED',
+                  trend: 'IMPROVING',
+                },
+              ],
+              goalProgress: null,
+            },
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await indexModule.fetchProgressSummary(
+      'http://localhost/graphql',
+      '2026-09-01T00:00:00Z',
+      '2026-09-08T00:00:00Z'
+    );
+    assert.equal(res.errors.length, 0);
+    assert.equal(res.summary?.consistency.completedCount, 3);
+    assert.equal(res.summary?.performanceProjections[0].exerciseId, 'ex-squat');
+    assert.equal(res.summary?.performanceProjections[0].estimated1RM, 95.5);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 

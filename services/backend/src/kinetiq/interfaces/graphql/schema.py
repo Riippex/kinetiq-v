@@ -1,3 +1,4 @@
+import hashlib
 import json
 from collections.abc import AsyncGenerator, Callable
 from datetime import datetime
@@ -18,19 +19,25 @@ from kinetiq.bootstrap.container import (
     finish_workout_session,
     get_active_goal,
     get_current_routine,
+    get_display_session_state,
     get_profile,
+    get_progress_summary,
     get_routine_version,
+    get_session_dynamic_challenges,
     get_session_transient_store,
     get_workout_session,
+    issue_display_pairing_code,
     list_catalog_exercises,
     list_goal_revisions,
     list_vision_candidates,
+    pair_display_device,
     pause_workout_session,
     prepare_workout_session,
     propose_routine,
     record_session_feedback,
     resume_workout_session,
     set_goal,
+    skip_dynamic_challenge,
     start_session_vision_analysis,
     start_workout_session,
     update_profile,
@@ -68,7 +75,11 @@ from kinetiq.modules.workouts.application import (
 )
 from kinetiq.modules.workouts.domain import (
     CoachingTone,
+    DisplayDeviceType,
+    DisplayPairingCodeExpired,
+    DisplayPairingCodeNotFound,
     DuplicatePerformedSetError,
+    DynamicChallenge,
     DynamicChallengeFrequency,
     DynamicChallengeType,
     InvalidSessionStateTransition,
@@ -77,6 +88,7 @@ from kinetiq.modules.workouts.domain import (
     SessionFeedback,
     SessionIntensity,
     SessionMode,
+    UnknownDynamicChallengeError,
     WorkoutSession,
 )
 from kinetiq.modules.workouts.infrastructure.models import WorkoutSessionRecord
@@ -130,6 +142,109 @@ class DynamicChallengeTypeType(Enum):
     MIRROR_POSE = "MIRROR_POSE"
     QUICK_REPS = "QUICK_REPS"
     RECOVERY = "RECOVERY"
+
+
+@strawberry.enum(name="DynamicChallengeStatus")
+class DynamicChallengeStatusType(Enum):
+    PENDING = "PENDING"
+    COMPLETED = "COMPLETED"
+    SKIPPED = "SKIPPED"
+
+
+@strawberry.enum(name="DisplayDeviceType")
+class DisplayDeviceTypeType(Enum):
+    FIRE_TV = "FIRE_TV"
+    VEGA_OS = "VEGA_OS"
+
+
+@strawberry.enum(name="DisplayPairingStatus")
+class DisplayPairingStatusType(Enum):
+    UNPAIRED = "UNPAIRED"
+    PAIRED = "PAIRED"
+    EXPIRED = "EXPIRED"
+
+
+@strawberry.enum(name="EvidenceSource")
+class EvidenceSourceType(Enum):
+    MEASURED = "MEASURED"
+    SELF_REPORTED = "SELF_REPORTED"
+    ESTIMATED = "ESTIMATED"
+    MISSING = "MISSING"
+
+
+@strawberry.enum(name="PerformanceTrend")
+class PerformanceTrendType(Enum):
+    IMPROVING = "IMPROVING"
+    STABLE = "STABLE"
+    DECLINING = "DECLINING"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+
+
+@strawberry.type(name="ConsistencyMetric")
+class ConsistencyMetricType:
+    total_sessions: int
+    planned_sessions: int
+    consistency_ratio: float
+    current_streak_days: int
+    completed_count: int
+    abandoned_count: int
+    skipped_count: int
+
+
+@strawberry.type(name="PerformanceProjection")
+class PerformanceProjectionType:
+    exercise_id: strawberry.ID
+    exercise_name: str
+    measured_volume: int
+    self_reported_volume: int
+    estimated_1rm: float | None = strawberry.field(name="estimated1RM", default=None)
+    evidence_source: EvidenceSourceType
+    trend: PerformanceTrendType
+
+
+@strawberry.type(name="GoalProgress")
+class GoalProgressType:
+    goal_id: strawberry.ID | None
+    description: str | None
+    baseline: float | None
+    target: float | None
+    current_value: float | None
+    unit: str | None
+    progress_ratio: float | None
+    evidence_source: EvidenceSourceType
+
+
+@strawberry.type(name="ProgressSummary")
+class ProgressSummaryType:
+    from_date: datetime
+    to_date: datetime
+    consistency: ConsistencyMetricType
+    performance_projections: list[PerformanceProjectionType]
+    goal_progress: GoalProgressType | None = None
+
+
+@strawberry.type(name="DisplayPairingCode")
+class GraphQLDisplayPairingCode:
+    code: str
+    device_type: DisplayDeviceTypeType
+    created_at: str
+    expires_at: str
+    status: DisplayPairingStatusType
+    paired_session_id: strawberry.ID | None = None
+
+
+@strawberry.type(name="DisplaySessionState")
+class GraphQLDisplaySessionState:
+    session_id: strawberry.ID | None
+    device_type: DisplayDeviceTypeType
+    status: DisplayPairingStatusType
+    mode: SessionModeType | None = None
+    intensity: SessionIntensityType | None = None
+    state: str | None = None
+    active_exercise: str | None = None
+    confirmed_reps: int = 0
+    visibility_status: VisibilityStatusType | None = None
+    pause_reason: str | None = None
 
 
 @strawberry.enum(name="SessionState")
@@ -302,6 +417,31 @@ class VisionCandidateType:
     confidence: float
 
 
+@strawberry.type(name="DynamicChallenge")
+class GraphQLDynamicChallenge:
+    id: strawberry.ID
+    challenge_type: DynamicChallengeTypeType
+    exercise_id: str
+    target_value: int
+    description: str
+    set_order: int
+    status: DynamicChallengeStatusType
+
+
+@strawberry.input
+class SkipDynamicChallengeInput:
+    session_id: strawberry.ID
+    expected_revision: int
+    challenge_id: strawberry.ID
+    client_mutation_id: str
+
+
+@strawberry.type(name="SkipDynamicChallengeResult")
+class SkipDynamicChallengeResultType:
+    challenges: list[GraphQLDynamicChallenge]
+    errors: list[DomainError]
+
+
 @strawberry.type(name="RoutineResult")
 class RoutineResultType:
     routine: RoutineType | None
@@ -428,9 +568,7 @@ class Query:
         return _to_profile_graphql(profile)
 
     @strawberry.field
-    def session(
-        self, info: Info[Any, None], id: strawberry.ID
-    ) -> WorkoutSessionType | None:
+    def session(self, info: Info[Any, None], id: strawberry.ID) -> WorkoutSessionType | None:
         owner_id = _authenticated_owner_id(info)
         if owner_id is None:
             raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing session")
@@ -503,9 +641,7 @@ class Query:
         return _to_routine_graphql(routine)
 
     @strawberry.field
-    def routine(
-        self, info: Info[Any, None], id: strawberry.ID, version: int
-    ) -> RoutineType | None:
+    def routine(self, info: Info[Any, None], id: strawberry.ID, version: int) -> RoutineType | None:
         owner_id = _authenticated_owner_id(info)
         if owner_id is None:
             raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing routines")
@@ -550,9 +686,7 @@ class Query:
         return TransientSessionUpdateType(
             session_id=strawberry.ID(str(update.session_id)),
             active_exercise_id=(
-                strawberry.ID(update.active_exercise_id)
-                if update.active_exercise_id
-                else None
+                strawberry.ID(update.active_exercise_id) if update.active_exercise_id else None
             ),
             current_repetitions=update.current_repetitions,
             current_duration_seconds=update.current_duration_seconds,
@@ -561,14 +695,95 @@ class Query:
             timestamp=update.timestamp,
         )
 
+    @strawberry.field
+    def session_dynamic_challenges(
+        self, info: Info[Any, None], session_id: strawberry.ID
+    ) -> list[GraphQLDynamicChallenge]:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError(
+                "AUTHENTICATION_REQUIRED: Sign in before accessing session dynamic challenges"
+            )
+        try:
+            session_uuid = UUID(str(session_id))
+        except (ValueError, TypeError):
+            return []
+
+        try:
+            challenges = get_session_dynamic_challenges().execute(
+                owner_id=owner_id, session_id=session_uuid
+            )
+        except SessionNotFound:
+            return []
+
+        return [_to_dynamic_challenge_graphql(c) for c in challenges]
+
+    @strawberry.field
+    def display_session_state(self, info: Info[Any, None], code: str) -> GraphQLDisplaySessionState:
+        return _to_display_session_state_graphql(code)
+
+    @strawberry.field
+    def progress(
+        self, info: Info[Any, None], from_date: datetime, to_date: datetime
+    ) -> ProgressSummaryType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before accessing progress")
+
+        summary = get_progress_summary().execute(
+            owner_id=owner_id, from_date=from_date, to_date=to_date
+        )
+
+        consistency = ConsistencyMetricType(
+            total_sessions=summary.consistency.total_sessions,
+            planned_sessions=summary.consistency.planned_sessions,
+            consistency_ratio=summary.consistency.consistency_ratio,
+            current_streak_days=summary.consistency.current_streak_days,
+            completed_count=summary.consistency.completed_count,
+            abandoned_count=summary.consistency.abandoned_count,
+            skipped_count=summary.consistency.skipped_count,
+        )
+
+        projections = [
+            PerformanceProjectionType(
+                exercise_id=strawberry.ID(p.exercise_id),
+                exercise_name=p.exercise_name,
+                measured_volume=p.measured_volume,
+                self_reported_volume=p.self_reported_volume,
+                estimated_1rm=p.estimated_1rm,
+                evidence_source=EvidenceSourceType(p.evidence_source.value),
+                trend=PerformanceTrendType(p.trend.value),
+            )
+            for p in summary.performance_projections
+        ]
+
+        goal_progress = None
+        if summary.goal_progress:
+            gp = summary.goal_progress
+            goal_progress = GoalProgressType(
+                goal_id=strawberry.ID(str(gp.goal_id)) if gp.goal_id else None,
+                description=gp.description,
+                baseline=gp.baseline,
+                target=gp.target,
+                current_value=gp.current_value,
+                unit=gp.unit,
+                progress_ratio=gp.progress_ratio,
+                evidence_source=EvidenceSourceType(gp.evidence_source.value),
+            )
+
+        return ProgressSummaryType(
+            from_date=summary.from_date,
+            to_date=summary.to_date,
+            consistency=consistency,
+            performance_projections=projections,
+            goal_progress=goal_progress,
+        )
 
 
 @strawberry.type
 class Mutation:
     @strawberry.mutation
-    def update_profile(
-        self, info: Info[Any, None], input: UpdateProfileInput
-    ) -> ProfileResultType:
+    def update_profile(self, info: Info[Any, None], input: UpdateProfileInput) -> ProfileResultType:
         owner_id = _authenticated_owner_id(info)
         if owner_id is None:
             return ProfileResultType(
@@ -689,9 +904,7 @@ class Mutation:
             )
 
     @strawberry.mutation
-    def edit_routine(
-        self, info: Info[Any, None], input: EditRoutineInput
-    ) -> RoutineResultType:
+    def edit_routine(self, info: Info[Any, None], input: EditRoutineInput) -> RoutineResultType:
         owner_id = _authenticated_owner_id(info)
         if owner_id is None:
             return RoutineResultType(
@@ -1066,6 +1279,109 @@ class Mutation:
             lambda owner_id, cmd: abandon_workout_session().execute(owner_id=owner_id, command=cmd),
         )
 
+    @strawberry.mutation
+    def skip_dynamic_challenge(
+        self, info: Info[Any, None], input: SkipDynamicChallengeInput
+    ) -> SkipDynamicChallengeResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return SkipDynamicChallengeResultType(
+                challenges=[],
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before skipping a dynamic challenge",
+                    )
+                ],
+            )
+        try:
+            session_uuid = UUID(str(input.session_id))
+            challenge_uuid = UUID(str(input.challenge_id))
+        except (ValueError, TypeError):
+            return SkipDynamicChallengeResultType(
+                challenges=[],
+                errors=[
+                    DomainError(
+                        code="INVALID_INPUT",
+                        message="Invalid session_id or challenge_id format",
+                    )
+                ],
+            )
+
+        try:
+            updated_challenges = skip_dynamic_challenge().execute(
+                owner_id=owner_id,
+                session_id=session_uuid,
+                expected_revision=input.expected_revision,
+                challenge_id=challenge_uuid,
+                idempotency_key=input.client_mutation_id,
+                request_fingerprint=_request_fingerprint(input),
+            )
+            return SkipDynamicChallengeResultType(
+                challenges=[_to_dynamic_challenge_graphql(c) for c in updated_challenges],
+                errors=[],
+            )
+        except SessionNotFound as exc:
+            return SkipDynamicChallengeResultType(
+                challenges=[],
+                errors=[DomainError(code="SESSION_NOT_FOUND", message=str(exc))],
+            )
+        except RevisionConflict as exc:
+            return SkipDynamicChallengeResultType(
+                challenges=[],
+                errors=[DomainError(code="REVISION_CONFLICT", message=str(exc))],
+            )
+        except IdempotencyConflict as exc:
+            return SkipDynamicChallengeResultType(
+                challenges=[],
+                errors=[DomainError(code="IDEMPOTENCY_CONFLICT", message=str(exc))],
+            )
+        except InvalidSessionStateTransition as exc:
+            return SkipDynamicChallengeResultType(
+                challenges=[],
+                errors=[DomainError(code="INVALID_STATE_TRANSITION", message=str(exc))],
+            )
+        except UnknownDynamicChallengeError as exc:
+            return SkipDynamicChallengeResultType(
+                challenges=[],
+                errors=[DomainError(code="CHALLENGE_NOT_FOUND", message=str(exc))],
+            )
+
+    @strawberry.mutation
+    def issue_display_pairing_code(
+        self, info: Info[Any, None], device_type: DisplayDeviceTypeType
+    ) -> GraphQLDisplayPairingCode:
+        pairing = issue_display_pairing_code().execute(
+            device_type=DisplayDeviceType(device_type.value)
+        )
+        return GraphQLDisplayPairingCode(
+            code=pairing.code,
+            device_type=DisplayDeviceTypeType(pairing.device_type.value),
+            created_at=pairing.created_at.isoformat(),
+            expires_at=pairing.expires_at.isoformat(),
+            status=DisplayPairingStatusType(pairing.status.value),
+            paired_session_id=(
+                strawberry.ID(pairing.paired_session_id) if pairing.paired_session_id else None
+            ),
+        )
+
+    @strawberry.mutation
+    def pair_display_device(
+        self,
+        info: Info[Any, None],
+        code: str,
+        session_id: strawberry.ID | None = None,
+    ) -> GraphQLDisplaySessionState:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError("AUTHENTICATION_REQUIRED: Sign in before pairing a display")
+
+        session_uuid_str = str(session_id) if session_id else None
+        pair_display_device().execute(
+            owner_id=str(owner_id), code=code, session_id=session_uuid_str
+        )
+        return _to_display_session_state_graphql(code)
+
 
 def _handle_session_lifecycle(
     info: Info[Any, None],
@@ -1106,6 +1422,54 @@ def _handle_session_lifecycle(
         return _failure("INVALID_SESSION_STATE", str(error))
     except (ValueError, TypeError) as error:
         return _failure("INVALID_INPUT", str(error))
+
+
+def _to_dynamic_challenge_graphql(challenge: DynamicChallenge) -> GraphQLDynamicChallenge:
+    return GraphQLDynamicChallenge(
+        id=strawberry.ID(str(challenge.challenge_id)),
+        challenge_type=DynamicChallengeTypeType(challenge.challenge_type.value),
+        exercise_id=challenge.exercise_id,
+        target_value=challenge.target_value,
+        description=challenge.description,
+        set_order=challenge.set_order,
+        status=DynamicChallengeStatusType(challenge.status.value),
+    )
+
+
+def _to_display_session_state_graphql(code: str) -> GraphQLDisplaySessionState:
+    try:
+        state = get_display_session_state().execute(code=code)
+        return GraphQLDisplaySessionState(
+            session_id=strawberry.ID(str(state.session_id)) if state.session_id else None,
+            device_type=DisplayDeviceTypeType(state.device_type.value),
+            status=DisplayPairingStatusType(state.status.value),
+            mode=SessionModeType(state.mode.value) if state.mode else None,
+            intensity=SessionIntensityType(state.intensity.value) if state.intensity else None,
+            state=state.state,
+            active_exercise=state.active_exercise,
+            confirmed_reps=state.confirmed_reps,
+            visibility_status=(
+                VisibilityStatusType(state.visibility_status) if state.visibility_status else None
+            ),
+            pause_reason=state.pause_reason,
+        )
+    except (DisplayPairingCodeNotFound, DisplayPairingCodeExpired):
+        return GraphQLDisplaySessionState(
+            session_id=None,
+            device_type=DisplayDeviceTypeType.FIRE_TV,
+            status=DisplayPairingStatusType.UNPAIRED,
+        )
+
+
+def _request_fingerprint(value: Any) -> str:
+    parts = [
+        getattr(value, "session_id", ""),
+        getattr(value, "expected_revision", ""),
+        getattr(value, "challenge_id", ""),
+        getattr(value, "client_mutation_id", ""),
+    ]
+    raw = ":".join(str(p) for p in parts)
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def _authenticated_owner_id(info: Info[Any, None]) -> UUID | None:
@@ -1211,9 +1575,7 @@ def _to_routine_graphql(routine: Routine | RoutineRecord) -> RoutineType:
     )
 
 
-def _to_workout_session_graphql(
-    session: WorkoutSession, routine: Routine
-) -> WorkoutSessionType:
+def _to_workout_session_graphql(session: WorkoutSession, routine: Routine) -> WorkoutSessionType:
     """Build the GraphQL projection purely from the domain WorkoutSession and
     Routine returned by application use cases, with no direct ORM access."""
     config = session.configuration
@@ -1350,9 +1712,7 @@ def _to_graphql(record: WorkoutSessionRecord) -> WorkoutSessionType:
             prompt_for_progress_photo=data["prompt_for_progress_photo"],
             dynamic=dynamic,
         ),
-        pause_reason=(
-            PauseReasonType(record.pause_reason) if record.pause_reason else None
-        ),
+        pause_reason=(PauseReasonType(record.pause_reason) if record.pause_reason else None),
         confirmed_repetitions=record.confirmed_repetitions,
         performed_sets=performed_sets,
         observation_coverage=coverage,

@@ -180,7 +180,6 @@ class ConfirmTargetCommand(SessionLifecycleCommand):
 
 
 class BaseSessionLifecycleUseCase:
-
     def __init__(self, repository: SessionLifecycleRepository) -> None:
         self._repository = repository
 
@@ -345,9 +344,7 @@ class FinishWorkoutSessionUseCase(BaseSessionLifecycleUseCase):
 
 
 class RecordSessionFeedbackUseCase(BaseSessionLifecycleUseCase):
-    def execute(
-        self, *, owner_id: UUID, command: RecordSessionFeedbackCommand
-    ) -> WorkoutSession:
+    def execute(self, *, owner_id: UUID, command: RecordSessionFeedbackCommand) -> WorkoutSession:
         return self._execute_transition(
             owner_id=owner_id,
             command=command,
@@ -497,9 +494,7 @@ class ListVisionCandidatesUseCase:
         self._repository = repository
         self._vision = vision_client
 
-    def execute(
-        self, *, owner_id: UUID, session_id: UUID
-    ) -> tuple[VisionCandidateInfo, ...]:
+    def execute(self, *, owner_id: UUID, session_id: UUID) -> tuple[VisionCandidateInfo, ...]:
         session = self._repository.get_session(owner_id=owner_id, session_id=session_id)
         if session is None:
             raise SessionNotFound(f"Workout session '{session_id}' not found")

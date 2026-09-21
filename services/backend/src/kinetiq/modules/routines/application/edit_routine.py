@@ -190,9 +190,7 @@ class EditRoutineUseCase:
         # 5. Create immutable next revision
         new_version = base_routine.version + 1
         new_title = (
-            command.title.strip()
-            if command.title and command.title.strip()
-            else base_routine.title
+            command.title.strip() if command.title and command.title.strip() else base_routine.title
         )
         updated_prescription: dict[str, object] = {
             "templateCode": base_routine.prescription.get("templateCode", "custom"),

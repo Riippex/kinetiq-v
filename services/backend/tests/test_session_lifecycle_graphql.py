@@ -35,8 +35,13 @@ class FakeVisionSessionAnalysisPort:
         self.created_analyses: list[UUID] = []
 
     def create_analysis(
-        self, *, session_id: UUID, source_id: str, exercise_key: str,
-        exercise_version: int, idempotency_key: str,
+        self,
+        *,
+        session_id: UUID,
+        source_id: str,
+        exercise_key: str,
+        exercise_version: int,
+        idempotency_key: str,
     ) -> VisionAnalysisHandle:
         self.created_analyses.append(session_id)
         return VisionAnalysisHandle(
@@ -50,7 +55,12 @@ class FakeVisionSessionAnalysisPort:
         )
 
     def select_target(
-        self, *, analysis_id: str, candidate_id: str, expected_epoch: int, idempotency_key: str,
+        self,
+        *,
+        analysis_id: str,
+        candidate_id: str,
+        expected_epoch: int,
+        idempotency_key: str,
     ) -> VisionTargetConfirmation:
         return VisionTargetConfirmation(
             target_person_id=candidate_id, epoch=expected_epoch, state="TRACKING"
@@ -70,6 +80,7 @@ def _fake_start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
         FakeVisionSessionAnalysisPort(),
         DjangoRoutineItemLookup(),
     )
+
 
 PREPARE_SESSION = """
 mutation PrepareSession($input: PrepareSessionInput!) {
@@ -619,9 +630,7 @@ def test_idempotent_command_retry_and_conflict(
 
 
 @pytest.mark.django_db
-def test_invalid_state_transitions_rejected(
-    athlete: User, accepted_routine: RoutineRecord
-) -> None:
+def test_invalid_state_transitions_rejected(athlete: User, accepted_routine: RoutineRecord) -> None:
     client = Client()
     client.force_login(athlete)
 

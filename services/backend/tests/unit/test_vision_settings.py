@@ -32,9 +32,7 @@ def test_resolve_vision_settings_allows_empty_credential() -> None:
 )
 def test_resolve_vision_settings_rejects_non_http_base_url(base_url: str) -> None:
     with pytest.raises(ImproperlyConfigured, match="VISION_BASE_URL"):
-        resolve_vision_settings(
-            base_url=base_url, timeout_seconds_raw="5.0", service_credential=""
-        )
+        resolve_vision_settings(base_url=base_url, timeout_seconds_raw="5.0", service_credential="")
 
 
 def test_resolve_vision_settings_rejects_non_numeric_timeout() -> None:

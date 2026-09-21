@@ -74,4 +74,3 @@ class Routine:
             raise ValueError("Title cannot be empty")
         if not self.prescription:
             raise ValueError("Prescription cannot be empty")
-

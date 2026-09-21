@@ -24,4 +24,3 @@ class RoutineNotFoundError(RoutineDomainError):
 
 class InvalidRoutineEditError(RoutineDomainError):
     """Raised when editing a routine violates catalog invariants or constraints."""
-

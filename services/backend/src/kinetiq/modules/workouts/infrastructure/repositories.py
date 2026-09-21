@@ -7,6 +7,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from kinetiq.modules.profiles.infrastructure.models import UserProfileRecord
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application.ports import (
     AcceptedRoutine,
@@ -87,6 +88,7 @@ class DjangoSessionPreparationRepository:
                         vision_analysis_id=session.vision_analysis_id,
                         vision_epoch=session.vision_epoch,
                         vision_observation_cursor=session.vision_observation_cursor,
+                        skipped_challenge_ids=session.skipped_challenge_ids,
                     ),
                 )
                 IdempotencyReceipt.objects.create(
@@ -154,6 +156,16 @@ class DjangoRoutineItemLookup:
             )
             for item in items
         )
+
+
+class DjangoUserProfileLookup:
+    """Read-only adapter retrieving user exclusions from UserProfileRecord."""
+
+    def get_user_exclusions(self, *, owner_id: UUID) -> tuple[str, ...]:
+        record = UserProfileRecord.objects.filter(owner_id=owner_id).only("exclusions").first()
+        if record is None or not isinstance(record.exclusions, list):
+            return ()
+        return tuple(str(item) for item in record.exclusions if isinstance(item, str))
 
 
 class DjangoSessionLifecycleRepository:
@@ -284,6 +296,7 @@ class DjangoSessionLifecycleRepository:
                     vision_analysis_id=updated_session.vision_analysis_id,
                     vision_epoch=updated_session.vision_epoch,
                     vision_observation_cursor=updated_session.vision_observation_cursor,
+                    skipped_challenge_ids=updated_session.skipped_challenge_ids,
                 )
                 record.confirmed_repetitions = updated_session.confirmed_repetitions
                 record.save(
@@ -375,9 +388,7 @@ class DjangoSessionLifecycleRepository:
             expires_field="vision_lease_expires_at",
         )
 
-    def release_vision_lease(
-        self, *, owner_id: UUID, session_id: UUID, lease_token: str
-    ) -> None:
+    def release_vision_lease(self, *, owner_id: UUID, session_id: UUID, lease_token: str) -> None:
         self._release_lease(
             owner_id=owner_id,
             session_id=session_id,
@@ -517,12 +528,20 @@ def _serialize_configuration(
     vision_analysis_id: str | None = None,
     vision_epoch: int | None = None,
     vision_observation_cursor: str | None = None,
+    skipped_challenge_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     dynamic = None
     if configuration.dynamic is not None:
         dynamic = {
-            "frequency": configuration.dynamic.frequency,
-            "allowed_challenge_types": list(configuration.dynamic.allowed_challenge_types),
+            "frequency": (
+                configuration.dynamic.frequency.value
+                if hasattr(configuration.dynamic.frequency, "value")
+                else str(configuration.dynamic.frequency)
+            ),
+            "allowed_challenge_types": [
+                t.value if hasattr(t, "value") else str(t)
+                for t in configuration.dynamic.allowed_challenge_types
+            ],
             "scoring_enabled": configuration.dynamic.scoring_enabled,
             "narration_enabled": configuration.dynamic.narration_enabled,
             "policy_version": configuration.dynamic.policy_version,
@@ -546,8 +565,9 @@ def _serialize_configuration(
         payload["vision_epoch"] = vision_epoch
     if vision_observation_cursor is not None:
         payload["vision_observation_cursor"] = vision_observation_cursor
+    if skipped_challenge_ids:
+        payload["skipped_challenge_ids"] = list(skipped_challenge_ids)
     return payload
-
 
 
 def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
@@ -558,12 +578,13 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
         dynamic = DynamicSessionConfiguration(
             frequency=DynamicChallengeFrequency(dynamic_data["frequency"]),
             allowed_challenge_types=tuple(
-                DynamicChallengeType(value) for value in dynamic_data["allowed_challenge_types"]
+                value if isinstance(value, DynamicChallengeType) else DynamicChallengeType(value)
+                for value in dynamic_data["allowed_challenge_types"]
             ),
             scoring_enabled=dynamic_data["scoring_enabled"],
             narration_enabled=dynamic_data["narration_enabled"],
             policy_version=dynamic_data["policy_version"],
-            random_seed=UUID(dynamic_data["random_seed"]),
+            random_seed=UUID(str(dynamic_data["random_seed"])),
         )
 
     # Note: `getattr(record, name, None)` is sufficient here without a
@@ -628,7 +649,6 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
         vision_analysis_id=data.get("vision_analysis_id"),
         vision_epoch=data.get("vision_epoch"),
         vision_observation_cursor=data.get("vision_observation_cursor"),
+        skipped_challenge_ids=tuple(data.get("skipped_challenge_ids") or []),
         updated_at=record.updated_at,
     )
-
-

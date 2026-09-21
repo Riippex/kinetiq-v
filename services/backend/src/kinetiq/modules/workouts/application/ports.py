@@ -56,9 +56,7 @@ class TransitionPrecondition:
 
 
 class SessionLifecycleRepository(Protocol):
-    def get_session(
-        self, *, owner_id: UUID, session_id: UUID
-    ) -> WorkoutSession | None: ...
+    def get_session(self, *, owner_id: UUID, session_id: UUID) -> WorkoutSession | None: ...
 
     def check_transition_precondition(
         self,
@@ -126,6 +124,14 @@ class RoutineItemLookup(Protocol):
     def get_accepted_routine_items(
         self, *, owner_id: UUID, routine_id: UUID, version: int
     ) -> tuple[AcceptedRoutineItem, ...] | None: ...
+
+
+class UserProfileLookup(Protocol):
+    """Read-only boundary onto the profiles module, scoped to retrieving
+    user exclusions for challenge policy evaluation.
+    """
+
+    def get_user_exclusions(self, *, owner_id: UUID) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +279,3 @@ class VisionObservationSourcePort(Protocol):
     def poll_observations(
         self, *, analysis_id: str, after_cursor: str | None, limit: int
     ) -> VisionObservationsPage: ...
-
-
-

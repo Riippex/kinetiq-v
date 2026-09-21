@@ -1,4 +1,5 @@
 """Catalog domain package."""
+
 from kinetiq.modules.catalog.domain.entities import (
     Exercise,
     ExercisePrescription,

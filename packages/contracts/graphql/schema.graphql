@@ -8,8 +8,28 @@ enum SessionIntensity { LIGHTER PLANNED CHALLENGING }
 enum CoachingTone { CALM TECHNICAL MOTIVATIONAL EDGY }
 enum DynamicChallengeType { HOLD_POSE MIRROR_POSE QUICK_REPS RECOVERY }
 enum DynamicChallengeFrequency { LOW STANDARD HIGH }
+enum DynamicChallengeStatus { PENDING COMPLETED SKIPPED }
 enum ExperienceLevel { STARTING RETURNING REGULAR }
 enum VisibilityStatus { VISIBLE PARTIALLY_VISIBLE NOT_VISIBLE }
+type DynamicChallenge {
+  id: ID!
+  challengeType: DynamicChallengeType!
+  exerciseId: String!
+  targetValue: Int!
+  description: String!
+  setOrder: Int!
+  status: DynamicChallengeStatus!
+}
+input SkipDynamicChallengeInput {
+  sessionId: ID!
+  expectedRevision: Int!
+  challengeId: ID!
+  clientMutationId: String!
+}
+type SkipDynamicChallengeResult {
+  challenges: [DynamicChallenge!]!
+  errors: [DomainError!]!
+}
 type Profile {
   id: ID!
   displayName: String!
@@ -162,6 +182,65 @@ type PairingChallenge { id: ID! userCode: String! expiresAt: DateTime! }
 type PairingResult { approved: Boolean! errors: [DomainError!]! }
 type UploadRequest { photoId: ID! uploadUrl: String! expiresAt: DateTime! }
 type ServiceStatus { name: String! version: String! ready: Boolean! }
+enum DisplayDeviceType { FIRE_TV VEGA_OS }
+enum DisplayPairingStatus { UNPAIRED PAIRED EXPIRED }
+type DisplayPairingCode {
+  code: String!
+  deviceType: DisplayDeviceType!
+  createdAt: String!
+  expiresAt: String!
+  status: DisplayPairingStatus!
+  pairedSessionId: ID
+}
+type DisplaySessionState {
+  sessionId: ID
+  deviceType: DisplayDeviceType!
+  status: DisplayPairingStatus!
+  mode: SessionMode
+  intensity: SessionIntensity
+  state: String
+  activeExercise: String
+  confirmedReps: Int!
+  visibilityStatus: VisibilityStatus
+  pauseReason: String
+}
+enum EvidenceSource { MEASURED SELF_REPORTED ESTIMATED MISSING }
+enum PerformanceTrend { IMPROVING STABLE DECLINING INSUFFICIENT_DATA }
+type ConsistencyMetric {
+  totalSessions: Int!
+  plannedSessions: Int!
+  consistencyRatio: Float!
+  currentStreakDays: Int!
+  completedCount: Int!
+  abandonedCount: Int!
+  skippedCount: Int!
+}
+type PerformanceProjection {
+  exerciseId: ID!
+  exerciseName: String!
+  measuredVolume: Int!
+  selfReportedVolume: Int!
+  estimated1RM: Float
+  evidenceSource: EvidenceSource!
+  trend: PerformanceTrend!
+}
+type GoalProgress {
+  goalId: ID
+  description: String
+  baseline: Float
+  target: Float
+  currentValue: Float
+  unit: String
+  progressRatio: Float
+  evidenceSource: EvidenceSource!
+}
+type ProgressSummary {
+  fromDate: DateTime!
+  toDate: DateTime!
+  consistency: ConsistencyMetric!
+  performanceProjections: [PerformanceProjection!]!
+  goalProgress: GoalProgress
+}
 type Query {
   serviceStatus: ServiceStatus!
   me: Profile!
@@ -172,6 +251,8 @@ type Query {
   progress(from: DateTime!, to: DateTime!): ProgressSummary!
   visionCandidates(sessionId: ID!): [VisionCandidate!]!
   transientSessionState(sessionId: ID!): TransientSessionUpdate
+  sessionDynamicChallenges(sessionId: ID!): [DynamicChallenge!]!
+  displaySessionState(code: String!): DisplaySessionState!
 }
 type Mutation {
   updateProfile(input: UpdateProfileInput!): ProfileResult!
@@ -196,6 +277,9 @@ type Mutation {
     feedback: SessionFeedbackInput!
   ): SessionResult!
   abandonSession(command: SessionCommand!): SessionResult!
+  skipDynamicChallenge(input: SkipDynamicChallengeInput!): SkipDynamicChallengeResult!
+  issueDisplayPairingCode(deviceType: DisplayDeviceType!): DisplayPairingCode!
+  pairDisplayDevice(code: String!, sessionId: String): DisplaySessionState!
   approveDisplay(userCode: String!, sessionId: ID!): PairingResult!
   requestProgressPhotoUpload(sessionId: ID!, contentType: String!, byteLength: Int!, idempotencyKey: String!): UploadRequest!
   finalizeProgressPhoto(photoId: ID!): Boolean!

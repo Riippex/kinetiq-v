@@ -148,9 +148,7 @@ class VisionRestAdapterAnalysesRoutesTests(unittest.TestCase):
 
         req = mock_urlopen.call_args[0][0]
         self.assertEqual("POST", req.get_method())
-        self.assertEqual(
-            "http://vision-service.local:8080/v1/analyses/an_1/target", req.full_url
-        )
+        self.assertEqual("http://vision-service.local:8080/v1/analyses/an_1/target", req.full_url)
         body = json.loads(req.data.decode("utf-8"))
         self.assertEqual("cand_1", body["candidate_id"])
         self.assertEqual(1, body["expected_epoch"])
@@ -278,9 +276,7 @@ class VisionRestAdapterAnalysesRoutesTests(unittest.TestCase):
 
         req = mock_urlopen.call_args[0][0]
         self.assertEqual("DELETE", req.get_method())
-        self.assertEqual(
-            "http://vision-service.local:8080/v1/analyses/an_1", req.full_url
-        )
+        self.assertEqual("http://vision-service.local:8080/v1/analyses/an_1", req.full_url)
 
     @patch("urllib.request.urlopen")
     def test_generic_http_error_falls_back_to_vision_http_error(self, mock_urlopen) -> None:

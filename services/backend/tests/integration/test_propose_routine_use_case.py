@@ -24,6 +24,12 @@ from kinetiq.modules.profiles.application.update_profile import (
     UpdateProfileUseCase,
 )
 from kinetiq.modules.profiles.infrastructure.repositories import DjangoProfileRepository
+from kinetiq.modules.progress.application.get_progress_summary import GetProgressSummaryUseCase
+from kinetiq.modules.progress.infrastructure.repositories import (
+    DjangoGoalLookup,
+    DjangoProfileLookup,
+    DjangoSessionHistoryLookup,
+)
 from kinetiq.modules.routines.application.propose_routine import ProposeRoutineUseCase
 from kinetiq.modules.routines.domain.entities import RoutineEligibilityCriteria
 from kinetiq.modules.routines.domain.errors import (
@@ -32,6 +38,12 @@ from kinetiq.modules.routines.domain.errors import (
 )
 from kinetiq.modules.routines.domain.provider import (
     CoachingProposalOutput,
+)
+from kinetiq.modules.routines.infrastructure.models import RoutineRecord
+from kinetiq.modules.workouts.infrastructure.models import (
+    ObservationCoverageRecord,
+    PerformedSetRecord,
+    WorkoutSessionRecord,
 )
 
 
@@ -324,3 +336,146 @@ def test_propose_routine_raises_unsupported_limitation_error(
     with pytest.raises(UnsupportedLimitationError) as exc:
         use_case.execute(athlete_id)
     assert "KNEE_PAIN" in str(exc.value)
+
+
+@pytest.mark.django_db
+def test_propose_routine_reflects_real_session_without_false_goal_achievement(
+    catalog_seeded: DjangoCatalogRepository,
+) -> None:
+    """A real saved session must change the coaching rationale's
+    goal-progress note, and that note must state the real (partial)
+    progress ratio -- never overstate it as fully achieved."""
+    profile_repo = DjangoProfileRepository()
+    goal_repo = DjangoGoalRepository()
+
+    user = User.objects.create_user(
+        email=f"athlete-{uuid4()}@example.com",
+        username=f"athlete-{uuid4()}",
+    )
+    athlete_id = user.id
+    GetProfileUseCase(profile_repo).execute(athlete_id)
+
+    # Goal tracks real push-up reps: 0 -> 50.
+    SetGoalUseCase(goal_repo).execute(
+        owner_id=athlete_id,
+        command=SetGoalCommand(
+            description="Reach 50 push-up reps",
+            measure="exercise-push-up-v1",
+            baseline=0.0,
+            target=50.0,
+            unit="reps",
+        ),
+    )
+
+    progress_summary_use_case = GetProgressSummaryUseCase(
+        session_history_lookup=DjangoSessionHistoryLookup(),
+        profile_lookup=DjangoProfileLookup(),
+        goal_lookup=DjangoGoalLookup(),
+    )
+
+    use_case = ProposeRoutineUseCase(
+        catalog_repo=catalog_seeded,
+        profile_repo=profile_repo,
+        goal_repo=goal_repo,
+        progress_summary_use_case=progress_summary_use_case,
+    )
+
+    # 1. Before any session has ever been saved, there is no evidence to back
+    # a goal-progress claim, so none must be made.
+    baseline_proposal = use_case.execute(athlete_id)
+    assert "of your active goal" not in baseline_proposal.rationale
+
+    # 2. Save a real completed session with 20 push-up reps.
+    routine_row = RoutineRecord.objects.create(
+        id=uuid4(),
+        routine_id=uuid4(),
+        owner=user,
+        title="Ad-hoc",
+        version=1,
+        prescription={},
+    )
+    session = WorkoutSessionRecord.objects.create(
+        id=uuid4(),
+        owner=user,
+        routine=routine_row,
+        revision=1,
+        state="COMPLETED",
+        configuration={},
+    )
+    PerformedSetRecord.objects.create(
+        session=session,
+        exercise_id="exercise-push-up-v1",
+        set_order=1,
+        repetitions=20,
+    )
+    ObservationCoverageRecord.objects.create(
+        session=session,
+        coverage_ratio=0.9,
+        tracked_seconds=540,
+        total_seconds=600,
+    )
+
+    # 3. The next proposal must reflect this real, partial progress: 20 of
+    # 50 reps is 40% -- not "achieved" and not fabricated.
+    updated_proposal = use_case.execute(athlete_id)
+    assert "40% of your active goal" in updated_proposal.rationale
+    assert "100% of your active goal" not in updated_proposal.rationale
+
+
+@pytest.mark.django_db
+def test_propose_routine_uses_real_onboarding_goal_weekly_completed_sessions(
+    catalog_seeded: DjangoCatalogRepository,
+) -> None:
+    """Recheck with the goal onboarding actually creates
+    (`weekly_completed_sessions`): completed sessions this week drive the
+    stated progress, and nothing is claimed before any session exists."""
+    profile_repo = DjangoProfileRepository()
+    goal_repo = DjangoGoalRepository()
+
+    user = User.objects.create_user(
+        email=f"athlete-{uuid4()}@example.com",
+        username=f"athlete-{uuid4()}",
+    )
+    athlete_id = user.id
+    GetProfileUseCase(profile_repo).execute(athlete_id)
+    SetGoalUseCase(goal_repo).execute(
+        owner_id=athlete_id,
+        command=SetGoalCommand(
+            description="Build daily movement consistency",
+            measure="weekly_completed_sessions",
+            baseline=0.0,
+            target=3.0,
+            unit="sessions/week",
+        ),
+    )
+
+    use_case = ProposeRoutineUseCase(
+        catalog_repo=catalog_seeded,
+        profile_repo=profile_repo,
+        goal_repo=goal_repo,
+        progress_summary_use_case=GetProgressSummaryUseCase(
+            session_history_lookup=DjangoSessionHistoryLookup(),
+            profile_lookup=DjangoProfileLookup(),
+            goal_lookup=DjangoGoalLookup(),
+        ),
+    )
+
+    assert "of your active goal" not in use_case.execute(athlete_id).rationale
+
+    routine_id = uuid4()
+    routine_row = RoutineRecord.objects.create(
+        id=routine_id, routine_id=routine_id, owner=user, title="R", version=1, prescription={}
+    )
+    for _ in range(2):
+        WorkoutSessionRecord.objects.create(
+            id=uuid4(),
+            owner=user,
+            routine=routine_row,
+            revision=1,
+            state="COMPLETED",
+            configuration={},
+        )
+
+    rationale = use_case.execute(athlete_id).rationale
+    assert "67% of your active goal" in rationale
+    assert "100% of your active goal" not in rationale

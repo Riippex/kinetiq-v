@@ -93,9 +93,7 @@ def vision_base_url():
                 time.sleep(0.3)
         else:
             proc.terminate()
-            raise RuntimeError(
-                f"kinetiq-v-vision did not become healthy within 30s: {last_error}"
-            )
+            raise RuntimeError(f"kinetiq-v-vision did not become healthy within 30s: {last_error}")
 
         yield base_url
     finally:

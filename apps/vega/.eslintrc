@@ -16,6 +16,13 @@
     {
       "files": ["package.json", "kepler-compatibility.json"],
       "parser": "jsonc-eslint-parser"
+    },
+    {
+      "files": ["test/**/*.ts", "test/**/*.tsx"],
+      "env": {
+        "es2020": true,
+        "jest": true
+      }
     }
   ],
   "ignorePatterns": [

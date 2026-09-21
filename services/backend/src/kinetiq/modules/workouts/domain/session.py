@@ -173,6 +173,7 @@ class WorkoutSession:
     vision_analysis_id: str | None = None
     vision_epoch: int | None = None
     vision_observation_cursor: str | None = None
+    skipped_challenge_ids: tuple[str, ...] = ()
     updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
@@ -223,8 +224,7 @@ class WorkoutSession:
             raise InvalidSessionStateTransition("Cannot confirm target on a finished session")
         if self.vision_analysis_id is None:
             raise InvalidSessionStateTransition(
-                "Cannot confirm a target before a Vision analysis has been started "
-                "for this session"
+                "Cannot confirm a target before a Vision analysis has been started for this session"
             )
         return replace(
             self,
@@ -290,6 +290,18 @@ class WorkoutSession:
             return self
         configuration = replace(self.configuration, active_mode=SessionMode.NORMAL)
         return replace(self, configuration=configuration, revision=self.revision + 1)
+
+    def skip_challenge(self, challenge_id: UUID | str) -> WorkoutSession:
+        if self.state in (SessionState.COMPLETED, SessionState.ABANDONED):
+            raise InvalidSessionStateTransition("Cannot skip a challenge on a finished session")
+        cid_str = str(challenge_id)
+        if cid_str in self.skipped_challenge_ids:
+            return self
+        return replace(
+            self,
+            skipped_challenge_ids=(*self.skipped_challenge_ids, cid_str),
+            revision=self.revision + 1,
+        )
 
     def finish(
         self,

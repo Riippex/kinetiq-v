@@ -179,7 +179,5 @@ class DjangoCatalogRepository(CatalogRepository):
             items=items,
             supported_workout_spaces=frozenset(record.supported_workout_spaces),
             supported_experience_levels=frozenset(record.supported_experience_levels),
-            supported_limitation_adaptations=frozenset(
-                record.supported_limitation_adaptations
-            ),
+            supported_limitation_adaptations=frozenset(record.supported_limitation_adaptations),
         )

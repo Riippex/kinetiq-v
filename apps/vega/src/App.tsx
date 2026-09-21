@@ -1,18 +1,17 @@
-// MOCK / DEMO SCREEN -- not wired to a real backend.
-//
-// There is no pairing-code issuance or session-state API anywhere in
-// kinetiq-v yet: screen transitions below only flip local component state,
-// they never call GraphQL or any pairing service. The "VEGA-4404" pairing
-// code and the initial live-session data are hardcoded. KV-404 reflects
-// this: it is Ready (mock UI only), not Verified, until a real
-// pairing/session-state backend exists and this screen calls it.
 import {TVFocusGuideView} from '@amazon-devices/react-native-kepler';
+import {
+  fetchDisplaySessionState,
+  issueDisplayPairingCode,
+} from '@kinetiq/session-client';
 import React, {useEffect, useState} from 'react';
 import {BackHandler, Pressable, StyleSheet, Text, View} from 'react-native';
 
 type SessionMode = 'NORMAL' | 'DYNAMIC';
 type SessionIntensity = 'LIGHTER' | 'PLANNED' | 'CHALLENGING';
 type Screen = 'PREPARE' | 'READY' | 'PAIRING' | 'LIVE';
+
+const GRAPHQL_ENDPOINT = 'http://localhost:8000/graphql';
+const LIVE_REFRESH_INTERVAL_MS = 3000;
 
 const sessionModes: SessionMode[] = ['NORMAL', 'DYNAMIC'];
 const sessionIntensities: SessionIntensity[] = [
@@ -22,25 +21,28 @@ const sessionIntensities: SessionIntensity[] = [
 ];
 
 export interface LiveSessionState {
-  exerciseName: string;
+  exerciseName: string | null;
   confirmedReps: number;
-  visibilityStatus: 'VISIBLE' | 'PARTIALLY_VISIBLE' | 'NOT_VISIBLE';
+  visibilityStatus: 'VISIBLE' | 'PARTIALLY_VISIBLE' | 'NOT_VISIBLE' | string;
   isPaused: boolean;
   pauseReason?: string | null;
 }
+
+const NO_PROGRESS_STATE: LiveSessionState = {
+  exerciseName: null,
+  confirmedReps: 0,
+  visibilityStatus: 'VISIBLE',
+  isPaused: false,
+};
 
 export function App() {
   const [mode, setMode] = useState<SessionMode>('NORMAL');
   const [intensity, setIntensity] = useState<SessionIntensity>('PLANNED');
   const [screen, setScreen] = useState<Screen>('PREPARE');
-  // Mock/demo data (see the file header note): there is no backend to push
-  // live updates from yet, so this is a fixed snapshot with no setter.
-  const [liveState] = useState<LiveSessionState>({
-    exerciseName: 'Goblet Squat',
-    confirmedReps: 10,
-    visibilityStatus: 'VISIBLE',
-    isPaused: false,
-  });
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [pairingError, setPairingError] = useState<string | null>(null);
+  const [liveState, setLiveState] = useState<LiveSessionState>(NO_PROGRESS_STATE);
+  const [isLivePaired, setIsLivePaired] = useState(false);
 
   useEffect(() => {
     if (screen === 'PREPARE') {
@@ -58,13 +60,92 @@ export function App() {
     return () => subscription?.remove();
   }, [screen]);
 
+  // A real paired session's state (reps, active exercise, visibility,
+  // pause reason) changes continuously as Vision observes the workout --
+  // reading it once at connect time and never again would leave this
+  // display showing an increasingly stale snapshot for the rest of the
+  // session. The local-only preview ("Start live movement") never sets
+  // `isLivePaired`, so it is never polled.
+  useEffect(() => {
+    if (screen !== 'LIVE' || !pairingCode || !isLivePaired) {
+      return;
+    }
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetchDisplaySessionState(GRAPHQL_ENDPOINT, pairingCode);
+        if (res.state && res.state.sessionId) {
+          setLiveState({
+            exerciseName: res.state.activeExercise ?? null,
+            confirmedReps: res.state.confirmedReps ?? 0,
+            visibilityStatus: res.state.visibilityStatus ?? 'VISIBLE',
+            isPaused: res.state.state === 'PAUSED',
+            pauseReason: res.state.pauseReason,
+          });
+          if (res.state.mode) setMode(res.state.mode);
+          if (res.state.intensity) setIntensity(res.state.intensity);
+        }
+      } catch {
+        // A transient poll failure must not blank out the last known
+        // good live state -- keep showing it and retry on the next tick.
+      }
+    }, LIVE_REFRESH_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [screen, pairingCode, isLivePaired]);
+
+  const pairDisplay = async () => {
+    setPairingError(null);
+    try {
+      const res = await issueDisplayPairingCode(GRAPHQL_ENDPOINT, 'VEGA_OS');
+      if (res.pairing) {
+        setPairingCode(res.pairing.code);
+        setScreen('PAIRING');
+        return;
+      }
+      setPairingError('Could not generate a pairing code. Check your connection and try again.');
+    } catch {
+      setPairingError('Could not generate a pairing code. Check your connection and try again.');
+    }
+    setScreen('PAIRING');
+  };
+
+  const connectLiveSession = async () => {
+    if (!pairingCode) {
+      return;
+    }
+    setPairingError(null);
+    try {
+      const res = await fetchDisplaySessionState(GRAPHQL_ENDPOINT, pairingCode);
+      if (res.state && res.state.sessionId) {
+        setLiveState({
+          exerciseName: res.state.activeExercise ?? null,
+          confirmedReps: res.state.confirmedReps ?? 0,
+          visibilityStatus: res.state.visibilityStatus ?? 'VISIBLE',
+          isPaused: res.state.state === 'PAUSED',
+          pauseReason: res.state.pauseReason,
+        });
+        if (res.state.mode) setMode(res.state.mode);
+        if (res.state.intensity) setIntensity(res.state.intensity);
+        setIsLivePaired(true);
+        setScreen('LIVE');
+        return;
+      }
+      // A failed or empty connection must never fall through to the live
+      // screen showing stale or fabricated data -- stay on pairing with
+      // an honest error instead.
+      setPairingError('No paired session yet. Pair this display from your phone first.');
+    } catch {
+      setPairingError('Could not reach the backend. Check your connection and try again.');
+    }
+  };
+
   if (screen === 'LIVE') {
     return (
       <View style={styles.screen} testID="live-screen">
         <View style={styles.copy}>
-          <MockBanner />
           <Text style={styles.eyebrow}>KINETIQ V · VEGA OS LIVE</Text>
-          <Text style={styles.title}>{liveState.exerciseName}</Text>
+          <Text style={styles.title}>{liveState.exerciseName ?? 'Waiting for Vision…'}</Text>
           <Text style={styles.description}>
             {mode === 'NORMAL' ? 'Focused training' : 'Dynamic challenge mode'} ·{' '}
             {intensity.toLowerCase()} intensity
@@ -108,16 +189,24 @@ export function App() {
     return (
       <View style={styles.screen} testID="pairing-screen">
         <View style={styles.copy}>
-          <MockBanner />
           <Text style={styles.eyebrow}>VEGA OS DISPLAY PAIRING</Text>
           <Text style={styles.title}>Pair with phone</Text>
           <Text style={styles.description}>
-            Display pairing code:{' '}
-            <Text style={styles.codeHighlight} testID="pairing-code">
-              VEGA-4404
-            </Text>
-            . Select this device on your mobile app to mirror prepared session activity.
+            {pairingCode ? (
+              <>
+                Display pairing code:{' '}
+                <Text style={styles.codeHighlight} testID="pairing-code">
+                  {pairingCode}
+                </Text>
+                . Select this device on your mobile app to mirror prepared session activity.
+              </>
+            ) : (
+              'Generating a pairing code…'
+            )}
           </Text>
+          {pairingError ? (
+            <Text style={styles.pairingErrorText} testID="pairing-error">{pairingError}</Text>
+          ) : null}
         </View>
 
         <TVFocusGuideView
@@ -129,7 +218,7 @@ export function App() {
             label="Connect live session"
             preferred
             testID="connect-live-session"
-            onPress={() => setScreen('LIVE')}
+            onPress={connectLiveSession}
           />
           <TVButton
             label="Back to preparation"
@@ -166,7 +255,14 @@ export function App() {
             label="Start live movement"
             preferred
             testID="start-live-movement"
-            onPress={() => setScreen('LIVE')}
+            onPress={() => {
+              // Local-only preview (no display pairing involved): starts
+              // at zero confirmed reps and no active exercise, since
+              // nothing has actually been observed yet.
+              setLiveState(NO_PROGRESS_STATE);
+              setIsLivePaired(false);
+              setScreen('LIVE');
+            }}
           />
           <TVButton
             label="Back to preparation"
@@ -230,18 +326,10 @@ export function App() {
           <TVButton
             label="Pair display"
             testID="pair-display"
-            onPress={() => setScreen('PAIRING')}
+            onPress={pairDisplay}
           />
         </View>
       </TVFocusGuideView>
-    </View>
-  );
-}
-
-function MockBanner() {
-  return (
-    <View style={styles.mockBanner} testID="mock-banner">
-      <Text style={styles.mockBannerText}>DEMO MODE — not connected to a live session</Text>
     </View>
   );
 }
@@ -296,17 +384,6 @@ const styles = StyleSheet.create({
     gap: 72,
   },
   copy: {flex: 1, justifyContent: 'center'},
-  mockBanner: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#3B0764',
-    borderWidth: 2,
-    borderColor: '#C084FC',
-    borderRadius: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    marginBottom: 16,
-  },
-  mockBannerText: {color: '#E9D5FF', fontSize: 14, fontWeight: '800', letterSpacing: 1},
   eyebrow: {
     color: '#A3FF12',
     fontSize: 18,
@@ -324,6 +401,12 @@ const styles = StyleSheet.create({
   codeHighlight: {
     color: '#A3FF12',
     fontWeight: '800',
+  },
+  pairingErrorText: {
+    color: '#F87171',
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 16,
   },
   controls: {width: 650, justifyContent: 'center', gap: 20},
   label: {
