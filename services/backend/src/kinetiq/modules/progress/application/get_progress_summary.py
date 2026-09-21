@@ -178,8 +178,22 @@ class GetProgressSummaryUseCase:
                 # COMPLETED sessions in the relevant (trailing) week is
                 # genuine MEASURED evidence for this goal.
                 week_start = to_date - timedelta(days=_WEEK_DAYS)
+                # The requested range may be shorter than a week; load the
+                # full trailing week separately so the count is never
+                # understated by the caller's chosen window.
+                weekly_sessions = (
+                    sessions
+                    if from_date <= week_start
+                    else self._session_history_lookup.get_sessions_in_range(
+                        owner_id=owner_id, from_date=week_start, to_date=to_date
+                    )
+                )
                 current_val = float(
-                    sum(1 for s in completed_sessions if week_start <= s.updated_at <= to_date)
+                    sum(
+                        1
+                        for s in weekly_sessions
+                        if s.state == "COMPLETED" and week_start <= s.updated_at <= to_date
+                    )
                 )
                 goal_evidence = EvidenceSource.MEASURED
             else:

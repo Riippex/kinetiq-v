@@ -280,3 +280,47 @@ def test_progress_summary_weekly_completed_sessions_goal_without_sessions_is_zer
     assert summary.goal_progress is not None
     assert summary.goal_progress.current_value == 0.0
     assert summary.goal_progress.progress_ratio == 0.0
+
+
+class RangeAwareSessionHistoryLookup:
+    def __init__(self, sessions):
+        self.sessions = sessions
+
+    def get_sessions_in_range(self, *, owner_id, from_date, to_date):
+        return tuple(s for s in self.sessions if from_date <= s.updated_at <= to_date)
+
+
+def test_progress_summary_weekly_goal_is_not_understated_by_a_short_range():
+    """Querying fewer than seven days must still count the whole trailing
+    week's completed sessions for the weekly goal."""
+    now = datetime.now(UTC)
+    sessions = tuple(
+        SessionRecordDTO(
+            session_id=uuid4(),
+            updated_at=now - timedelta(days=days_ago),
+            state="COMPLETED",
+            performed_sets=(),
+            observation_coverage_ratio=None,
+        )
+        for days_ago in (0.5, 3, 6)
+    )
+    goal = GoalRecordDTO(
+        goal_id=uuid4(),
+        description="Train 3 times a week",
+        measure="weekly_completed_sessions",
+        baseline=0.0,
+        target=3.0,
+        unit="sessions/week",
+    )
+    use_case = GetProgressSummaryUseCase(
+        session_history_lookup=RangeAwareSessionHistoryLookup(sessions),
+        profile_lookup=DummyProfileLookup(3),
+        goal_lookup=DummyGoalLookup(goal),
+    )
+
+    summary = use_case.execute(owner_id=uuid4(), from_date=now - timedelta(days=1), to_date=now)
+
+    assert summary.consistency.completed_count == 1  # only the requested range
+    assert summary.goal_progress is not None
+    assert summary.goal_progress.current_value == 3.0
+    assert summary.goal_progress.progress_ratio == 1.0

@@ -279,7 +279,7 @@ type Mutation {
   abandonSession(command: SessionCommand!): SessionResult!
   skipDynamicChallenge(input: SkipDynamicChallengeInput!): SkipDynamicChallengeResult!
   issueDisplayPairingCode(deviceType: DisplayDeviceType!): DisplayPairingCode!
-  pairDisplayDevice(code: String!, sessionId: String): DisplaySessionState!
+  pairDisplayDevice(code: String!, sessionId: ID): DisplaySessionState!
   approveDisplay(userCode: String!, sessionId: ID!): PairingResult!
   requestProgressPhotoUpload(sessionId: ID!, contentType: String!, byteLength: Int!, idempotencyKey: String!): UploadRequest!
   finalizeProgressPhoto(photoId: ID!): Boolean!
