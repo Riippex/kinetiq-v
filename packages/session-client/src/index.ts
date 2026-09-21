@@ -103,6 +103,46 @@ export interface SkipDynamicChallengeResult {
   errors: DomainError[];
 }
 
+export interface UploadRequest {
+  photoId: string;
+  uploadUrl: string;
+  expiresAt: string;
+}
+
+export interface UploadRequestResult {
+  uploadRequest?: UploadRequest | null;
+  errors: DomainError[];
+}
+
+export interface ProgressPhoto {
+  id: string;
+  sessionId?: string | null;
+  contentType: string;
+  byteLength: number;
+  url: string;
+  status: string;
+  createdAt: string;
+  confirmedAt?: string | null;
+}
+
+export interface ProgressPhotoResult {
+  photo?: ProgressPhoto | null;
+  errors: DomainError[];
+}
+
+export interface DeletePhotoResult {
+  success: boolean;
+  errors: DomainError[];
+}
+
+export interface RequestProgressPhotoUploadInput {
+  contentType: string;
+  byteLength: number;
+  idempotencyKey: string;
+  sessionId?: string | null;
+}
+
+
 export interface Profile {
   id: string;
   displayName: string;
@@ -820,6 +860,84 @@ const progressQuery = `
     }
   }
 `;
+
+export const progressPhotosQuery = `
+  query ProgressPhotos($sessionId: ID) {
+    progressPhotos(sessionId: $sessionId) {
+      id
+      sessionId
+      contentType
+      byteLength
+      url
+      status
+      createdAt
+      confirmedAt
+    }
+  }
+`;
+
+export const requestProgressPhotoUploadMutation = `
+  mutation RequestProgressPhotoUpload(
+    $contentType: String!
+    $byteLength: Int!
+    $idempotencyKey: String!
+    $sessionId: ID
+  ) {
+    requestProgressPhotoUpload(
+      contentType: $contentType
+      byteLength: $byteLength
+      idempotencyKey: $idempotencyKey
+      sessionId: $sessionId
+    ) {
+      uploadRequest {
+        photoId
+        uploadUrl
+        expiresAt
+      }
+      errors {
+        code
+        message
+        field
+      }
+    }
+  }
+`;
+
+export const finalizeProgressPhotoMutation = `
+  mutation FinalizeProgressPhoto($photoId: ID!) {
+    finalizeProgressPhoto(photoId: $photoId) {
+      photo {
+        id
+        sessionId
+        contentType
+        byteLength
+        url
+        status
+        createdAt
+        confirmedAt
+      }
+      errors {
+        code
+        message
+        field
+      }
+    }
+  }
+`;
+
+export const deleteProgressPhotoMutation = `
+  mutation DeleteProgressPhoto($photoId: ID!) {
+    deleteProgressPhoto(photoId: $photoId) {
+      success
+      errors {
+        code
+        message
+        field
+      }
+    }
+  }
+`;
+
 
 
 const currentRoutineQuery = `
@@ -1752,5 +1870,79 @@ export async function fetchProgressSummary(
   }
   return { summary: result.data?.progress ?? null, errors: [] };
 }
+
+export async function requestProgressPhotoUpload(
+  endpoint: string,
+  input: RequestProgressPhotoUploadInput,
+  authorization?: string,
+): Promise<UploadRequestResult> {
+  const result = await executeGraphQL<{ requestProgressPhotoUpload: UploadRequestResult }>(
+    endpoint,
+    requestProgressPhotoUploadMutation,
+    {
+      contentType: input.contentType,
+      byteLength: input.byteLength,
+      idempotencyKey: input.idempotencyKey,
+      sessionId: input.sessionId ?? null,
+    },
+    authorization,
+  );
+  if (result.errors) {
+    return { uploadRequest: null, errors: result.errors };
+  }
+  return result.data?.requestProgressPhotoUpload ?? { uploadRequest: null, errors: [] };
+}
+
+export async function finalizeProgressPhoto(
+  endpoint: string,
+  photoId: string,
+  authorization?: string,
+): Promise<ProgressPhotoResult> {
+  const result = await executeGraphQL<{ finalizeProgressPhoto: ProgressPhotoResult }>(
+    endpoint,
+    finalizeProgressPhotoMutation,
+    { photoId },
+    authorization,
+  );
+  if (result.errors) {
+    return { photo: null, errors: result.errors };
+  }
+  return result.data?.finalizeProgressPhoto ?? { photo: null, errors: [] };
+}
+
+export async function fetchProgressPhotos(
+  endpoint: string,
+  sessionId?: string | null,
+  authorization?: string,
+): Promise<{ photos: ProgressPhoto[]; errors: DomainError[] }> {
+  const result = await executeGraphQL<{ progressPhotos: ProgressPhoto[] }>(
+    endpoint,
+    progressPhotosQuery,
+    { sessionId: sessionId ?? null },
+    authorization,
+  );
+  if (result.errors) {
+    return { photos: [], errors: result.errors };
+  }
+  return { photos: result.data?.progressPhotos ?? [], errors: [] };
+}
+
+export async function deleteProgressPhoto(
+  endpoint: string,
+  photoId: string,
+  authorization?: string,
+): Promise<DeletePhotoResult> {
+  const result = await executeGraphQL<{ deleteProgressPhoto: DeletePhotoResult }>(
+    endpoint,
+    deleteProgressPhotoMutation,
+    { photoId },
+    authorization,
+  );
+  if (result.errors) {
+    return { success: false, errors: result.errors };
+  }
+  return result.data?.deleteProgressPhoto ?? { success: false, errors: [] };
+}
+
 
 

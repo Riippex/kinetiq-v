@@ -9,6 +9,24 @@ from kinetiq.modules.goals.application import (
 )
 from kinetiq.modules.goals.infrastructure.repositories import DjangoGoalRepository
 from kinetiq.modules.integrations import VisionClientConfig, VisionRestAdapter
+from kinetiq.modules.media.application import (
+    DeleteProgressPhotoUseCase,
+    FinalizeProgressPhotoUseCase,
+    ListProgressPhotosUseCase,
+    MediaStoragePort,
+    RequestProgressPhotoUploadUseCase,
+)
+from kinetiq.modules.media.infrastructure.repositories import (
+    DjangoProgressPhotoRepository,
+    LogMediaEventPublisher,
+)
+from kinetiq.modules.media.infrastructure.repositories import (
+    DjangoWorkoutSessionLookup as DjangoMediaWorkoutSessionLookup,
+)
+from kinetiq.modules.media.infrastructure.storage import (
+    InMemoryMediaStorageAdapter,
+    S3MediaStorageAdapter,
+)
 from kinetiq.modules.profiles.application import GetProfileUseCase, UpdateProfileUseCase
 from kinetiq.modules.profiles.infrastructure.repositories import DjangoProfileRepository
 from kinetiq.modules.progress.application import GetProgressSummaryUseCase
@@ -248,3 +266,61 @@ def get_progress_summary() -> GetProgressSummaryUseCase:
         profile_lookup=DjangoProgressProfileLookup(),
         goal_lookup=DjangoProgressGoalLookup(),
     )
+
+
+_in_memory_media_storage: InMemoryMediaStorageAdapter | None = None
+
+
+def get_media_storage() -> MediaStoragePort:
+    global _in_memory_media_storage
+    if getattr(django_settings, "USE_IN_MEMORY_MEDIA_STORAGE", False):
+        if _in_memory_media_storage is None:
+            _in_memory_media_storage = InMemoryMediaStorageAdapter()
+        return _in_memory_media_storage
+
+    try:
+        import boto3  # noqa: F401 # type: ignore[import-not-found]
+
+        return S3MediaStorageAdapter(
+            bucket_name=django_settings.MEDIA_S3_BUCKET,
+            region=django_settings.MEDIA_S3_REGION,
+            endpoint_url=getattr(django_settings, "MEDIA_S3_ENDPOINT_URL", None),
+        )
+    except Exception:
+        if _in_memory_media_storage is None:
+            _in_memory_media_storage = InMemoryMediaStorageAdapter()
+        return _in_memory_media_storage
+
+
+def request_progress_photo_upload() -> RequestProgressPhotoUploadUseCase:
+    return RequestProgressPhotoUploadUseCase(
+        repository=DjangoProgressPhotoRepository(),
+        storage=get_media_storage(),
+        session_lookup=DjangoMediaWorkoutSessionLookup(),
+        ttl_seconds=getattr(django_settings, "MEDIA_PRESIGNED_EXPIRY_SECONDS", 900),
+    )
+
+
+def finalize_progress_photo() -> FinalizeProgressPhotoUseCase:
+    return FinalizeProgressPhotoUseCase(
+        repository=DjangoProgressPhotoRepository(),
+        storage=get_media_storage(),
+        ttl_seconds=getattr(django_settings, "MEDIA_PRESIGNED_EXPIRY_SECONDS", 900),
+    )
+
+
+def list_progress_photos() -> ListProgressPhotosUseCase:
+    return ListProgressPhotosUseCase(
+        repository=DjangoProgressPhotoRepository(),
+        storage=get_media_storage(),
+        ttl_seconds=getattr(django_settings, "MEDIA_PRESIGNED_EXPIRY_SECONDS", 900),
+    )
+
+
+def delete_progress_photo() -> DeleteProgressPhotoUseCase:
+    return DeleteProgressPhotoUseCase(
+        repository=DjangoProgressPhotoRepository(),
+        storage=get_media_storage(),
+        event_publisher=LogMediaEventPublisher(),
+    )
+

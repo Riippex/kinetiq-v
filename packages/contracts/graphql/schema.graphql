@@ -181,6 +181,19 @@ type SessionResult { session: WorkoutSession errors: [DomainError!]! }
 type PairingChallenge { id: ID! userCode: String! expiresAt: DateTime! }
 type PairingResult { approved: Boolean! errors: [DomainError!]! }
 type UploadRequest { photoId: ID! uploadUrl: String! expiresAt: DateTime! }
+type UploadRequestResult { uploadRequest: UploadRequest errors: [DomainError!]! }
+type ProgressPhoto {
+  id: ID!
+  sessionId: ID
+  contentType: String!
+  byteLength: Int!
+  url: String!
+  status: String!
+  createdAt: DateTime!
+  confirmedAt: DateTime
+}
+type ProgressPhotoResult { photo: ProgressPhoto errors: [DomainError!]! }
+type DeletePhotoResult { success: Boolean! errors: [DomainError!]! }
 type ServiceStatus { name: String! version: String! ready: Boolean! }
 enum DisplayDeviceType { FIRE_TV VEGA_OS }
 enum DisplayPairingStatus { UNPAIRED PAIRED EXPIRED }
@@ -253,6 +266,7 @@ type Query {
   transientSessionState(sessionId: ID!): TransientSessionUpdate
   sessionDynamicChallenges(sessionId: ID!): [DynamicChallenge!]!
   displaySessionState(code: String!): DisplaySessionState!
+  progressPhotos(sessionId: ID): [ProgressPhoto!]!
 }
 type Mutation {
   updateProfile(input: UpdateProfileInput!): ProfileResult!
@@ -281,8 +295,13 @@ type Mutation {
   issueDisplayPairingCode(deviceType: DisplayDeviceType!): DisplayPairingCode!
   pairDisplayDevice(code: String!, sessionId: ID): DisplaySessionState!
   approveDisplay(userCode: String!, sessionId: ID!): PairingResult!
-  requestProgressPhotoUpload(sessionId: ID!, contentType: String!, byteLength: Int!, idempotencyKey: String!): UploadRequest!
-  finalizeProgressPhoto(photoId: ID!): Boolean!
-  deleteProgressPhoto(photoId: ID!): Boolean!
+  requestProgressPhotoUpload(
+    contentType: String!
+    byteLength: Int!
+    idempotencyKey: String!
+    sessionId: ID
+  ): UploadRequestResult!
+  finalizeProgressPhoto(photoId: ID!): ProgressPhotoResult!
+  deleteProgressPhoto(photoId: ID!): DeletePhotoResult!
 }
 type Subscription { transientSessionUpdates(sessionId: ID!): TransientSessionUpdate! }

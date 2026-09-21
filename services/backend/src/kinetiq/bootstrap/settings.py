@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     "kinetiq.modules.catalog.infrastructure.apps.CatalogConfig",
     "kinetiq.modules.routines.infrastructure.apps.RoutinesConfig",
     "kinetiq.modules.workouts.infrastructure.apps.WorkoutsConfig",
+    "kinetiq.modules.media.infrastructure.apps.MediaConfig",
 ]
 
 MIDDLEWARE = [
@@ -109,3 +110,12 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "kinetiq_identity.User"
+
+# Private S3 media settings
+MEDIA_S3_BUCKET = os.getenv("MEDIA_S3_BUCKET", "kinetiq-media-private")
+MEDIA_S3_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1"))
+MEDIA_PRESIGNED_EXPIRY_SECONDS = int(os.getenv("MEDIA_PRESIGNED_EXPIRY_SECONDS", "900"))
+MEDIA_S3_ENDPOINT_URL = os.getenv("MEDIA_S3_ENDPOINT_URL", None)
+USE_IN_MEMORY_MEDIA_STORAGE = (
+    os.getenv("USE_IN_MEMORY_MEDIA_STORAGE", "false").lower() == "true"
+)

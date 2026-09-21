@@ -1211,4 +1211,153 @@ test('fetchProgressSummary queries progress and returns ProgressSummary', async 
   }
 });
 
+// --- Media Progress Photo operations ---------------------------------------
+
+test('requestProgressPhotoUpload sends mutation and returns upload request', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.variables.contentType, 'image/jpeg');
+      assert.equal(body.variables.byteLength, 1024);
+      assert.equal(body.variables.idempotencyKey, 'idem-photo-1');
+      assert.equal(body.variables.sessionId, 'sess-123');
+
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            requestProgressPhotoUpload: {
+              uploadRequest: {
+                photoId: 'photo-uuid-1',
+                uploadUrl: 'https://s3.local/upload?signed=true',
+                expiresAt: '2026-09-21T00:15:00Z',
+              },
+              errors: [],
+            },
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await indexModule.requestProgressPhotoUpload('http://localhost/graphql', {
+      contentType: 'image/jpeg',
+      byteLength: 1024,
+      idempotencyKey: 'idem-photo-1',
+      sessionId: 'sess-123',
+    });
+
+    assert.equal(res.errors.length, 0);
+    assert.equal(res.uploadRequest?.photoId, 'photo-uuid-1');
+    assert.equal(res.uploadRequest?.uploadUrl, 'https://s3.local/upload?signed=true');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('finalizeProgressPhoto submits photoId and returns confirmed photo', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.variables.photoId, 'photo-uuid-1');
+
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            finalizeProgressPhoto: {
+              photo: {
+                id: 'photo-uuid-1',
+                sessionId: 'sess-123',
+                contentType: 'image/jpeg',
+                byteLength: 1024,
+                url: 'https://s3.local/download?signed=true',
+                status: 'CONFIRMED',
+                createdAt: '2026-09-21T00:00:00Z',
+                confirmedAt: '2026-09-21T00:02:00Z',
+              },
+              errors: [],
+            },
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await indexModule.finalizeProgressPhoto('http://localhost/graphql', 'photo-uuid-1');
+    assert.equal(res.errors.length, 0);
+    assert.equal(res.photo?.id, 'photo-uuid-1');
+    assert.equal(res.photo?.status, 'CONFIRMED');
+    assert.equal(res.photo?.url, 'https://s3.local/download?signed=true');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchProgressPhotos queries photo list with optional sessionId filter', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.variables.sessionId, 'sess-123');
+
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            progressPhotos: [
+              {
+                id: 'photo-1',
+                sessionId: 'sess-123',
+                contentType: 'image/png',
+                byteLength: 2048,
+                url: 'https://s3.local/photo-1',
+                status: 'CONFIRMED',
+                createdAt: '2026-09-21T00:00:00Z',
+                confirmedAt: '2026-09-21T00:01:00Z',
+              },
+            ],
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await indexModule.fetchProgressPhotos('http://localhost/graphql', 'sess-123');
+    assert.equal(res.errors.length, 0);
+    assert.equal(res.photos.length, 1);
+    assert.equal(res.photos[0].id, 'photo-1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('deleteProgressPhoto executes mutation and returns success result', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.variables.photoId, 'photo-1');
+
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            deleteProgressPhoto: {
+              success: true,
+              errors: [],
+            },
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await indexModule.deleteProgressPhoto('http://localhost/graphql', 'photo-1');
+    assert.equal(res.errors.length, 0);
+    assert.equal(res.success, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
 

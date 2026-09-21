@@ -14,8 +14,10 @@ from kinetiq.bootstrap.container import (
     abandon_workout_session,
     accept_routine,
     confirm_session_target,
+    delete_progress_photo,
     disable_dynamic_mode,
     edit_routine,
+    finalize_progress_photo,
     finish_workout_session,
     get_active_goal,
     get_current_routine,
@@ -29,12 +31,14 @@ from kinetiq.bootstrap.container import (
     issue_display_pairing_code,
     list_catalog_exercises,
     list_goal_revisions,
+    list_progress_photos,
     list_vision_candidates,
     pair_display_device,
     pause_workout_session,
     prepare_workout_session,
     propose_routine,
     record_session_feedback,
+    request_progress_photo_upload,
     resume_workout_session,
     set_goal,
     skip_dynamic_challenge,
@@ -46,6 +50,15 @@ from kinetiq.modules.catalog.domain.entities import Exercise
 from kinetiq.modules.goals.application import SetGoalCommand
 from kinetiq.modules.goals.domain import GoalRevision
 from kinetiq.modules.integrations.vision_adapter import VisionAdapterError, VisionStaleEpochError
+from kinetiq.modules.media.domain import (
+    IdempotencyConflictError as MediaIdempotencyConflictError,
+)
+from kinetiq.modules.media.domain import (
+    MediaPayloadTooLargeError,
+    MediaUploadNotCompletedError,
+    PhotoNotFoundError,
+    UnsupportedMediaTypeError,
+)
 from kinetiq.modules.profiles.application import UpdateProfileCommand
 from kinetiq.modules.profiles.domain import ExperienceLevel, UserProfile
 from kinetiq.modules.routines.application import EditRoutineCommand, RoutineEditItem
@@ -553,6 +566,43 @@ class TransientSessionUpdateType:
     timestamp: str | None = None
 
 
+@strawberry.type(name="UploadRequest")
+class UploadRequestType:
+    photo_id: strawberry.ID
+    upload_url: str
+    expires_at: datetime
+
+
+@strawberry.type(name="UploadRequestResult")
+class UploadRequestResultType:
+    upload_request: UploadRequestType | None
+    errors: list[DomainError]
+
+
+@strawberry.type(name="ProgressPhoto")
+class ProgressPhotoType:
+    id: strawberry.ID
+    session_id: strawberry.ID | None
+    content_type: str
+    byte_length: int
+    url: str
+    status: str
+    created_at: datetime
+    confirmed_at: datetime | None
+
+
+@strawberry.type(name="ProgressPhotoResult")
+class ProgressPhotoResultType:
+    photo: ProgressPhotoType | None
+    errors: list[DomainError]
+
+
+@strawberry.type(name="DeletePhotoResult")
+class DeletePhotoResultType:
+    success: bool
+    errors: list[DomainError]
+
+
 @strawberry.type
 class Query:
     @strawberry.field
@@ -778,6 +828,38 @@ class Query:
             performance_projections=projections,
             goal_progress=goal_progress,
         )
+
+    @strawberry.field
+    def progress_photos(
+        self, info: Info[Any, None], session_id: strawberry.ID | None = None
+    ) -> list[ProgressPhotoType]:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            raise PermissionError(
+                "AUTHENTICATION_REQUIRED: Sign in before accessing progress photos"
+            )
+
+        session_uuid = None
+        if session_id is not None:
+            try:
+                session_uuid = UUID(str(session_id))
+            except (ValueError, TypeError):
+                return []
+
+        photos = list_progress_photos().execute(owner_id=owner_id, session_id=session_uuid)
+        return [
+            ProgressPhotoType(
+                id=strawberry.ID(str(p.id)),
+                session_id=strawberry.ID(str(p.session_id)) if p.session_id else None,
+                content_type=p.content_type,
+                byte_length=p.byte_length,
+                url=p.url,
+                status=p.status,
+                created_at=p.created_at,
+                confirmed_at=p.confirmed_at,
+            )
+            for p in photos
+        ]
 
 
 @strawberry.type
@@ -1381,6 +1463,202 @@ class Mutation:
             owner_id=str(owner_id), code=code, session_id=session_uuid_str
         )
         return _to_display_session_state_graphql(code)
+
+    @strawberry.mutation
+    def request_progress_photo_upload(
+        self,
+        info: Info[Any, None],
+        content_type: str,
+        byte_length: int,
+        idempotency_key: str,
+        session_id: strawberry.ID | None = None,
+    ) -> UploadRequestResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return UploadRequestResultType(
+                upload_request=None,
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before requesting photo upload",
+                    )
+                ],
+            )
+
+        session_uuid = None
+        if session_id is not None:
+            try:
+                session_uuid = UUID(str(session_id))
+            except (ValueError, TypeError) as error:
+                return UploadRequestResultType(
+                    upload_request=None,
+                    errors=[
+                        DomainError(
+                            code="INVALID_INPUT",
+                            message=f"Invalid session ID: {error}",
+                            field="sessionId",
+                        )
+                    ],
+                )
+
+        try:
+            req = request_progress_photo_upload().execute(
+                owner_id=owner_id,
+                session_id=session_uuid,
+                content_type=content_type,
+                byte_length=byte_length,
+                idempotency_key=idempotency_key,
+            )
+            return UploadRequestResultType(
+                upload_request=UploadRequestType(
+                    photo_id=strawberry.ID(str(req.photo_id)),
+                    upload_url=req.upload_url,
+                    expires_at=req.expires_at,
+                ),
+                errors=[],
+            )
+        except UnsupportedMediaTypeError as exc:
+            return UploadRequestResultType(
+                upload_request=None,
+                errors=[
+                    DomainError(
+                        code="UNSUPPORTED_MEDIA_TYPE",
+                        message=str(exc),
+                        field="contentType",
+                    )
+                ],
+            )
+        except MediaPayloadTooLargeError as exc:
+            return UploadRequestResultType(
+                upload_request=None,
+                errors=[
+                    DomainError(
+                        code="PAYLOAD_TOO_LARGE",
+                        message=str(exc),
+                        field="byteLength",
+                    )
+                ],
+            )
+        except MediaIdempotencyConflictError as exc:
+            return UploadRequestResultType(
+                upload_request=None,
+                errors=[
+                    DomainError(
+                        code="IDEMPOTENCY_CONFLICT",
+                        message=str(exc),
+                        field="idempotencyKey",
+                    )
+                ],
+            )
+        except (ValueError, TypeError) as exc:
+            return UploadRequestResultType(
+                upload_request=None,
+                errors=[DomainError(code="INVALID_INPUT", message=str(exc))],
+            )
+
+    @strawberry.mutation
+    def finalize_progress_photo(
+        self, info: Info[Any, None], photo_id: strawberry.ID
+    ) -> ProgressPhotoResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return ProgressPhotoResultType(
+                photo=None,
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before finalizing photo",
+                    )
+                ],
+            )
+        try:
+            photo_uuid = UUID(str(photo_id))
+        except (ValueError, TypeError) as error:
+            return ProgressPhotoResultType(
+                photo=None,
+                errors=[
+                    DomainError(
+                        code="INVALID_INPUT",
+                        message=f"Invalid photo ID: {error}",
+                        field="photoId",
+                    )
+                ],
+            )
+
+        try:
+            p = finalize_progress_photo().execute(owner_id=owner_id, photo_id=photo_uuid)
+            return ProgressPhotoResultType(
+                photo=ProgressPhotoType(
+                    id=strawberry.ID(str(p.id)),
+                    session_id=strawberry.ID(str(p.session_id)) if p.session_id else None,
+                    content_type=p.content_type,
+                    byte_length=p.byte_length,
+                    url=p.url,
+                    status=p.status,
+                    created_at=p.created_at,
+                    confirmed_at=p.confirmed_at,
+                ),
+                errors=[],
+            )
+        except PhotoNotFoundError as exc:
+            return ProgressPhotoResultType(
+                photo=None,
+                errors=[DomainError(code="PHOTO_NOT_FOUND", message=str(exc), field="photoId")],
+            )
+        except MediaUploadNotCompletedError as exc:
+            return ProgressPhotoResultType(
+                photo=None,
+                errors=[DomainError(code="UPLOAD_NOT_COMPLETED", message=str(exc))],
+            )
+        except (ValueError, TypeError) as exc:
+            return ProgressPhotoResultType(
+                photo=None,
+                errors=[DomainError(code="INVALID_INPUT", message=str(exc))],
+            )
+
+    @strawberry.mutation
+    def delete_progress_photo(
+        self, info: Info[Any, None], photo_id: strawberry.ID
+    ) -> DeletePhotoResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return DeletePhotoResultType(
+                success=False,
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before deleting photo",
+                    )
+                ],
+            )
+        try:
+            photo_uuid = UUID(str(photo_id))
+        except (ValueError, TypeError) as error:
+            return DeletePhotoResultType(
+                success=False,
+                errors=[
+                    DomainError(
+                        code="INVALID_INPUT",
+                        message=f"Invalid photo ID: {error}",
+                        field="photoId",
+                    )
+                ],
+            )
+
+        try:
+            success = delete_progress_photo().execute(owner_id=owner_id, photo_id=photo_uuid)
+            return DeletePhotoResultType(success=success, errors=[])
+        except PhotoNotFoundError as exc:
+            return DeletePhotoResultType(
+                success=False,
+                errors=[DomainError(code="PHOTO_NOT_FOUND", message=str(exc), field="photoId")],
+            )
+        except (ValueError, TypeError) as exc:
+            return DeletePhotoResultType(
+                success=False,
+                errors=[DomainError(code="INVALID_INPUT", message=str(exc))],
+            )
+
 
 
 def _handle_session_lifecycle(
