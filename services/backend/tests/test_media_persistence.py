@@ -20,27 +20,33 @@ from kinetiq.bootstrap.container import (
     finalize_progress_photo,
     get_media_storage,
     process_media_cleanup,
+    reconcile_abandoned_uploads,
     request_progress_photo_upload,
 )
 from kinetiq.modules.identity.infrastructure.models import User
-from kinetiq.modules.media.application import upload_request_fingerprint
+from kinetiq.modules.media.application import MediaEventOutboxService, upload_request_fingerprint
 from kinetiq.modules.media.domain import (
+    MAX_PENDING_UPLOADS_PER_OWNER,
     IdempotencyConflictError,
     InvalidPhotoStateError,
     MediaCleanupReason,
     MediaCleanupStatus,
+    MediaEventStatus,
     PhotoNotFoundError,
     ProgressPhoto,
     ProgressPhotoStatus,
+    TooManyPendingUploadsError,
 )
 from kinetiq.modules.media.infrastructure import repositories
 from kinetiq.modules.media.infrastructure.models import (
     MediaCleanupJobRecord,
+    MediaEventOutboxRecord,
     MediaUploadReceiptRecord,
     ProgressPhotoRecord,
 )
 from kinetiq.modules.media.infrastructure.repositories import (
     DjangoMediaCleanupRepository,
+    DjangoMediaEventOutboxRepository,
     DjangoProgressPhotoRepository,
 )
 from kinetiq.modules.media.infrastructure.storage import (
@@ -482,6 +488,196 @@ def test_worker_retries_after_outage_and_completes_with_the_real_repository() ->
     assert not storage.has_object(s3_key=s3_key)
     job.refresh_from_db()
     assert job.status == "DONE" and job.completed_at is not None
+
+
+@pytest.mark.django_db
+def test_request_upload_is_rejected_once_the_owner_is_at_the_pending_cap() -> None:
+    """Fifth Codex adversarial-review pass: bounds unfinalized-upload
+    accumulation against the real repository."""
+    owner = User.objects.create_user(username="quota-owner")
+    _storage()
+    use_case = request_progress_photo_upload()
+    for i in range(MAX_PENDING_UPLOADS_PER_OWNER):
+        use_case.execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key=f"quota-{i}",
+        )
+    assert ProgressPhotoRecord.objects.filter(owner=owner, status="PENDING_UPLOAD").count() == (
+        MAX_PENDING_UPLOADS_PER_OWNER
+    )
+
+    with pytest.raises(TooManyPendingUploadsError):
+        use_case.execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key="quota-over",
+        )
+
+    # Cleanly rolled back: still exactly the cap, not cap+1.
+    assert ProgressPhotoRecord.objects.filter(owner=owner, status="PENDING_UPLOAD").count() == (
+        MAX_PENDING_UPLOADS_PER_OWNER
+    )
+    assert ProgressPhotoRecord.objects.filter(owner=owner, status="DELETED").count() == 1
+
+
+@pytest.mark.django_db
+def test_reconcile_abandoned_uploads_tombstones_expired_pending_uploads() -> None:
+    owner = User.objects.create_user(username="reconcile-owner")
+    _storage()
+    photo_id = request_progress_photo_upload().execute(
+        owner_id=owner.id,
+        session_id=None,
+        content_type="image/jpeg",
+        byte_length=8,
+        idempotency_key="abandoned",
+    ).photo_id
+
+    # Not due yet: the authorization window is still open.
+    assert reconcile_abandoned_uploads().execute().reconciled == 0
+    assert ProgressPhotoRecord.objects.get(id=photo_id).status == "PENDING_UPLOAD"
+
+    ProgressPhotoRecord.objects.filter(id=photo_id).update(
+        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
+    )
+
+    result = reconcile_abandoned_uploads().execute()
+
+    assert result.reconciled == 1
+    record = ProgressPhotoRecord.objects.get(id=photo_id)
+    assert record.status == "DELETED"
+    assert MediaCleanupJobRecord.objects.filter(photo_id=photo_id).count() == 1
+    # Idempotent: nothing left to reconcile.
+    assert reconcile_abandoned_uploads().execute().reconciled == 0
+
+
+@pytest.mark.django_db
+def test_management_command_reconciles_abandoned_uploads() -> None:
+    owner = User.objects.create_user(username="command-reconcile-owner")
+    storage = _storage()
+    photo_id = request_progress_photo_upload().execute(
+        owner_id=owner.id,
+        session_id=None,
+        content_type="image/jpeg",
+        byte_length=8,
+        idempotency_key="abandoned-cmd",
+    ).photo_id
+    ProgressPhotoRecord.objects.filter(id=photo_id).update(
+        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
+    )
+
+    out = StringIO()
+    call_command("process_media_cleanup", stdout=out)
+
+    assert "reconciled=1" in out.getvalue()
+    assert ProgressPhotoRecord.objects.get(id=photo_id).status == "DELETED"
+    assert not storage.has_object(s3_key=ProgressPhotoRecord.objects.get(id=photo_id).s3_key)
+
+
+@pytest.mark.django_db
+def test_photo_deletion_atomically_enqueues_its_event_with_job_completion() -> None:
+    """Fifth Codex adversarial-review pass: the durable outbox event for
+    ProgressPhotoDeleted.v1 is recorded in the SAME transaction as the
+    cleanup job's completion (DjangoMediaCleanupRepository.
+    mark_done_and_enqueue_deleted_event), not as a fire-and-forget publish
+    attempted afterward -- so a crash between the two can never lose it."""
+    owner = User.objects.create_user(username="outbox-atomicity")
+    storage = _storage()
+    photo_id = request_progress_photo_upload().execute(
+        owner_id=owner.id,
+        session_id=None,
+        content_type="image/jpeg",
+        byte_length=8,
+        idempotency_key="k",
+    ).photo_id
+    ProgressPhotoRecord.objects.filter(id=photo_id).update(
+        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
+    )
+
+    assert MediaEventOutboxRecord.objects.count() == 0
+    result = delete_progress_photo().execute(owner_id=owner.id, photo_id=photo_id)
+
+    assert result.storage_cleanup == MediaCleanupStatus.DONE
+    assert not storage.has_object(s3_key=ProgressPhotoRecord.objects.get(id=photo_id).s3_key)
+    event = MediaEventOutboxRecord.objects.get(photo_id=photo_id)
+    assert event.owner_id == owner.id
+    assert event.status == "PENDING"
+    assert event.event_type == "ProgressPhotoDeleted.v1"
+
+
+@pytest.mark.django_db
+def test_event_outbox_retries_a_failing_publisher_without_losing_the_event() -> None:
+    owner = User.objects.create_user(username="outbox-retry")
+    _storage()
+    photo_id = request_progress_photo_upload().execute(
+        owner_id=owner.id,
+        session_id=None,
+        content_type="image/jpeg",
+        byte_length=8,
+        idempotency_key="k",
+    ).photo_id
+    ProgressPhotoRecord.objects.filter(id=photo_id).update(
+        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
+    )
+    delete_progress_photo().execute(owner_id=owner.id, photo_id=photo_id)
+    (event_id,) = MediaEventOutboxRecord.objects.values_list("id", flat=True)
+
+    class FailOnceThenSucceedPublisher:
+        def __init__(self) -> None:
+            self.attempts = 0
+            self.delivered: list[tuple[Any, Any]] = []
+
+        def publish_photo_deleted(self, *, photo_id: Any, owner_id: Any) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("bus unreachable")
+            self.delivered.append((photo_id, owner_id))
+
+    publisher = FailOnceThenSucceedPublisher()
+    outbox = MediaEventOutboxService(
+        repository=DjangoMediaEventOutboxRepository(), publisher=publisher, base_backoff_seconds=30
+    )
+
+    first = outbox.attempt(event_id)
+    assert first == MediaEventStatus.PENDING
+    assert publisher.delivered == []
+    record = MediaEventOutboxRecord.objects.get(id=event_id)
+    assert record.status == "PENDING" and "bus unreachable" in (record.last_error or "")
+
+    MediaEventOutboxRecord.objects.filter(id=event_id).update(next_attempt_at=datetime.now(UTC))
+    second = outbox.attempt(event_id)
+
+    assert second == MediaEventStatus.DONE
+    assert publisher.delivered == [(photo_id, owner.id)]
+    assert MediaEventOutboxRecord.objects.get(id=event_id).status == "DONE"
+
+
+@pytest.mark.django_db
+def test_management_command_delivers_the_outboxed_event() -> None:
+    owner = User.objects.create_user(username="outbox-command-deliver")
+    _storage()
+    photo_id = request_progress_photo_upload().execute(
+        owner_id=owner.id,
+        session_id=None,
+        content_type="image/jpeg",
+        byte_length=8,
+        idempotency_key="k",
+    ).photo_id
+    ProgressPhotoRecord.objects.filter(id=photo_id).update(
+        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
+    )
+    delete_progress_photo().execute(owner_id=owner.id, photo_id=photo_id)
+    assert MediaEventOutboxRecord.objects.get(photo_id=photo_id).status == "PENDING"
+
+    out = StringIO()
+    call_command("process_media_cleanup", stdout=out)
+
+    assert "events_completed=1" in out.getvalue()
+    assert MediaEventOutboxRecord.objects.get(photo_id=photo_id).status == "DONE"
 
 
 @pytest.mark.django_db

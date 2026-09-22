@@ -1,6 +1,11 @@
 from kinetiq.modules.media.application.cleanup import CleanupRunSummary, MediaCleanupService
+from kinetiq.modules.media.application.event_outbox import (
+    MediaEventOutboxService,
+    OutboxRunSummary,
+)
 from kinetiq.modules.media.application.ports import (
     MediaCleanupRepository,
+    MediaEventOutboxRepository,
     MediaEventPublisher,
     MediaStoragePort,
     ProgressPhotoRepository,
@@ -12,6 +17,8 @@ from kinetiq.modules.media.application.use_cases import (
     FinalizeProgressPhotoUseCase,
     ListProgressPhotosUseCase,
     ProgressPhotoDTO,
+    ReconcileAbandonedUploadsResult,
+    ReconcileAbandonedUploadsUseCase,
     RequestProgressPhotoUploadUseCase,
     UploadRequestDTO,
     upload_request_fingerprint,
@@ -25,10 +32,15 @@ __all__ = [
     "ListProgressPhotosUseCase",
     "MediaCleanupRepository",
     "MediaCleanupService",
+    "MediaEventOutboxRepository",
+    "MediaEventOutboxService",
     "MediaEventPublisher",
     "MediaStoragePort",
+    "OutboxRunSummary",
     "ProgressPhotoDTO",
     "ProgressPhotoRepository",
+    "ReconcileAbandonedUploadsResult",
+    "ReconcileAbandonedUploadsUseCase",
     "RequestProgressPhotoUploadUseCase",
     "UploadRequestDTO",
     "WorkoutSessionLookup",

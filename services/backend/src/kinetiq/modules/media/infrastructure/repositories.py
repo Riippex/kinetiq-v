@@ -9,6 +9,7 @@ from django.db.models import Count, F
 
 from kinetiq.modules.media.application.ports import (
     MediaCleanupRepository,
+    MediaEventOutboxRepository,
     MediaEventPublisher,
     ProgressPhotoRepository,
     WorkoutSessionLookup,
@@ -18,11 +19,14 @@ from kinetiq.modules.media.domain.entities import (
     MediaCleanupJob,
     MediaCleanupReason,
     MediaCleanupStatus,
+    MediaEventStatus,
     ProgressPhoto,
+    ProgressPhotoDeletedEvent,
     ProgressPhotoStatus,
 )
 from kinetiq.modules.media.infrastructure.models import (
     MediaCleanupJobRecord,
+    MediaEventOutboxRecord,
     MediaUploadReceiptRecord,
     ProgressPhotoRecord,
 )
@@ -61,6 +65,20 @@ def _job_to_domain(record: MediaCleanupJobRecord) -> MediaCleanupJob:
         last_error=record.last_error,
         completed_at=record.completed_at,
         verify_after=record.verify_after,
+    )
+
+
+def _event_to_domain(record: MediaEventOutboxRecord) -> ProgressPhotoDeletedEvent:
+    return ProgressPhotoDeletedEvent(
+        id=record.id,
+        owner_id=record.owner_id,
+        photo_id=record.photo_id,
+        status=MediaEventStatus(record.status),
+        attempts=record.attempts,
+        next_attempt_at=record.next_attempt_at,
+        created_at=record.created_at,
+        last_error=record.last_error,
+        completed_at=record.completed_at,
     )
 
 
@@ -234,6 +252,24 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
             )
             return _record_to_domain(record), job
 
+    def count_pending_uploads(self, *, owner_id: UUID) -> int:
+        return ProgressPhotoRecord.objects.filter(
+            owner_id=owner_id, status=ProgressPhotoStatus.PENDING_UPLOAD.value
+        ).count()
+
+    def find_abandoned_pending_upload_ids(
+        self, *, older_than: datetime, limit: int
+    ) -> list[tuple[UUID, UUID]]:
+        return list(
+            ProgressPhotoRecord.objects.filter(
+                status=ProgressPhotoStatus.PENDING_UPLOAD.value,
+                upload_authorized_until__isnull=False,
+                upload_authorized_until__lt=older_than,
+            )
+            .order_by("upload_authorized_until")
+            .values_list("id", "owner_id")[:limit]
+        )
+
 
 class DjangoMediaCleanupRepository(MediaCleanupRepository):
     def enqueue(
@@ -284,6 +320,21 @@ class DjangoMediaCleanupRepository(MediaCleanupRepository):
             status=MediaCleanupStatus.DONE.value, completed_at=at, last_error=None
         )
 
+    def mark_done_and_enqueue_deleted_event(
+        self, *, job_id: UUID, photo_id: UUID, owner_id: UUID, at: datetime
+    ) -> None:
+        with transaction.atomic():
+            MediaCleanupJobRecord.objects.filter(id=job_id).update(
+                status=MediaCleanupStatus.DONE.value, completed_at=at, last_error=None
+            )
+            MediaEventOutboxRecord.objects.create(
+                owner_id=owner_id,
+                photo_id=photo_id,
+                event_type="ProgressPhotoDeleted.v1",
+                status=MediaEventStatus.PENDING.value,
+                next_attempt_at=at,
+            )
+
     def defer_verification(self, *, job_id: UUID, next_attempt_at: datetime) -> MediaCleanupJob:
         MediaCleanupJobRecord.objects.filter(id=job_id).update(next_attempt_at=next_attempt_at)
         return _job_to_domain(MediaCleanupJobRecord.objects.get(id=job_id))
@@ -309,13 +360,73 @@ class DjangoMediaCleanupRepository(MediaCleanupRepository):
         return {row["status"]: row["total"] for row in rows}
 
 
+class DjangoMediaEventOutboxRepository(MediaEventOutboxRepository):
+    def claim(
+        self, *, event_id: UUID, now: datetime, lease_seconds: int
+    ) -> ProgressPhotoDeletedEvent | None:
+        # Same single-conditional-UPDATE arbiter as MediaCleanupJobRecord.claim.
+        claimed = MediaEventOutboxRecord.objects.filter(
+            id=event_id,
+            status=MediaEventStatus.PENDING.value,
+            next_attempt_at__lte=now,
+        ).update(
+            next_attempt_at=now + timedelta(seconds=lease_seconds),
+            attempts=F("attempts") + 1,
+        )
+        if claimed != 1:
+            return None
+        return _event_to_domain(MediaEventOutboxRecord.objects.get(id=event_id))
+
+    def due_event_ids(self, *, now: datetime, limit: int) -> list[UUID]:
+        return list(
+            MediaEventOutboxRecord.objects.filter(
+                status=MediaEventStatus.PENDING.value, next_attempt_at__lte=now
+            )
+            .order_by("next_attempt_at")
+            .values_list("id", flat=True)[:limit]
+        )
+
+    def mark_done(self, *, event_id: UUID, at: datetime) -> None:
+        MediaEventOutboxRecord.objects.filter(id=event_id).update(
+            status=MediaEventStatus.DONE.value, completed_at=at, last_error=None
+        )
+
+    def mark_retry(
+        self, *, event_id: UUID, error: str, next_attempt_at: datetime
+    ) -> ProgressPhotoDeletedEvent:
+        MediaEventOutboxRecord.objects.filter(id=event_id).update(
+            last_error=error, next_attempt_at=next_attempt_at
+        )
+        return _event_to_domain(MediaEventOutboxRecord.objects.get(id=event_id))
+
+    def mark_dead_letter(
+        self, *, event_id: UUID, error: str, at: datetime
+    ) -> ProgressPhotoDeletedEvent:
+        MediaEventOutboxRecord.objects.filter(id=event_id).update(
+            status=MediaEventStatus.DEAD_LETTER.value, last_error=error, completed_at=at
+        )
+        return _event_to_domain(MediaEventOutboxRecord.objects.get(id=event_id))
+
+    def get(self, *, event_id: UUID) -> ProgressPhotoDeletedEvent | None:
+        record = MediaEventOutboxRecord.objects.filter(id=event_id).first()
+        return None if record is None else _event_to_domain(record)
+
+    def counts_by_status(self) -> dict[str, int]:
+        rows = MediaEventOutboxRecord.objects.values("status").annotate(total=Count("id"))
+        return {row["status"]: row["total"] for row in rows}
+
+
 class DjangoWorkoutSessionLookup(WorkoutSessionLookup):
     def is_valid_owned_session(self, *, owner_id: UUID, session_id: UUID) -> bool:
         return WorkoutSessionRecord.objects.filter(id=session_id, owner_id=owner_id).exists()
 
 
 class LogMediaEventPublisher(MediaEventPublisher):
-    """Emits ProgressPhotoDeleted.v1 business event."""
+    """Leaf delivery adapter for ProgressPhotoDeleted.v1: called only by
+    `MediaEventOutboxService`, which owns the durable claim/retry/
+    dead-letter discipline. No downstream event bus is wired yet, so
+    delivery here means logged; a real bus can be substituted without
+    changing the outbox's durability guarantees."""
 
     def publish_photo_deleted(self, *, photo_id: UUID, owner_id: UUID) -> None:
         logger.info(

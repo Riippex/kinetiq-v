@@ -7,6 +7,11 @@ from uuid import UUID
 
 ALLOWED_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 MAX_PHOTO_BYTE_LENGTH = 10 * 1024 * 1024  # 10 MB
+# Bounds worst-case private-storage/DB accumulation from an interrupted or
+# abusive client between reconciler runs (see
+# ReconcileAbandonedUploadsUseCase, which durably cleans up every
+# PENDING_UPLOAD past its authorization window regardless of this cap).
+MAX_PENDING_UPLOADS_PER_OWNER = 20
 
 
 class ProgressPhotoStatus(StrEnum):
@@ -54,6 +59,12 @@ class MediaUploadRejectedError(MediaError):
 
 class MediaStorageError(MediaError):
     """Raised when the object store fails to complete an operation."""
+
+
+class TooManyPendingUploadsError(MediaError):
+    """Raised when an owner already has MAX_PENDING_UPLOADS_PER_OWNER
+    unfinalized uploads outstanding: interrupted clients (or an abusive
+    account) must not be able to accumulate unbounded private storage."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,3 +190,29 @@ class MediaCleanupJob:
     # caller-visible cleanup -- may be reported DONE. See
     # ProgressPhoto.upload_authorized_until.
     verify_after: datetime | None = None
+
+
+class MediaEventStatus(StrEnum):
+    PENDING = "PENDING"
+    DONE = "DONE"
+    DEAD_LETTER = "DEAD_LETTER"
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressPhotoDeletedEvent:
+    """Durable, retryable outbox entry for the ProgressPhotoDeleted.v1
+    business event. Enqueued atomically with the cleanup job's completion
+    (see MediaCleanupRepository.mark_done_and_enqueue_deleted_event), so
+    the event can never be lost between "storage confirmed removed" and
+    "event delivered", unlike a fire-and-forget publish attempted after the
+    job was already marked done."""
+
+    id: UUID
+    owner_id: UUID
+    photo_id: UUID
+    status: MediaEventStatus
+    attempts: int
+    next_attempt_at: datetime
+    created_at: datetime
+    last_error: str | None = None
+    completed_at: datetime | None = None

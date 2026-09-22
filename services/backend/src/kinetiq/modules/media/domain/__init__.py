@@ -1,5 +1,6 @@
 from kinetiq.modules.media.domain.entities import (
     ALLOWED_MEDIA_TYPES,
+    MAX_PENDING_UPLOADS_PER_OWNER,
     MAX_PHOTO_BYTE_LENGTH,
     IdempotencyConflictError,
     InvalidPhotoStateError,
@@ -7,6 +8,7 @@ from kinetiq.modules.media.domain.entities import (
     MediaCleanupReason,
     MediaCleanupStatus,
     MediaError,
+    MediaEventStatus,
     MediaPayloadTooLargeError,
     MediaStorageError,
     MediaUploadNotCompletedError,
@@ -14,13 +16,16 @@ from kinetiq.modules.media.domain.entities import (
     PhotoNotFoundError,
     PhotoOwnershipError,
     ProgressPhoto,
+    ProgressPhotoDeletedEvent,
     ProgressPhotoStatus,
     StoredObjectInfo,
+    TooManyPendingUploadsError,
     UnsupportedMediaTypeError,
 )
 
 __all__ = [
     "ALLOWED_MEDIA_TYPES",
+    "MAX_PENDING_UPLOADS_PER_OWNER",
     "MAX_PHOTO_BYTE_LENGTH",
     "IdempotencyConflictError",
     "InvalidPhotoStateError",
@@ -28,6 +33,7 @@ __all__ = [
     "MediaCleanupReason",
     "MediaCleanupStatus",
     "MediaError",
+    "MediaEventStatus",
     "MediaPayloadTooLargeError",
     "MediaStorageError",
     "MediaUploadNotCompletedError",
@@ -35,7 +41,9 @@ __all__ = [
     "PhotoNotFoundError",
     "PhotoOwnershipError",
     "ProgressPhoto",
+    "ProgressPhotoDeletedEvent",
     "ProgressPhotoStatus",
     "StoredObjectInfo",
+    "TooManyPendingUploadsError",
     "UnsupportedMediaTypeError",
 ]

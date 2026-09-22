@@ -78,3 +78,34 @@ class MediaCleanupJobRecord(models.Model):
                 name="media_cleanup_one_pending_per_photo_reason",
             )
         ]
+
+
+class MediaEventOutboxRecord(models.Model):
+    """Durable outbox for the ProgressPhotoDeleted.v1 business event.
+
+    Enqueued in the SAME transaction as the cleanup job that produced it
+    (`DjangoMediaCleanupRepository.mark_done_and_enqueue_deleted_event`), so
+    a crash between "storage confirmed removed" and "event delivered" can
+    never lose the event. Delivery is retried with the same claim/backoff/
+    dead-letter discipline as `MediaCleanupJobRecord`, by
+    `MediaEventOutboxService` -- the event is marked DONE only once the
+    configured publisher has actually accepted it, never before.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    # Plain UUID (no FK): the event must outlive any later purge of the photo row.
+    photo_id = models.UUIDField(db_index=True)
+    event_type = models.CharField(max_length=60, default="ProgressPhotoDeleted.v1")
+    status = models.CharField(max_length=20)
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=500, null=True, blank=True)
+    next_attempt_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "media_event_outbox"
+        indexes = [
+            models.Index(fields=["status", "next_attempt_at"], name="media_event_due_idx"),
+        ]

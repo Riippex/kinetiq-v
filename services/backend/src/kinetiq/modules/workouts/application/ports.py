@@ -109,6 +109,27 @@ class SessionLifecycleRepository(Protocol):
     ) -> bool: ...
 
 
+class VisionObservationQuarantinePort(Protocol):
+    """Durable record of a Vision observation rejected at the trust
+    boundary (session_id/target_person_id mismatch) -- never published, but
+    never just a log line either, so upstream corruption or a mixed-analysis
+    response is investigable and alertable rather than silently forgotten."""
+
+    def quarantine(
+        self,
+        *,
+        owner_id: UUID,
+        session_id: UUID,
+        analysis_id: str,
+        observed_session_id: str,
+        observed_target_person_id: str,
+        expected_session_id: str,
+        expected_target_person_id: str | None,
+        epoch: int,
+        sequence: int,
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AcceptedRoutineItem:
     exercise_id: str

@@ -20,11 +20,15 @@ from kinetiq.modules.media.application import (
     ListProgressPhotosUseCase,
     MediaCleanupRepository,
     MediaCleanupService,
+    MediaEventOutboxRepository,
+    MediaEventOutboxService,
     MediaStoragePort,
+    ReconcileAbandonedUploadsUseCase,
     RequestProgressPhotoUploadUseCase,
 )
 from kinetiq.modules.media.infrastructure.repositories import (
     DjangoMediaCleanupRepository,
+    DjangoMediaEventOutboxRepository,
     DjangoProgressPhotoRepository,
     LogMediaEventPublisher,
 )
@@ -90,6 +94,7 @@ from kinetiq.modules.workouts.infrastructure.repositories import (
     DjangoSessionLifecycleRepository,
     DjangoSessionPreparationRepository,
     DjangoUserProfileLookup,
+    DjangoVisionObservationQuarantineRepository,
 )
 from kinetiq.modules.workouts.infrastructure.transient_store import RedisSessionTransientStore
 from kinetiq.modules.workouts.infrastructure.vision_observation_adapter import (
@@ -178,6 +183,7 @@ def poll_vision_observations() -> PollVisionObservationsUseCase:
         DjangoSessionLifecycleRepository(),
         VisionRestObservationAdapter(get_vision_rest_adapter()),
         get_session_transient_store(),
+        DjangoVisionObservationQuarantineRepository(),
     )
 
 
@@ -344,7 +350,17 @@ def process_media_cleanup() -> MediaCleanupService:
     return MediaCleanupService(
         repository=get_media_cleanup_repository(),
         storage=get_media_storage(),
-        event_publisher=LogMediaEventPublisher(),
+    )
+
+
+def get_media_event_outbox_repository() -> MediaEventOutboxRepository:
+    return DjangoMediaEventOutboxRepository()
+
+
+def process_media_event_outbox() -> MediaEventOutboxService:
+    return MediaEventOutboxService(
+        repository=get_media_event_outbox_repository(),
+        publisher=LogMediaEventPublisher(),
     )
 
 
@@ -367,6 +383,13 @@ def list_progress_photos() -> ListProgressPhotosUseCase:
 
 def delete_progress_photo() -> DeleteProgressPhotoUseCase:
     return DeleteProgressPhotoUseCase(
+        repository=DjangoProgressPhotoRepository(),
+        cleanup=process_media_cleanup(),
+    )
+
+
+def reconcile_abandoned_uploads() -> ReconcileAbandonedUploadsUseCase:
+    return ReconcileAbandonedUploadsUseCase(
         repository=DjangoProgressPhotoRepository(),
         cleanup=process_media_cleanup(),
     )

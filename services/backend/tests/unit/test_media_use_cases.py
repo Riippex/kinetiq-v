@@ -6,35 +6,119 @@ from uuid import UUID, uuid4
 import pytest
 
 from kinetiq.modules.media.application.cleanup import MediaCleanupService
+from kinetiq.modules.media.application.event_outbox import MediaEventOutboxService, OutboxRunSummary
 from kinetiq.modules.media.application.use_cases import (
     DeleteProgressPhotoUseCase,
     FinalizeProgressPhotoUseCase,
     ListProgressPhotosUseCase,
+    ReconcileAbandonedUploadsUseCase,
     RequestProgressPhotoUploadUseCase,
     upload_request_fingerprint,
 )
 from kinetiq.modules.media.domain.entities import (
+    MAX_PENDING_UPLOADS_PER_OWNER,
     IdempotencyConflictError,
     InvalidPhotoStateError,
     MediaCleanupJob,
     MediaCleanupReason,
     MediaCleanupStatus,
+    MediaEventStatus,
     MediaUploadNotCompletedError,
     MediaUploadRejectedError,
     PhotoNotFoundError,
     ProgressPhoto,
+    ProgressPhotoDeletedEvent,
     ProgressPhotoStatus,
+    TooManyPendingUploadsError,
 )
 from kinetiq.modules.media.infrastructure.storage import InMemoryMediaStorageAdapter
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
 
-class FakeCleanupRepository:
+class FakeMediaEventOutboxRepository:
     """In-memory outbox with the same claim/lease semantics as the Django one."""
 
     def __init__(self) -> None:
+        self.events: dict[UUID, ProgressPhotoDeletedEvent] = {}
+
+    def enqueue(
+        self, *, owner_id: UUID, photo_id: UUID, now: datetime
+    ) -> ProgressPhotoDeletedEvent:
+        event = ProgressPhotoDeletedEvent(
+            id=uuid4(),
+            owner_id=owner_id,
+            photo_id=photo_id,
+            status=MediaEventStatus.PENDING,
+            attempts=0,
+            next_attempt_at=now,
+            created_at=now,
+        )
+        self.events[event.id] = event
+        return event
+
+    def claim(
+        self, *, event_id: UUID, now: datetime, lease_seconds: int
+    ) -> ProgressPhotoDeletedEvent | None:
+        event = self.events.get(event_id)
+        if event is None or event.status != MediaEventStatus.PENDING or event.next_attempt_at > now:
+            return None
+        claimed = replace(
+            event,
+            attempts=event.attempts + 1,
+            next_attempt_at=now + timedelta(seconds=lease_seconds),
+        )
+        self.events[event_id] = claimed
+        return claimed
+
+    def due_event_ids(self, *, now: datetime, limit: int) -> list[UUID]:
+        due = [
+            e
+            for e in self.events.values()
+            if e.status == MediaEventStatus.PENDING and e.next_attempt_at <= now
+        ]
+        return [e.id for e in sorted(due, key=lambda e: e.next_attempt_at)][:limit]
+
+    def mark_done(self, *, event_id: UUID, at: datetime) -> None:
+        self.events[event_id] = replace(
+            self.events[event_id], status=MediaEventStatus.DONE, completed_at=at, last_error=None
+        )
+
+    def mark_retry(
+        self, *, event_id: UUID, error: str, next_attempt_at: datetime
+    ) -> ProgressPhotoDeletedEvent:
+        self.events[event_id] = replace(
+            self.events[event_id], last_error=error, next_attempt_at=next_attempt_at
+        )
+        return self.events[event_id]
+
+    def mark_dead_letter(
+        self, *, event_id: UUID, error: str, at: datetime
+    ) -> ProgressPhotoDeletedEvent:
+        self.events[event_id] = replace(
+            self.events[event_id],
+            status=MediaEventStatus.DEAD_LETTER,
+            last_error=error,
+            completed_at=at,
+        )
+        return self.events[event_id]
+
+    def get(self, *, event_id: UUID) -> ProgressPhotoDeletedEvent | None:
+        return self.events.get(event_id)
+
+    def counts_by_status(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for event in self.events.values():
+            counts[event.status.value] = counts.get(event.status.value, 0) + 1
+        return counts
+
+
+class FakeCleanupRepository:
+    """In-memory outbox with the same claim/lease semantics as the Django one."""
+
+    def __init__(self, event_outbox: FakeMediaEventOutboxRepository) -> None:
         self.jobs: dict[UUID, MediaCleanupJob] = {}
+        self._event_outbox = event_outbox
 
     def enqueue(
         self,
@@ -96,6 +180,12 @@ class FakeCleanupRepository:
         self.jobs[job_id] = replace(
             self.jobs[job_id], status=MediaCleanupStatus.DONE, completed_at=at, last_error=None
         )
+
+    def mark_done_and_enqueue_deleted_event(
+        self, *, job_id: UUID, photo_id: UUID, owner_id: UUID, at: datetime
+    ) -> None:
+        self.mark_done(job_id=job_id, at=at)
+        self._event_outbox.enqueue(owner_id=owner_id, photo_id=photo_id, now=at)
 
     def mark_retry(self, *, job_id: UUID, error: str, next_attempt_at: datetime) -> MediaCleanupJob:
         self.jobs[job_id] = replace(
@@ -202,6 +292,25 @@ class FakeProgressPhotoRepository:
         )
         return updated, job
 
+    def count_pending_uploads(self, *, owner_id: UUID) -> int:
+        return sum(
+            1
+            for p in self.photos.values()
+            if p.owner_id == owner_id and p.status == ProgressPhotoStatus.PENDING_UPLOAD
+        )
+
+    def find_abandoned_pending_upload_ids(
+        self, *, older_than: datetime, limit: int
+    ) -> list[tuple[UUID, UUID]]:
+        abandoned = [
+            (p.id, p.owner_id)
+            for p in self.photos.values()
+            if p.status == ProgressPhotoStatus.PENDING_UPLOAD
+            and p.upload_authorized_until is not None
+            and p.upload_authorized_until < older_than
+        ]
+        return abandoned[:limit]
+
 
 class FakeWorkoutSessionLookup:
     def __init__(self, valid_sessions: set[tuple[UUID, UUID]]) -> None:
@@ -224,14 +333,14 @@ class Harness:
 
     def __init__(self) -> None:
         self.now = datetime.now(UTC)
-        self.cleanup_repo = FakeCleanupRepository()
+        self.event_outbox_repo = FakeMediaEventOutboxRepository()
+        self.cleanup_repo = FakeCleanupRepository(event_outbox=self.event_outbox_repo)
         self.repo = FakeProgressPhotoRepository(self.cleanup_repo)
         self.storage = InMemoryMediaStorageAdapter()
         self.publisher = FakeEventPublisher()
         self.cleanup = MediaCleanupService(
             repository=self.cleanup_repo,
             storage=self.storage,
-            event_publisher=self.publisher,
             max_attempts=3,
             lease_seconds=300,
             base_backoff_seconds=30,
@@ -241,12 +350,26 @@ class Harness:
             put_completion_grace_seconds=0,
             clock=lambda: self.now,
         )
+        self.event_outbox = MediaEventOutboxService(
+            repository=self.event_outbox_repo,
+            publisher=self.publisher,
+            max_attempts=3,
+            lease_seconds=300,
+            base_backoff_seconds=30,
+            clock=lambda: self.now,
+        )
         self.request = RequestProgressPhotoUploadUseCase(repository=self.repo, storage=self.storage)
         self.finalize = FinalizeProgressPhotoUseCase(
             repository=self.repo, storage=self.storage, cleanup=self.cleanup
         )
         self.delete = DeleteProgressPhotoUseCase(repository=self.repo, cleanup=self.cleanup)
         self.owner_id = uuid4()
+
+    def deliver_events(self) -> OutboxRunSummary:
+        """Runs the separate outbox-delivery pass -- a cleanup job's
+        completion only durably records the event; this is what actually
+        calls the publisher."""
+        return self.event_outbox.process_due()
 
     def request_upload(
         self,
@@ -375,6 +498,74 @@ def test_request_upload_replay_for_deleted_photo_does_not_mint_new_url() -> None
 
     with pytest.raises(InvalidPhotoStateError):
         h.request_upload(key="k-deleted")
+
+
+def test_request_upload_rejects_a_new_upload_once_the_owner_is_at_the_pending_cap() -> None:
+    """Fifth Codex adversarial-review pass: interrupted clients (or an
+    abusive account) must not be able to accumulate unbounded PENDING_UPLOAD
+    rows and private S3 objects."""
+    h = Harness()
+    for i in range(MAX_PENDING_UPLOADS_PER_OWNER):
+        h.request_upload(key=f"quota-{i}")
+    assert len(h.repo.photos) == MAX_PENDING_UPLOADS_PER_OWNER
+
+    with pytest.raises(TooManyPendingUploadsError):
+        h.request_upload(key="quota-over")
+
+    # The rejected row is cleanly rolled back (tombstoned), not left dangling
+    # counting against the cap forever, and no other owner is affected.
+    assert h.repo.count_pending_uploads(owner_id=h.owner_id) == MAX_PENDING_UPLOADS_PER_OWNER
+    other_owner = uuid4()
+    other_repo_count = h.repo.count_pending_uploads(owner_id=other_owner)
+    assert other_repo_count == 0
+
+
+def test_request_upload_replay_of_an_existing_key_is_never_blocked_by_the_quota() -> None:
+    """The cap only stops a *new* upload from being created; retrying an
+    already-accepted key (e.g. after a network hiccup) must still succeed
+    even once the owner is at (or over) the cap."""
+    h = Harness()
+    for i in range(MAX_PENDING_UPLOADS_PER_OWNER):
+        h.request_upload(key=f"quota-replay-{i}")
+
+    first = h.request_upload(key="quota-replay-0")
+    second = h.request_upload(key="quota-replay-0")
+
+    assert first == second
+
+
+def test_reconcile_abandoned_uploads_tombstones_only_expired_pending_uploads() -> None:
+    h = Harness()
+    fresh_id = h.request_upload(key="fresh")
+    abandoned_id = h.request_upload(key="abandoned")
+    confirmed_id = h.confirmed_photo("confirmed")
+    reconcile = ReconcileAbandonedUploadsUseCase(repository=h.repo, cleanup=h.cleanup)
+
+    abandoned_deadline = h.repo.photos[abandoned_id].upload_authorized_until
+    assert abandoned_deadline is not None
+    # RequestProgressPhotoUploadUseCase stamps authorized_until from the real
+    # wall clock, not h.now -- push "fresh"'s deadline safely ahead of the
+    # cutoff this test will use, so only "abandoned" is ever in scope.
+    h.repo.photos[fresh_id] = replace(
+        h.repo.photos[fresh_id], upload_authorized_until=abandoned_deadline + timedelta(hours=1)
+    )
+
+    # Not due yet: the fresh upload's authorization window is still open.
+    assert reconcile.execute().reconciled == 0
+    assert h.repo.photos[fresh_id].status == ProgressPhotoStatus.PENDING_UPLOAD
+
+    # Past the authorization window (Harness's cleanup uses zero grace; see
+    # the dedicated grace-period tests for that margin): reconciled.
+    h.now = abandoned_deadline + timedelta(seconds=1)
+    result = reconcile.execute()
+
+    assert result.reconciled == 1
+    assert h.repo.photos[abandoned_id].status == ProgressPhotoStatus.DELETED
+    assert h.repo.photos[fresh_id].status == ProgressPhotoStatus.PENDING_UPLOAD
+    assert h.repo.photos[confirmed_id].status == ProgressPhotoStatus.CONFIRMED
+
+    # Already reconciled: idempotent, does not re-report it.
+    assert reconcile.execute().reconciled == 0
 
 
 def test_upload_request_fingerprint_is_canonical_and_field_sensitive() -> None:
@@ -517,6 +708,7 @@ def test_list_and_delete_photo_flow() -> None:
 
     assert result.storage_cleanup == MediaCleanupStatus.DONE
     assert not h.storage.has_object(s3_key=s3_key)
+    h.deliver_events()
     assert h.publisher.deleted_events == [(photo1, h.owner_id)]
 
     photos_after = list_use_case.execute(owner_id=h.owner_id)
@@ -539,7 +731,8 @@ def test_delete_is_durable_when_storage_is_down_and_event_waits_for_removal() ->
     assert result.storage_cleanup == MediaCleanupStatus.PENDING
     assert h.repo.photos[photo_id].status == ProgressPhotoStatus.DELETED
     assert h.storage.has_object(s3_key=s3_key)
-    assert h.publisher.deleted_events == []
+    # The job hasn't completed yet, so no event was even enqueued.
+    assert h.deliver_events().claimed == 0
 
     # Not yet due: the worker leaves it alone (backoff).
     assert h.cleanup.process_due().claimed == 0
@@ -549,6 +742,7 @@ def test_delete_is_durable_when_storage_is_down_and_event_waits_for_removal() ->
 
     assert (summary.claimed, summary.completed) == (1, 1)
     assert not h.storage.has_object(s3_key=s3_key)
+    assert h.deliver_events().completed == 1
     assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
     assert h.cleanup.process_due().claimed == 0
 
@@ -572,6 +766,8 @@ def test_cleanup_backs_off_exponentially_then_dead_letters() -> None:
     job = h.cleanup_repo.jobs[job_id]
     assert job.attempts == 3
     assert job.last_error and "simulated storage outage" in job.last_error
+    # A job that never completes never enqueues its event.
+    assert h.deliver_events().claimed == 0
     assert h.publisher.deleted_events == []
 
     # A dead-lettered job is surfaced, never silently retried forever.
@@ -594,7 +790,12 @@ def test_cleanup_attempt_is_exclusive_while_leased() -> None:
     assert second is None
 
 
-def test_event_publisher_failure_does_not_undo_completed_cleanup() -> None:
+def test_cleanup_completion_does_not_depend_on_the_publisher() -> None:
+    """Fifth Codex adversarial-review pass: cleanup completion and durably
+    recording the event happen atomically in the repository; the publisher
+    is only ever called later, by the separate MediaEventOutboxService, so
+    a publisher failure can never affect (or even be reached during)
+    `storage_cleanup` reporting DONE."""
     h = Harness()
     photo_id = h.confirmed_photo()
 
@@ -607,6 +808,70 @@ def test_event_publisher_failure_does_not_undo_completed_cleanup() -> None:
     result = h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
 
     assert result.storage_cleanup == MediaCleanupStatus.DONE
+    # The event was durably enqueued despite the cleanup pass never touching
+    # the (failing) publisher at all.
+    (event,) = h.event_outbox_repo.events.values()
+    assert event.status == MediaEventStatus.PENDING
+    assert h.publisher.deleted_events == []
+
+
+def test_event_outbox_retries_a_failing_publisher_without_losing_the_event() -> None:
+    """Fifth Codex adversarial-review pass: a transient publish failure must
+    be retried with backoff, never silently dropped."""
+    h = Harness()
+    photo_id = h.confirmed_photo()
+    h.close_upload_authorization(photo_id)
+    h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
+    (event_id,) = h.event_outbox_repo.events
+
+    attempts = 0
+
+    def _fails_once(**kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("bus unreachable")
+        h.publisher.deleted_events.append((kwargs["photo_id"], kwargs["owner_id"]))  # type: ignore[arg-type]
+
+    h.publisher.publish_photo_deleted = _fails_once  # type: ignore[method-assign]
+
+    first = h.event_outbox.attempt(event_id)
+    assert first == MediaEventStatus.PENDING
+    assert h.event_outbox_repo.events[event_id].next_attempt_at == h.now + timedelta(seconds=30)
+    assert h.publisher.deleted_events == []
+
+    h.now += timedelta(seconds=31)
+    second = h.event_outbox.attempt(event_id)
+
+    assert second == MediaEventStatus.DONE
+    assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
+    assert h.event_outbox_repo.events[event_id].status == MediaEventStatus.DONE
+
+
+def test_event_outbox_dead_letters_an_event_after_max_attempts() -> None:
+    h = Harness()
+    photo_id = h.confirmed_photo()
+    h.close_upload_authorization(photo_id)
+    h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
+    (event_id,) = h.event_outbox_repo.events
+
+    def _always_fails(**_: object) -> None:
+        raise RuntimeError("bus permanently down")
+
+    h.publisher.publish_photo_deleted = _always_fails  # type: ignore[method-assign]
+
+    assert h.event_outbox.attempt(event_id) == MediaEventStatus.PENDING
+    h.now += timedelta(seconds=31)
+    assert h.event_outbox.attempt(event_id) == MediaEventStatus.PENDING
+    h.now += timedelta(seconds=61)
+    status = h.event_outbox.attempt(event_id)
+
+    assert status == MediaEventStatus.DEAD_LETTER
+    event = h.event_outbox_repo.events[event_id]
+    assert event.attempts == 3
+    assert event.last_error and "bus permanently down" in event.last_error
+    assert h.event_outbox_repo.counts_by_status() == {"DEAD_LETTER": 1}
+    assert h.publisher.deleted_events == []
 
 
 def test_delete_of_another_owners_photo_is_not_found() -> None:
@@ -633,7 +898,8 @@ def test_delete_defers_completion_until_the_upload_authorization_window_elapses(
     # Removed immediately, but not yet reported final.
     assert result.storage_cleanup == MediaCleanupStatus.PENDING
     assert not h.storage.has_object(s3_key=s3_key)
-    assert h.publisher.deleted_events == []
+    # The job hasn't completed yet, so no event was even enqueued.
+    assert h.deliver_events().claimed == 0
     (job,) = h.cleanup_repo.jobs.values()
     assert job.next_attempt_at == authorized_until
 
@@ -647,6 +913,7 @@ def test_delete_defers_completion_until_the_upload_authorization_window_elapses(
 
     assert (summary.claimed, summary.completed) == (1, 1)
     assert h.cleanup_repo.jobs[job.id].status == MediaCleanupStatus.DONE
+    assert h.deliver_events().completed == 1
     assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
 
 
@@ -679,7 +946,6 @@ def _harness_with_grace(grace_seconds: int) -> Harness:
     h.cleanup = MediaCleanupService(
         repository=h.cleanup_repo,
         storage=h.storage,
-        event_publisher=h.publisher,
         max_attempts=3,
         lease_seconds=300,
         base_backoff_seconds=30,
@@ -712,6 +978,7 @@ def test_delete_cleanup_waits_a_grace_period_past_authorization_before_reporting
     summary = h.cleanup.process_due()
 
     assert (summary.claimed, summary.completed) == (1, 1)
+    assert h.deliver_events().completed == 1
     assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
 
 

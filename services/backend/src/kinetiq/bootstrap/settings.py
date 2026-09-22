@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 from kinetiq.bootstrap.vision_settings import resolve_vision_settings
@@ -10,8 +11,42 @@ BASE_DIR = Path(__file__).resolve().parents[3]
 REPOSITORY_ROOT = BASE_DIR.parents[1]
 load_dotenv(REPOSITORY_ROOT / ".env")
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY") or "unsafe-local-development-key"
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
+
+_INSECURE_DEFAULT_SECRET_KEY = "unsafe-local-development-key"
+_MIN_SECRET_KEY_LENGTH = 20
+
+
+def _resolve_secret_key() -> str:
+    """A fallback (or a placeholder/too-short value) is fine only under
+    explicit local development (`DJANGO_DEBUG=true`): Django uses this key
+    for cryptographic signing, so a deployment that silently started with a
+    publicly known or trivially weak key would sign values an attacker
+    could forge. Everywhere else this must fail loudly at settings load,
+    not degrade into an insecure default.
+    """
+    key = os.getenv("DJANGO_SECRET_KEY")
+    if DEBUG:
+        return key or _INSECURE_DEFAULT_SECRET_KEY
+    if not key:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY is required when DJANGO_DEBUG is not enabled; "
+            "refusing to start with no signing secret."
+        )
+    if key == _INSECURE_DEFAULT_SECRET_KEY:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY is set to the known local-development placeholder; "
+            "refusing to start with a publicly known signing secret."
+        )
+    if len(key) < _MIN_SECRET_KEY_LENGTH:
+        raise ImproperlyConfigured(
+            f"DJANGO_SECRET_KEY is shorter than {_MIN_SECRET_KEY_LENGTH} characters; "
+            "refusing to start with a trivially weak signing secret."
+        )
+    return key
+
+
+SECRET_KEY = _resolve_secret_key()
 ALLOWED_HOSTS = [
     host.strip()
     for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")

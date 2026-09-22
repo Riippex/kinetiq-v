@@ -6,11 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from kinetiq.modules.media.application.ports import (
-    MediaCleanupRepository,
-    MediaEventPublisher,
-    MediaStoragePort,
-)
+from kinetiq.modules.media.application.ports import MediaCleanupRepository, MediaStoragePort
 from kinetiq.modules.media.domain.entities import (
     MediaCleanupJob,
     MediaCleanupReason,
@@ -38,13 +34,20 @@ class MediaCleanupService:
     retried with exponential backoff (idempotent deletes), until it succeeds or
     the job is dead-lettered for operator attention. A photo whose storage
     cleanup has not succeeded is therefore never silently forgotten.
+
+    A PHOTO_DELETED job's completion durably enqueues its
+    ProgressPhotoDeleted.v1 event in the SAME transaction (see
+    `MediaCleanupRepository.mark_done_and_enqueue_deleted_event`); actual
+    delivery of that event is `MediaEventOutboxService`'s job, not this
+    service's -- a fire-and-forget publish attempted after the job was
+    already marked done could otherwise lose the event to a crash or a
+    transient failure with no retry path.
     """
 
     def __init__(
         self,
         repository: MediaCleanupRepository,
         storage: MediaStoragePort,
-        event_publisher: MediaEventPublisher | None = None,
         *,
         max_attempts: int = 8,
         lease_seconds: int = 300,
@@ -55,7 +58,6 @@ class MediaCleanupService:
     ) -> None:
         self._repository = repository
         self._storage = storage
-        self._event_publisher = event_publisher
         self._max_attempts = max_attempts
         self._lease_seconds = lease_seconds
         self._base_backoff_seconds = base_backoff_seconds
@@ -66,6 +68,14 @@ class MediaCleanupService:
     def now(self) -> datetime:
         """The service clock, so jobs are stamped on the same timeline they are claimed on."""
         return self._clock()
+
+    @property
+    def put_completion_grace_seconds(self) -> int:
+        """Shared with `ReconcileAbandonedUploadsUseCase`, so it never
+        reconciles a PENDING_UPLOAD before this same grace window (a PUT
+        started just before the authorization deadline may still be
+        mid-transfer) has elapsed past its authorization deadline too."""
+        return self._put_completion_grace_seconds
 
     def enqueue_object_cleanup(
         self, *, owner_id: UUID, photo_id: UUID, s3_key: str, reason: MediaCleanupReason
@@ -106,8 +116,15 @@ class MediaCleanupService:
                 self._repository.defer_verification(job_id=job.id, next_attempt_at=final_check_at)
                 return MediaCleanupStatus.PENDING
 
-        self._repository.mark_done(job_id=job.id, at=now)
-        self._publish_deleted(job)
+        if job.reason == MediaCleanupReason.PHOTO_DELETED:
+            # Completion and the durable event it produces commit together:
+            # a crash right here can never leave a completed job with a
+            # lost event, nor a recorded event for a job not yet complete.
+            self._repository.mark_done_and_enqueue_deleted_event(
+                job_id=job.id, photo_id=job.photo_id, owner_id=job.owner_id, at=now
+            )
+        else:
+            self._repository.mark_done(job_id=job.id, at=now)
         return MediaCleanupStatus.DONE
 
     def process_due(self, *, limit: int = 50) -> CleanupRunSummary:
@@ -154,13 +171,3 @@ class MediaCleanupService:
             job_id=job.id, error=error, next_attempt_at=now + timedelta(seconds=delay)
         )
         return MediaCleanupStatus.PENDING
-
-    def _publish_deleted(self, job: MediaCleanupJob) -> None:
-        if self._event_publisher is None or job.reason != MediaCleanupReason.PHOTO_DELETED:
-            return
-        try:
-            self._event_publisher.publish_photo_deleted(
-                photo_id=job.photo_id, owner_id=job.owner_id
-            )
-        except Exception:  # noqa: BLE001 - the object is already gone; do not undo it
-            logger.exception("Failed to publish ProgressPhotoDeleted for %s", job.photo_id)

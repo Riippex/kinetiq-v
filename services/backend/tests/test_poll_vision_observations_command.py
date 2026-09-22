@@ -17,13 +17,16 @@ from kinetiq.modules.workouts.application.ports import (
     TransientSessionUpdate,
     VisionAnalysisHandle,
     VisionCandidateInfo,
+    VisionObservationInfo,
     VisionObservationsPage,
     VisionTargetConfirmation,
 )
 from kinetiq.modules.workouts.domain import SessionState
+from kinetiq.modules.workouts.infrastructure.models import VisionObservationQuarantineRecord
 from kinetiq.modules.workouts.infrastructure.repositories import (
     DjangoRoutineItemLookup,
     DjangoSessionLifecycleRepository,
+    DjangoVisionObservationQuarantineRepository,
 )
 
 
@@ -400,6 +403,7 @@ def test_poll_vision_observations_command_publishes_and_advances_cursor(
             )
         ),
         fake_transient_store,
+        DjangoVisionObservationQuarantineRepository(),
     )
 
     with patch(
@@ -411,3 +415,57 @@ def test_poll_vision_observations_command_publishes_and_advances_cursor(
         call_command("poll_vision_observations", stdout=out)
 
     assert "Polled 1 session(s)" in out.getvalue()
+
+
+@pytest.mark.django_db
+def test_a_mismatched_observation_is_durably_quarantined_and_does_not_wedge_the_session(
+    athlete: User, accepted_routine: RoutineRecord
+) -> None:
+    """Fifth Codex adversarial-review pass: against the real repository, a
+    session/target mismatch is persisted to VisionObservationQuarantineRecord
+    (not just logged) and the cursor still advances past it, so the session
+    is not stalled for the rest of its lifetime."""
+    client = Client()
+    client.force_login(athlete)
+    session_id = _tracking_session_id(client, accepted_routine)
+
+    repo = DjangoSessionLifecycleRepository()
+    session = repo.get_session(owner_id=athlete.pk, session_id=UUID(session_id))
+    assert session is not None
+
+    mismatched = VisionObservationInfo(
+        session_id="some-other-session",
+        target_person_id=session.target_person_id or "",
+        exercise_key="push_up",
+        epoch=session.vision_epoch or 1,
+        sequence=1,
+        tracking_state="CONFIRMED",
+        visibility_state="FULL",
+        reason_code="OK",
+        confirmed_repetitions=0,
+    )
+    use_case = PollVisionObservationsUseCase(
+        repo,
+        _FakeVisionObservationSourcePort(
+            VisionObservationsPage(observations=(mismatched,), next_cursor="1:1", has_more=False)
+        ),
+        _FakeSessionTransientStore(),
+        DjangoVisionObservationQuarantineRepository(),
+    )
+
+    result = use_case.execute(session=session)
+
+    assert result.skipped_identity_mismatch == 1
+    assert result.cursor_advanced is True
+    assert result.next_cursor == "1:1"
+
+    quarantined = VisionObservationQuarantineRecord.objects.get(session_id=session.id)
+    assert quarantined.observed_session_id == "some-other-session"
+    assert quarantined.expected_session_id == str(session.id)
+    assert quarantined.owner_id == athlete.pk
+    assert quarantined.epoch == 1
+    assert quarantined.sequence == 1
+
+    refreshed = repo.get_session(owner_id=athlete.pk, session_id=UUID(session_id))
+    assert refreshed is not None
+    assert refreshed.vision_observation_cursor == "1:1"

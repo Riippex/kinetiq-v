@@ -107,3 +107,32 @@ class SessionFeedbackRecord(models.Model):
     comments = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class VisionObservationQuarantineRecord(models.Model):
+    """Durable, queryable record of a Vision observation rejected at the
+    trust boundary (session_id/target_person_id mismatch): never published,
+    but never just a log line either, so a corrupted or mixed-analysis
+    Vision response is investigable and alertable rather than silently
+    stalling the session's live tracking forever."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    session = models.ForeignKey(
+        WorkoutSessionRecord,
+        on_delete=models.CASCADE,
+        related_name="vision_observation_quarantines",
+    )
+    analysis_id = models.CharField(max_length=120)
+    observed_session_id = models.CharField(max_length=120)
+    observed_target_person_id = models.CharField(max_length=120)
+    expected_session_id = models.CharField(max_length=120)
+    expected_target_person_id = models.CharField(max_length=120, null=True, blank=True)
+    epoch = models.IntegerField()
+    sequence = models.IntegerField()
+    detected_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=("session", "-detected_at"), name="vision_quarantine_session_idx"),
+        ]

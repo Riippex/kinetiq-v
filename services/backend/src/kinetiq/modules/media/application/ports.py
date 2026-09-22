@@ -8,6 +8,7 @@ from kinetiq.modules.media.domain.entities import (
     MediaCleanupJob,
     MediaCleanupReason,
     ProgressPhoto,
+    ProgressPhotoDeletedEvent,
     StoredObjectInfo,
 )
 
@@ -87,6 +88,19 @@ class ProgressPhotoRepository(Protocol):
         """
         ...
 
+    def count_pending_uploads(self, *, owner_id: UUID) -> int:
+        """How many PENDING_UPLOAD photos this owner currently has
+        outstanding (bounds unfinalized-upload accumulation)."""
+        ...
+
+    def find_abandoned_pending_upload_ids(
+        self, *, older_than: datetime, limit: int
+    ) -> list[tuple[UUID, UUID]]:
+        """`(photo_id, owner_id)` pairs for PENDING_UPLOAD photos whose
+        presigned-PUT authorization is not None and has already expired --
+        never finalized, and no longer reachable by any legitimate client."""
+        ...
+
 
 class MediaCleanupRepository(Protocol):
     def enqueue(
@@ -108,7 +122,23 @@ class MediaCleanupRepository(Protocol):
 
     def due_job_ids(self, *, now: datetime, limit: int) -> list[UUID]: ...
 
-    def mark_done(self, *, job_id: UUID, at: datetime) -> None: ...
+    def mark_done(self, *, job_id: UUID, at: datetime) -> None:
+        """Complete a job that needs no durable event (e.g. UPLOAD_REJECTED).
+
+        A PHOTO_DELETED job must use
+        `mark_done_and_enqueue_deleted_event` instead, so completion and the
+        event it produces commit atomically.
+        """
+        ...
+
+    def mark_done_and_enqueue_deleted_event(
+        self, *, job_id: UUID, photo_id: UUID, owner_id: UUID, at: datetime
+    ) -> None:
+        """Complete a PHOTO_DELETED job and durably enqueue its
+        ProgressPhotoDeleted.v1 event in ONE transaction: a crash between
+        "storage confirmed removed" and "event recorded" must never lose
+        the event, unlike a fire-and-forget publish attempted afterward."""
+        ...
 
     def defer_verification(self, *, job_id: UUID, next_attempt_at: datetime) -> MediaCleanupJob:
         """The object was removed, but must be re-checked no earlier than
@@ -123,6 +153,34 @@ class MediaCleanupRepository(Protocol):
     def mark_dead_letter(self, *, job_id: UUID, error: str, at: datetime) -> MediaCleanupJob: ...
 
     def get(self, *, job_id: UUID) -> MediaCleanupJob | None: ...
+
+    def counts_by_status(self) -> dict[str, int]: ...
+
+
+class MediaEventOutboxRepository(Protocol):
+    """Durable, retried delivery record for ProgressPhotoDeleted.v1 (see
+    ProgressPhotoDeletedEvent). Mirrors MediaCleanupRepository's
+    claim/backoff/dead-letter discipline."""
+
+    def claim(
+        self, *, event_id: UUID, now: datetime, lease_seconds: int
+    ) -> ProgressPhotoDeletedEvent | None:
+        """Atomically lease one due PENDING event; None if not due or already leased."""
+        ...
+
+    def due_event_ids(self, *, now: datetime, limit: int) -> list[UUID]: ...
+
+    def mark_done(self, *, event_id: UUID, at: datetime) -> None: ...
+
+    def mark_retry(
+        self, *, event_id: UUID, error: str, next_attempt_at: datetime
+    ) -> ProgressPhotoDeletedEvent: ...
+
+    def mark_dead_letter(
+        self, *, event_id: UUID, error: str, at: datetime
+    ) -> ProgressPhotoDeletedEvent: ...
+
+    def get(self, *, event_id: UUID) -> ProgressPhotoDeletedEvent | None: ...
 
     def counts_by_status(self) -> dict[str, int]: ...
 

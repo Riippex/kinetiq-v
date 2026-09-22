@@ -36,6 +36,7 @@ from kinetiq.modules.workouts.infrastructure.models import (
     ObservationCoverageRecord,
     PerformedSetRecord,
     SessionFeedbackRecord,
+    VisionObservationQuarantineRecord,
     WorkoutSessionRecord,
 )
 
@@ -668,3 +669,30 @@ def _to_domain(record: WorkoutSessionRecord) -> WorkoutSession:
         skipped_challenge_ids=tuple(data.get("skipped_challenge_ids") or []),
         updated_at=record.updated_at,
     )
+
+
+class DjangoVisionObservationQuarantineRepository:
+    def quarantine(
+        self,
+        *,
+        owner_id: UUID,
+        session_id: UUID,
+        analysis_id: str,
+        observed_session_id: str,
+        observed_target_person_id: str,
+        expected_session_id: str,
+        expected_target_person_id: str | None,
+        epoch: int,
+        sequence: int,
+    ) -> None:
+        VisionObservationQuarantineRecord.objects.create(
+            owner_id=owner_id,
+            session_id=session_id,
+            analysis_id=analysis_id,
+            observed_session_id=observed_session_id,
+            observed_target_person_id=observed_target_person_id,
+            expected_session_id=expected_session_id,
+            expected_target_person_id=expected_target_person_id,
+            epoch=epoch,
+            sequence=sequence,
+        )

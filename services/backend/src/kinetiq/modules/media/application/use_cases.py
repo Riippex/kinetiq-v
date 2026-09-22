@@ -14,6 +14,7 @@ from kinetiq.modules.media.application.ports import (
 )
 from kinetiq.modules.media.domain.entities import (
     ALLOWED_MEDIA_TYPES,
+    MAX_PENDING_UPLOADS_PER_OWNER,
     MAX_PHOTO_BYTE_LENGTH,
     InvalidPhotoStateError,
     MediaCleanupReason,
@@ -24,6 +25,7 @@ from kinetiq.modules.media.domain.entities import (
     PhotoNotFoundError,
     ProgressPhoto,
     ProgressPhotoStatus,
+    TooManyPendingUploadsError,
     UnsupportedMediaTypeError,
 )
 
@@ -142,13 +144,30 @@ class RequestProgressPhotoUploadUseCase:
             upload_authorized_until=authorized_until,
         )
 
-        saved_photo, _ = self._repository.save_upload_request_idempotently(
+        saved_photo, created = self._repository.save_upload_request_idempotently(
             photo=photo,
             idempotency_key=idempotency_key,
             request_fingerprint=upload_request_fingerprint(
                 session_id=session_id, content_type=content_type, byte_length=byte_length
             ),
         )
+
+        if created and self._repository.count_pending_uploads(owner_id=owner_id) > (
+            MAX_PENDING_UPLOADS_PER_OWNER
+        ):
+            # Only a genuinely new upload can push the count over the cap --
+            # an idempotent replay of an existing key must never be blocked
+            # by it. No presigned URL was ever issued for this row (we bail
+            # before generating one below), so tombstoning it now is a clean
+            # rollback via the same durable cleanup path as an owner-initiated
+            # delete, not a partial/inconsistent state.
+            self._repository.tombstone_and_enqueue_cleanup(
+                photo_id=saved_photo.id, owner_id=owner_id, deleted_at=now
+            )
+            raise TooManyPendingUploadsError(
+                f"Owner already has {MAX_PENDING_UPLOADS_PER_OWNER} or more unfinalized "
+                "uploads outstanding; finalize or delete one before requesting another"
+            )
 
         # A replayed key must never mint a fresh upload URL for a photo that is
         # already confirmed or deleted: that would let a caller write to the
@@ -325,3 +344,49 @@ class DeleteProgressPhotoUseCase:
         # Try now; on failure the job stays PENDING and the worker retries it.
         status = self._cleanup.attempt(job.id)
         return DeleteProgressPhotoResultDTO(photo_id=photo_id, storage_cleanup=status)
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcileAbandonedUploadsResult:
+    reconciled: int
+
+
+class ReconcileAbandonedUploadsUseCase:
+    """Durably cleans up PENDING_UPLOAD photos an owner never finalized:
+    without this, an interrupted client -- or an abusive account -- could
+    accumulate unbounded private S3 objects and receipt rows, since
+    MAX_PENDING_UPLOADS_PER_OWNER only bounds the *rate* of new
+    accumulation, not existing rows. Intended to run periodically alongside
+    `process_media_cleanup` (see the management command)."""
+
+    def __init__(
+        self,
+        repository: ProgressPhotoRepository,
+        cleanup: MediaCleanupService,
+    ) -> None:
+        self._repository = repository
+        self._cleanup = cleanup
+
+    def execute(self, *, limit: int = 100) -> ReconcileAbandonedUploadsResult:
+        now = self._cleanup.now()
+        # Same margin as deletion cleanup's post-expiry verification: a PUT
+        # started just before the authorization deadline can still be
+        # mid-transfer past it, and the client's finalize call right behind
+        # it must not lose a race against reconciliation tombstoning the row.
+        cutoff = now - timedelta(seconds=self._cleanup.put_completion_grace_seconds)
+        abandoned = self._repository.find_abandoned_pending_upload_ids(
+            older_than=cutoff, limit=limit
+        )
+
+        reconciled = 0
+        for photo_id, owner_id in abandoned:
+            deleted = self._repository.tombstone_and_enqueue_cleanup(
+                photo_id=photo_id, owner_id=owner_id, deleted_at=now
+            )
+            if deleted is None:
+                continue
+            _, job = deleted
+            self._cleanup.attempt(job.id)
+            reconciled += 1
+
+        return ReconcileAbandonedUploadsResult(reconciled=reconciled)

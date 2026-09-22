@@ -7,6 +7,7 @@ from kinetiq.modules.workouts.application.ports import (
     SessionTransientStore,
     TransientSessionUpdate,
     VisionObservationInfo,
+    VisionObservationQuarantinePort,
     VisionObservationSourcePort,
 )
 from kinetiq.modules.workouts.domain import WorkoutSession
@@ -37,7 +38,7 @@ class ObservationIngestionResult:
     next_cursor: str | None
     lease_contended: bool = False
     publish_failed: bool = False
-    identity_mismatch: bool = False
+    skipped_identity_mismatch: int = 0
     cursor_advanced: bool = True
 
 
@@ -92,15 +93,20 @@ class PollVisionObservationsUseCase:
     `target_person_id` does not match this session/its confirmed target --
     Vision's response is untrusted input, and publishing it regardless
     would attribute another session's or person's repetitions to this
-    athlete. Rejects observations from a stale epoch (the session was
+    athlete. A mismatch is persisted to a durable quarantine record (never
+    just a log line, so it stays investigable/alertable) and the resume
+    cursor advances past it -- one corrupted or mixed-analysis observation
+    must not wedge the session's live tracking for the rest of its
+    lifetime; every mismatch is still individually recorded no matter how
+    many occur. Rejects observations from a stale epoch (the session was
     re-targeted since Vision produced them) and duplicate or out-of-order
     sequences (the persisted cursor already advanced past them, e.g. an
     overlapping poll). The resume cursor persisted for the next poll
-    advances past every stale/duplicate observation in a fully processed
-    page (using Vision's own page-end cursor), so a page that happens to be
-    entirely stale (e.g. right after a retarget) does not permanently stall
-    ingestion on it; it never advances past an identity mismatch or a
-    failed publish.
+    advances past every stale/duplicate/quarantined observation in a fully
+    processed page (using Vision's own page-end cursor), so a page that
+    happens to be entirely rejected (e.g. right after a retarget) does not
+    permanently stall ingestion on it; it never advances past a failed
+    publish, which still stops the pass so a retry re-attempts it.
 
     Retry-safety (this pass): a per-session poll lease
     (`acquire_vision_poll_lease`) is held for the whole pass so two worker
@@ -133,10 +139,12 @@ class PollVisionObservationsUseCase:
         repository: SessionLifecycleRepository,
         vision_observations: VisionObservationSourcePort,
         transient_store: SessionTransientStore,
+        quarantine: VisionObservationQuarantinePort,
     ) -> None:
         self._repository = repository
         self._vision_observations = vision_observations
         self._transient_store = transient_store
+        self._quarantine = quarantine
 
     def execute(
         self,
@@ -181,8 +189,8 @@ class PollVisionObservationsUseCase:
             published = 0
             skipped_stale_epoch = 0
             skipped_duplicate_sequence = 0
+            skipped_identity_mismatch = 0
             publish_failed = False
-            identity_mismatch = False
             latest_cursor = starting_cursor
             expected_session_id = str(session.id)
 
@@ -192,10 +200,11 @@ class PollVisionObservationsUseCase:
                     and observation.target_person_id != session.target_person_id
                 ):
                     # Untrusted input: Vision's response does not belong to
-                    # this session/confirmed target. Never publish it or
-                    # advance past it -- quarantine here for operator
-                    # investigation instead of silently skipping corrupted
-                    # or mixed-analysis data.
+                    # this session/confirmed target. Never publish it, but
+                    # persist it durably (investigable/alertable, unlike a
+                    # log line) and advance past it -- one corrupted or
+                    # mixed-analysis observation must not wedge this
+                    # session's live tracking for the rest of its lifetime.
                     logger.error(
                         "Vision observation identity mismatch for session %s: "
                         "observation session_id=%s target_person_id=%s "
@@ -206,8 +215,20 @@ class PollVisionObservationsUseCase:
                         expected_session_id,
                         session.target_person_id,
                     )
-                    identity_mismatch = True
-                    break
+                    self._quarantine.quarantine(
+                        owner_id=session.owner_id,
+                        session_id=session.id,
+                        analysis_id=session.vision_analysis_id,
+                        observed_session_id=observation.session_id,
+                        observed_target_person_id=observation.target_person_id,
+                        expected_session_id=expected_session_id,
+                        expected_target_person_id=session.target_person_id,
+                        epoch=observation.epoch,
+                        sequence=observation.sequence,
+                    )
+                    skipped_identity_mismatch += 1
+                    latest_cursor = f"{observation.epoch}:{observation.sequence}"
+                    continue
                 if observation.epoch != session.vision_epoch:
                     skipped_stale_epoch += 1
                     latest_cursor = f"{observation.epoch}:{observation.sequence}"
@@ -237,12 +258,12 @@ class PollVisionObservationsUseCase:
                 last_cursor = (observation.epoch, observation.sequence)
                 latest_cursor = f"{observation.epoch}:{observation.sequence}"
             else:
-                # The whole page was safely processed (no identity mismatch,
-                # no publish failure): Vision's own page-end cursor
-                # guarantees forward progress through its stream even when
-                # every observation in this page was stale/duplicate for
-                # us, so a page we can never locally accept does not
-                # permanently stall the next poll on the same position.
+                # The whole page was safely processed (no publish failure --
+                # the only thing that still stops the loop early): Vision's
+                # own page-end cursor guarantees forward progress through
+                # its stream even when every observation in this page was
+                # stale/duplicate/quarantined for us, so a page we can never
+                # locally accept does not permanently stall the next poll.
                 if page.next_cursor is not None:
                     latest_cursor = page.next_cursor
 
@@ -263,7 +284,7 @@ class PollVisionObservationsUseCase:
                 skipped_duplicate_sequence=skipped_duplicate_sequence,
                 next_cursor=latest_cursor if cursor_advanced else starting_cursor,
                 publish_failed=publish_failed,
-                identity_mismatch=identity_mismatch,
+                skipped_identity_mismatch=skipped_identity_mismatch,
                 cursor_advanced=cursor_advanced,
             )
         finally:
