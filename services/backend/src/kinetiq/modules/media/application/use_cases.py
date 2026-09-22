@@ -128,6 +128,7 @@ class RequestProgressPhotoUploadUseCase:
         photo_id = uuid4()
         s3_key = f"photos/{owner_id}/{photo_id}{ext}"
         now = datetime.now(UTC)
+        authorized_until = now + timedelta(seconds=self._ttl_seconds)
 
         photo = ProgressPhoto(
             id=photo_id,
@@ -138,6 +139,7 @@ class RequestProgressPhotoUploadUseCase:
             byte_length=byte_length,
             status=ProgressPhotoStatus.PENDING_UPLOAD,
             created_at=now,
+            upload_authorized_until=authorized_until,
         )
 
         saved_photo, _ = self._repository.save_upload_request_idempotently(
@@ -157,18 +159,26 @@ class RequestProgressPhotoUploadUseCase:
                 f"requested: photo is {saved_photo.status.value}"
             )
 
+        # Every call issues a fresh presigned URL, so the object can be
+        # recreated at `s3_key` until THIS authorization -- persist the
+        # extended deadline (including on an idempotent replay) so deletion
+        # cleanup later knows to wait for it.
+        if saved_photo.upload_authorized_until != authorized_until:
+            saved_photo = self._repository.save(
+                photo=saved_photo.with_upload_authorization(authorized_until)
+            )
+
         upload_url = self._storage.generate_upload_url(
             s3_key=saved_photo.s3_key,
             content_type=saved_photo.content_type,
             byte_length=saved_photo.byte_length,
             ttl_seconds=self._ttl_seconds,
         )
-        expires_at = datetime.now(UTC) + timedelta(seconds=self._ttl_seconds)
 
         return UploadRequestDTO(
             photo_id=saved_photo.id,
             upload_url=upload_url,
-            expires_at=expires_at,
+            expires_at=authorized_until,
         )
 
 

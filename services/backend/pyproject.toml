@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Kinetiq V modular product backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "boto3>=1.34,<2",
     "channels>=4,<5",
     "channels-redis>=4,<5",
     "dj-database-url>=3,<4",

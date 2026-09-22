@@ -182,6 +182,58 @@ def test_pair_display_device_expired():
         use_case.execute("user-1", "EXPIRED-01")
 
 
+def test_pair_display_device_allows_same_owner_to_repair_after_claim_window_expires():
+    """`expires_at` is the short-lived claim window for an unpaired code, not
+    the paired session's lifetime: a workout running longer than 15 minutes
+    must not lock the same owner out of reconnecting (e.g. the TV app
+    restarting mid-workout)."""
+    store = InMemoryDisplayPairingStore()
+    pairing = IssueDisplayPairingCodeUseCase(store).execute(DisplayDeviceType.FIRE_TV)
+    use_case = PairDisplayDeviceUseCase(store, DummyLifecycleRepo())
+    owner_a = str(uuid4())
+    first = use_case.execute(owner_a, pairing.code)
+
+    long_expired = DisplayPairingCode(
+        code=first.code,
+        device_type=first.device_type,
+        created_at=first.created_at,
+        expires_at=first.created_at - timedelta(minutes=1),
+        status=first.status,
+        paired_session_id=first.paired_session_id,
+        owner_id=first.owner_id,
+        version=first.version,
+    )
+    assert store.compare_and_save(expected_version=first.version, pairing=long_expired)
+
+    second = use_case.execute(owner_a, pairing.code)
+    assert second.status == DisplayPairingStatus.PAIRED
+
+
+def test_pair_display_device_rejects_other_owner_even_after_claim_window_expires():
+    """The claim-window exemption for an already-PAIRED code must never
+    reopen it to hijacking: a different owner is still rejected."""
+    store = InMemoryDisplayPairingStore()
+    pairing = IssueDisplayPairingCodeUseCase(store).execute(DisplayDeviceType.VEGA_OS)
+    use_case = PairDisplayDeviceUseCase(store, DummyLifecycleRepo())
+    owner_a = str(uuid4())
+    first = use_case.execute(owner_a, pairing.code)
+
+    expired = DisplayPairingCode(
+        code=first.code,
+        device_type=first.device_type,
+        created_at=first.created_at,
+        expires_at=first.created_at - timedelta(minutes=1),
+        status=first.status,
+        paired_session_id=first.paired_session_id,
+        owner_id=first.owner_id,
+        version=first.version,
+    )
+    assert store.compare_and_save(expected_version=first.version, pairing=expired)
+
+    with pytest.raises(DisplayPairingCodePaired):
+        use_case.execute(str(uuid4()), pairing.code)
+
+
 def test_get_display_session_state_unpaired():
     store = InMemoryDisplayPairingStore()
     issue_use_case = IssueDisplayPairingCodeUseCase(store)
@@ -273,3 +325,48 @@ def test_get_display_session_state_paired_without_transient_update_shows_no_fabr
     assert state.active_exercise is None
     assert state.confirmed_reps == 0
     assert state.visibility_status is None
+
+
+def test_get_display_session_state_stays_live_past_the_original_claim_window():
+    """A workout running longer than the 15-minute claim window must keep
+    reporting real, live progress -- not flip to EXPIRED and have the
+    display overwrite its last good state (reps, active exercise) with
+    zeroed defaults mid-workout."""
+    owner_id = uuid4()
+    session = _prepared_session(owner_id)
+
+    store = InMemoryDisplayPairingStore()
+    pairing = IssueDisplayPairingCodeUseCase(store).execute(DisplayDeviceType.FIRE_TV)
+    repo = DummyLifecycleRepo(session=session)
+    paired = PairDisplayDeviceUseCase(store, repo).execute(
+        str(owner_id), pairing.code, session_id=str(session.id)
+    )
+
+    # Simulate the original 15-minute claim window having long since passed.
+    long_expired = DisplayPairingCode(
+        code=paired.code,
+        device_type=paired.device_type,
+        created_at=paired.created_at,
+        expires_at=paired.created_at - timedelta(minutes=1),
+        status=paired.status,
+        paired_session_id=paired.paired_session_id,
+        owner_id=paired.owner_id,
+        version=paired.version,
+    )
+    assert store.compare_and_save(expected_version=paired.version, pairing=long_expired)
+
+    transient_store = DummyTransientStore(
+        TransientSessionUpdate(
+            session_id=session.id,
+            active_exercise_id="bodyweight_squat",
+            current_repetitions=11,
+            visibility_status="VISIBLE",
+        )
+    )
+    get_use_case = GetDisplaySessionStateUseCase(store, repo, transient_store)
+
+    state = get_use_case.execute(pairing.code)
+
+    assert state.status == DisplayPairingStatus.PAIRED
+    assert state.confirmed_reps == 11
+    assert state.active_exercise == "bodyweight_squat"

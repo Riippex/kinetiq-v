@@ -68,6 +68,11 @@ class ProgressPhoto:
     created_at: datetime
     confirmed_at: datetime | None = None
     deleted_at: datetime | None = None
+    # The instant the most recently issued presigned PUT stops being usable.
+    # A client holding that URL can still recreate the object at `s3_key`
+    # until this instant, even after the photo is deleted -- deletion
+    # cleanup must not report itself final before it elapses.
+    upload_authorized_until: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.content_type not in ALLOWED_MEDIA_TYPES:
@@ -99,6 +104,7 @@ class ProgressPhoto:
             created_at=self.created_at,
             confirmed_at=confirmed_at,
             deleted_at=None,
+            upload_authorized_until=self.upload_authorized_until,
         )
 
     def mark_deleted(self, deleted_at: datetime) -> ProgressPhoto:
@@ -113,6 +119,24 @@ class ProgressPhoto:
             created_at=self.created_at,
             confirmed_at=self.confirmed_at,
             deleted_at=deleted_at,
+            upload_authorized_until=self.upload_authorized_until,
+        )
+
+    def with_upload_authorization(self, authorized_until: datetime) -> ProgressPhoto:
+        """A freshly issued (or reissued) presigned PUT is valid until
+        `authorized_until`; record that so deletion cleanup can account for it."""
+        return ProgressPhoto(
+            id=self.id,
+            owner_id=self.owner_id,
+            session_id=self.session_id,
+            s3_key=self.s3_key,
+            content_type=self.content_type,
+            byte_length=self.byte_length,
+            status=self.status,
+            created_at=self.created_at,
+            confirmed_at=self.confirmed_at,
+            deleted_at=self.deleted_at,
+            upload_authorized_until=authorized_until,
         )
 
 
@@ -150,3 +174,8 @@ class MediaCleanupJob:
     created_at: datetime
     last_error: str | None = None
     completed_at: datetime | None = None
+    # Set only for a PHOTO_DELETED job: the object must be (re-)confirmed
+    # absent no earlier than this instant before the job -- and the
+    # caller-visible cleanup -- may be reported DONE. See
+    # ProgressPhoto.upload_authorized_until.
+    verify_after: datetime | None = None

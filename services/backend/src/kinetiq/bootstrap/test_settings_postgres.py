@@ -28,3 +28,8 @@ CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"
 CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 # Process-local store: no Redis server is needed for the default suite.
 DISPLAY_PAIRING_STORE = "memory"
+# This settings module tests real PostgreSQL row-locking/concurrency, not
+# real S3: no AWS credentials are configured here, so selecting the real
+# adapter would fail (correctly -- see get_media_storage) rather than
+# silently degrade.
+USE_IN_MEMORY_MEDIA_STORAGE = True

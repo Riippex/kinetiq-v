@@ -310,23 +310,21 @@ _in_memory_media_storage: InMemoryMediaStorageAdapter | None = None
 
 def get_media_storage() -> MediaStoragePort:
     global _in_memory_media_storage
+    # The in-memory adapter is not durable (per-process, discarded on
+    # restart) and must be an explicit development/test choice, never a
+    # silent fallback: swallowing an S3 misconfiguration here would make
+    # every photo upload/deletion a no-op against real storage without any
+    # error surfacing that S3 is unreachable.
     if getattr(django_settings, "USE_IN_MEMORY_MEDIA_STORAGE", False):
         if _in_memory_media_storage is None:
             _in_memory_media_storage = InMemoryMediaStorageAdapter()
         return _in_memory_media_storage
 
-    try:
-        import boto3  # noqa: F401 # type: ignore[import-not-found]
-
-        return S3MediaStorageAdapter(
-            bucket_name=django_settings.MEDIA_S3_BUCKET,
-            region=django_settings.MEDIA_S3_REGION,
-            endpoint_url=getattr(django_settings, "MEDIA_S3_ENDPOINT_URL", None),
-        )
-    except Exception:
-        if _in_memory_media_storage is None:
-            _in_memory_media_storage = InMemoryMediaStorageAdapter()
-        return _in_memory_media_storage
+    return S3MediaStorageAdapter(
+        bucket_name=django_settings.MEDIA_S3_BUCKET,
+        region=django_settings.MEDIA_S3_REGION,
+        endpoint_url=getattr(django_settings, "MEDIA_S3_ENDPOINT_URL", None),
+    )
 
 
 def request_progress_photo_upload() -> RequestProgressPhotoUploadUseCase:

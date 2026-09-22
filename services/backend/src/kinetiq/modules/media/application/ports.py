@@ -76,6 +76,7 @@ class MediaCleanupRepository(Protocol):
         s3_key: str,
         reason: MediaCleanupReason,
         now: datetime,
+        verify_after: datetime | None = None,
     ) -> MediaCleanupJob:
         """Create (or return the existing pending) cleanup job for the object."""
         ...
@@ -87,6 +88,12 @@ class MediaCleanupRepository(Protocol):
     def due_job_ids(self, *, now: datetime, limit: int) -> list[UUID]: ...
 
     def mark_done(self, *, job_id: UUID, at: datetime) -> None: ...
+
+    def defer_verification(self, *, job_id: UUID, next_attempt_at: datetime) -> MediaCleanupJob:
+        """The object was removed, but must be re-checked no earlier than
+        `next_attempt_at` (see `MediaCleanupJob.verify_after`) before the job
+        may be marked DONE. Not a failure: `last_error` is left untouched."""
+        ...
 
     def mark_retry(
         self, *, job_id: UUID, error: str, next_attempt_at: datetime

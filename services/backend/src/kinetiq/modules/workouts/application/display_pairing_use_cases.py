@@ -94,7 +94,12 @@ class PairDisplayDeviceUseCase:
             if pairing is None:
                 raise DisplayPairingCodeNotFound(code)
 
-            if pairing.is_expired():
+            # `expires_at` is the short-lived claim window for an unpaired
+            # code, not the lifetime of an already-paired session: once
+            # PAIRED, the same owner reconnecting (e.g. the TV app
+            # restarting) must not be rejected just because the workout has
+            # run longer than the original claim window.
+            if pairing.status == DisplayPairingStatus.UNPAIRED and pairing.is_expired():
                 raise DisplayPairingCodeExpired(code)
 
             # A code already paired to a different owner must never be
@@ -162,7 +167,12 @@ class GetDisplaySessionStateUseCase:
         if pairing is None:
             raise DisplayPairingCodeNotFound(code)
 
-        if pairing.is_expired():
+        # Same claim-window-vs-session-lifetime distinction as pairing: a
+        # PAIRED code must keep reporting real live state for the whole
+        # workout, however long it runs, not flip to EXPIRED (and have the
+        # display overwrite its last good state with zeroed defaults) once
+        # the original 15-minute claim window has passed.
+        if pairing.status == DisplayPairingStatus.UNPAIRED and pairing.is_expired():
             return DisplaySessionState(
                 session_id=pairing.paired_session_id,
                 device_type=pairing.device_type,

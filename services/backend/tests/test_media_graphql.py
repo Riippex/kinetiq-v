@@ -204,7 +204,11 @@ def test_media_graphql_full_lifecycle() -> None:
     # 6. Delete progress photo
     del_res = _post_graphql(client, DELETE_PHOTO_MUTATION, {"photoId": photo_id})
     assert del_res["data"]["deleteProgressPhoto"]["success"] is True
-    assert del_res["data"]["deleteProgressPhoto"]["storageCleanup"] == "COMPLETED"
+    # The object is removed immediately, but the presigned upload URL from
+    # step 1 is still within its authorization window, so cleanup is
+    # reported PENDING (not COMPLETED) until that window elapses -- see
+    # test_media_persistence.py for the full deferred-verification flow.
+    assert del_res["data"]["deleteProgressPhoto"]["storageCleanup"] == "PENDING"
     assert not storage.has_object(s3_key=record.s3_key)
 
     # 7. Query progress photos after deletion -> empty

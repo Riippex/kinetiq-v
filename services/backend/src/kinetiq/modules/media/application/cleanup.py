@@ -89,6 +89,15 @@ class MediaCleanupService:
         except Exception as exc:  # noqa: BLE001 - any storage failure must be retried
             return self._record_failure(job, exc, now)
 
+        if job.verify_after is not None and job.verify_after > now:
+            # The object is gone now, but a presigned PUT issued before this
+            # delete may still be authorized to recreate it at this key until
+            # `verify_after`. Re-check no earlier than that instant instead of
+            # declaring this job -- and the caller-visible cleanup -- done
+            # while that window is still open.
+            self._repository.defer_verification(job_id=job.id, next_attempt_at=job.verify_after)
+            return MediaCleanupStatus.PENDING
+
         self._repository.mark_done(job_id=job.id, at=now)
         self._publish_deleted(job)
         return MediaCleanupStatus.DONE

@@ -72,7 +72,7 @@ class S3MediaStorageAdapter(MediaStoragePort):
 
     def _get_client(self) -> Any:
         if self._client is None:
-            import boto3  # type: ignore[import-not-found]
+            import boto3  # type: ignore[import-untyped]
 
             self._client = boto3.client(
                 "s3",
@@ -113,7 +113,7 @@ class S3MediaStorageAdapter(MediaStoragePort):
     def get_object_info(self, *, s3_key: str) -> StoredObjectInfo | None:
         client = self._get_client()
         try:
-            from botocore.exceptions import ClientError  # type: ignore[import-not-found]
+            from botocore.exceptions import ClientError  # type: ignore[import-untyped]
         except ImportError:
             ClientError = Exception
 

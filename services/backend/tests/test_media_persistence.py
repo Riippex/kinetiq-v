@@ -7,6 +7,7 @@ connections are covered by tests/postgres/test_media_concurrency.py.
 
 from datetime import UTC, datetime, timedelta
 from io import StringIO
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -42,7 +43,10 @@ from kinetiq.modules.media.infrastructure.repositories import (
     DjangoMediaCleanupRepository,
     DjangoProgressPhotoRepository,
 )
-from kinetiq.modules.media.infrastructure.storage import InMemoryMediaStorageAdapter
+from kinetiq.modules.media.infrastructure.storage import (
+    InMemoryMediaStorageAdapter,
+    S3MediaStorageAdapter,
+)
 
 DELETE_PHOTO_MUTATION = """
 mutation DeletePhoto($photoId: ID!) {
@@ -367,6 +371,12 @@ def test_worker_retries_after_outage_and_completes_with_the_real_repository() ->
     s3_key = ProgressPhotoRecord.objects.get(id=photo_id).s3_key
     storage.put_object_data(s3_key=s3_key, data=b"x" * 8)
     storage.delete_failures_remaining = 1
+    # Not testing the upload-authorization window here (see
+    # test_delete_defers_completion_until_... for that): close it so a
+    # successful retry can complete right away.
+    ProgressPhotoRecord.objects.filter(id=photo_id).update(
+        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=1)
+    )
 
     result = delete_progress_photo().execute(owner_id=owner.id, photo_id=photo_id)
 
@@ -511,3 +521,32 @@ def test_use_case_wiring_raises_typed_errors() -> None:
         delete_progress_photo().execute(owner_id=owner.id, photo_id=uuid4())
     with pytest.raises(PhotoNotFoundError):
         finalize_progress_photo().execute(owner_id=owner.id, photo_id=uuid4())
+
+
+def test_get_media_storage_never_silently_falls_back_to_in_memory(settings: Any) -> None:
+    """Without the explicit development/test flag, storage selection must
+    return the real S3 adapter, never the non-durable in-memory one."""
+    settings.USE_IN_MEMORY_MEDIA_STORAGE = False
+
+    storage = get_media_storage()
+
+    assert isinstance(storage, S3MediaStorageAdapter)
+    assert not isinstance(storage, InMemoryMediaStorageAdapter)
+
+
+def test_get_media_storage_propagates_a_construction_failure_instead_of_degrading(
+    settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure constructing the real storage adapter (missing dependency,
+    bad configuration, an unreachable client, ...) must propagate and fail
+    the request loudly, never be swallowed into a silent, permanent
+    fallback to the non-durable, per-process in-memory adapter."""
+    settings.USE_IN_MEMORY_MEDIA_STORAGE = False
+
+    def _boom(self: object, *args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated S3 adapter construction failure")
+
+    monkeypatch.setattr(S3MediaStorageAdapter, "__init__", _boom)
+
+    with pytest.raises(RuntimeError, match="simulated S3 adapter construction failure"):
+        get_media_storage()

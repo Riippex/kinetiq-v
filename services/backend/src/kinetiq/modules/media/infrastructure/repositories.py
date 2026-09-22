@@ -43,6 +43,7 @@ def _record_to_domain(record: ProgressPhotoRecord) -> ProgressPhoto:
         created_at=record.created_at,
         confirmed_at=record.confirmed_at,
         deleted_at=record.deleted_at,
+        upload_authorized_until=record.upload_authorized_until,
     )
 
 
@@ -59,6 +60,7 @@ def _job_to_domain(record: MediaCleanupJobRecord) -> MediaCleanupJob:
         created_at=record.created_at,
         last_error=record.last_error,
         completed_at=record.completed_at,
+        verify_after=record.verify_after,
     )
 
 
@@ -69,6 +71,7 @@ def _enqueue_cleanup_job(
     s3_key: str,
     reason: MediaCleanupReason,
     now: datetime,
+    verify_after: datetime | None = None,
 ) -> MediaCleanupJob:
     """Create the cleanup job, or return the one already pending for the object.
 
@@ -90,6 +93,7 @@ def _enqueue_cleanup_job(
                 reason=reason.value,
                 status=MediaCleanupStatus.PENDING.value,
                 next_attempt_at=now,
+                verify_after=verify_after,
             )
     except IntegrityError:
         record = open_jobs.get()
@@ -121,6 +125,7 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
                     content_type=photo.content_type,
                     byte_length=photo.byte_length,
                     status=photo.status.value,
+                    upload_authorized_until=photo.upload_authorized_until,
                 )
                 MediaUploadReceiptRecord.objects.create(
                     owner_id=photo.owner_id,
@@ -168,6 +173,7 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
             status=photo.status.value,
             confirmed_at=photo.confirmed_at,
             deleted_at=photo.deleted_at,
+            upload_authorized_until=photo.upload_authorized_until,
         )
         record = ProgressPhotoRecord.objects.get(id=photo.id)
         return _record_to_domain(record)
@@ -205,6 +211,10 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
                 s3_key=record.s3_key,
                 reason=MediaCleanupReason.PHOTO_DELETED,
                 now=deleted_at,
+                # A presigned PUT issued before this delete may still be
+                # authorized to recreate the object at this key -- the job
+                # must not be declared done before that window elapses.
+                verify_after=record.upload_authorized_until,
             )
             return _record_to_domain(record), job
 
@@ -218,9 +228,15 @@ class DjangoMediaCleanupRepository(MediaCleanupRepository):
         s3_key: str,
         reason: MediaCleanupReason,
         now: datetime,
+        verify_after: datetime | None = None,
     ) -> MediaCleanupJob:
         return _enqueue_cleanup_job(
-            owner_id=owner_id, photo_id=photo_id, s3_key=s3_key, reason=reason, now=now
+            owner_id=owner_id,
+            photo_id=photo_id,
+            s3_key=s3_key,
+            reason=reason,
+            now=now,
+            verify_after=verify_after,
         )
 
     def claim(self, *, job_id: UUID, now: datetime, lease_seconds: int) -> MediaCleanupJob | None:
@@ -251,6 +267,10 @@ class DjangoMediaCleanupRepository(MediaCleanupRepository):
         MediaCleanupJobRecord.objects.filter(id=job_id).update(
             status=MediaCleanupStatus.DONE.value, completed_at=at, last_error=None
         )
+
+    def defer_verification(self, *, job_id: UUID, next_attempt_at: datetime) -> MediaCleanupJob:
+        MediaCleanupJobRecord.objects.filter(id=job_id).update(next_attempt_at=next_attempt_at)
+        return _job_to_domain(MediaCleanupJobRecord.objects.get(id=job_id))
 
     def mark_retry(self, *, job_id: UUID, error: str, next_attempt_at: datetime) -> MediaCleanupJob:
         MediaCleanupJobRecord.objects.filter(id=job_id).update(

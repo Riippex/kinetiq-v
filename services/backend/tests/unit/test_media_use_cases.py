@@ -44,6 +44,7 @@ class FakeCleanupRepository:
         s3_key: str,
         reason: MediaCleanupReason,
         now: datetime,
+        verify_after: datetime | None = None,
     ) -> MediaCleanupJob:
         for job in self.jobs.values():
             if (
@@ -62,9 +63,14 @@ class FakeCleanupRepository:
             attempts=0,
             next_attempt_at=now,
             created_at=now,
+            verify_after=verify_after,
         )
         self.jobs[job.id] = job
         return job
+
+    def defer_verification(self, *, job_id: UUID, next_attempt_at: datetime) -> MediaCleanupJob:
+        self.jobs[job_id] = replace(self.jobs[job_id], next_attempt_at=next_attempt_at)
+        return self.jobs[job_id]
 
     def claim(self, *, job_id: UUID, now: datetime, lease_seconds: int) -> MediaCleanupJob | None:
         job = self.jobs.get(job_id)
@@ -176,6 +182,7 @@ class FakeProgressPhotoRepository:
             s3_key=p.s3_key,
             reason=MediaCleanupReason.PHOTO_DELETED,
             now=deleted_at,
+            verify_after=p.upload_authorized_until,
         )
         return updated, job
 
@@ -252,6 +259,13 @@ class Harness:
         self.upload(photo_id)
         self.finalize.execute(owner_id=self.owner_id, photo_id=photo_id)
         return photo_id
+
+    def close_upload_authorization(self, photo_id: UUID) -> None:
+        """Test-only: simulate the presigned URL's authorization window having
+        already elapsed, for a delete test unrelated to that window (see the
+        deferred-verification tests, which test it directly)."""
+        photo = self.repo.photos[photo_id]
+        self.repo.photos[photo_id] = replace(photo, upload_authorized_until=self.now)
 
 
 def test_request_upload_use_case_success() -> None:
@@ -478,6 +492,7 @@ def test_list_and_delete_photo_flow() -> None:
     assert len(list_use_case.execute(owner_id=h.owner_id)) == 2
 
     s3_key = h.repo.photos[photo1].s3_key
+    h.close_upload_authorization(photo1)
     result = h.delete.execute(owner_id=h.owner_id, photo_id=photo1)
 
     assert result.storage_cleanup == MediaCleanupStatus.DONE
@@ -495,6 +510,7 @@ def test_delete_is_durable_when_storage_is_down_and_event_waits_for_removal() ->
     h = Harness()
     photo_id = h.confirmed_photo()
     s3_key = h.repo.photos[photo_id].s3_key
+    h.close_upload_authorization(photo_id)
     h.storage.delete_failures_remaining = 1
 
     result = h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
@@ -566,6 +582,7 @@ def test_event_publisher_failure_does_not_undo_completed_cleanup() -> None:
         raise RuntimeError("bus down")
 
     h.publisher.publish_photo_deleted = _boom  # type: ignore[method-assign]
+    h.close_upload_authorization(photo_id)
 
     result = h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
 
@@ -579,3 +596,59 @@ def test_delete_of_another_owners_photo_is_not_found() -> None:
     with pytest.raises(PhotoNotFoundError):
         h.delete.execute(owner_id=uuid4(), photo_id=photo_id)
     assert h.cleanup_repo.jobs == {}
+
+
+def test_delete_defers_completion_until_the_upload_authorization_window_elapses() -> None:
+    """A presigned PUT issued before delete stays authorized to recreate the
+    object at `s3_key` until it expires -- cleanup must not report itself
+    done, or publish the deleted event, while that window is still open."""
+    h = Harness()
+    photo_id = h.confirmed_photo()
+    s3_key = h.repo.photos[photo_id].s3_key
+    authorized_until = h.repo.photos[photo_id].upload_authorized_until
+    assert authorized_until is not None and authorized_until > h.now
+
+    result = h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
+
+    # Removed immediately, but not yet reported final.
+    assert result.storage_cleanup == MediaCleanupStatus.PENDING
+    assert not h.storage.has_object(s3_key=s3_key)
+    assert h.publisher.deleted_events == []
+    (job,) = h.cleanup_repo.jobs.values()
+    assert job.next_attempt_at == authorized_until
+
+    # Not due before the window elapses: the worker leaves it alone.
+    h.now = authorized_until - timedelta(seconds=1)
+    assert h.cleanup.process_due().claimed == 0
+
+    # Due once the window elapses: the final verification pass completes it.
+    h.now = authorized_until + timedelta(seconds=1)
+    summary = h.cleanup.process_due()
+
+    assert (summary.claimed, summary.completed) == (1, 1)
+    assert h.cleanup_repo.jobs[job.id].status == MediaCleanupStatus.DONE
+    assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
+
+
+def test_delete_removes_an_object_recreated_via_a_stale_upload_url_before_reporting_done() -> None:
+    """A client holding the still-valid presigned URL PUTs again after the
+    delete's first pass -- the deferred verification must remove it too."""
+    h = Harness()
+    photo_id = h.confirmed_photo()
+    s3_key = h.repo.photos[photo_id].s3_key
+    authorized_until = h.repo.photos[photo_id].upload_authorized_until
+    assert authorized_until is not None
+
+    result = h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
+    assert result.storage_cleanup == MediaCleanupStatus.PENDING
+
+    # A stale PUT (still within the presigned URL's window) recreates the
+    # object at the same key -- a deleted private photo must not survive this.
+    h.storage.put_object_data(s3_key=s3_key)
+    assert h.storage.has_object(s3_key=s3_key)
+
+    h.now = authorized_until + timedelta(seconds=1)
+    summary = h.cleanup.process_due()
+
+    assert summary.completed == 1
+    assert not h.storage.has_object(s3_key=s3_key)

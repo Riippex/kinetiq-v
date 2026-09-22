@@ -15,6 +15,9 @@ class ProgressPhotoRecord(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
+    # The most recently issued presigned PUT is usable until this instant;
+    # deletion cleanup must not report itself final before it elapses.
+    upload_authorized_until = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "media_progress_photos"
@@ -58,6 +61,9 @@ class MediaCleanupJobRecord(models.Model):
     next_attempt_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    # Set only for a PHOTO_DELETED job: the object must be (re-)confirmed
+    # absent no earlier than this instant before the job may be marked DONE.
+    verify_after = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "media_cleanup_jobs"
