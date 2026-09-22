@@ -315,18 +315,29 @@ class DjangoMediaCleanupRepository(MediaCleanupRepository):
             .values_list("id", flat=True)[:limit]
         )
 
-    def mark_done(self, *, job_id: UUID, at: datetime) -> None:
-        MediaCleanupJobRecord.objects.filter(id=job_id).update(
-            status=MediaCleanupStatus.DONE.value, completed_at=at, last_error=None
-        )
+    def mark_done(self, *, job_id: UUID, at: datetime, expected_attempts: int) -> bool:
+        # Fenced: only the worker whose claim last set `attempts` to this
+        # exact value may complete the job. A stale worker (its lease
+        # already expired and reclaimed by someone else) sees 0 rows
+        # updated and must never complete it a second time.
+        updated = MediaCleanupJobRecord.objects.filter(
+            id=job_id, status=MediaCleanupStatus.PENDING.value, attempts=expected_attempts
+        ).update(status=MediaCleanupStatus.DONE.value, completed_at=at, last_error=None)
+        return updated == 1
 
     def mark_done_and_enqueue_deleted_event(
-        self, *, job_id: UUID, photo_id: UUID, owner_id: UUID, at: datetime
-    ) -> None:
+        self, *, job_id: UUID, photo_id: UUID, owner_id: UUID, at: datetime, expected_attempts: int
+    ) -> bool:
         with transaction.atomic():
-            MediaCleanupJobRecord.objects.filter(id=job_id).update(
-                status=MediaCleanupStatus.DONE.value, completed_at=at, last_error=None
-            )
+            updated = MediaCleanupJobRecord.objects.filter(
+                id=job_id, status=MediaCleanupStatus.PENDING.value, attempts=expected_attempts
+            ).update(status=MediaCleanupStatus.DONE.value, completed_at=at, last_error=None)
+            if updated != 1:
+                # Lost the fence: never enqueue a second outbox event for a
+                # deletion another worker already completed (or is
+                # completing) -- that would give the same logical deletion
+                # two distinct event IDs, defeating consumer dedup.
+                return False
             MediaEventOutboxRecord.objects.create(
                 owner_id=owner_id,
                 photo_id=photo_id,
@@ -334,6 +345,7 @@ class DjangoMediaCleanupRepository(MediaCleanupRepository):
                 status=MediaEventStatus.PENDING.value,
                 next_attempt_at=at,
             )
+            return True
 
     def defer_verification(self, *, job_id: UUID, next_attempt_at: datetime) -> MediaCleanupJob:
         MediaCleanupJobRecord.objects.filter(id=job_id).update(next_attempt_at=next_attempt_at)
@@ -345,11 +357,15 @@ class DjangoMediaCleanupRepository(MediaCleanupRepository):
         )
         return _job_to_domain(MediaCleanupJobRecord.objects.get(id=job_id))
 
-    def mark_dead_letter(self, *, job_id: UUID, error: str, at: datetime) -> MediaCleanupJob:
-        MediaCleanupJobRecord.objects.filter(id=job_id).update(
-            status=MediaCleanupStatus.DEAD_LETTER.value, last_error=error, completed_at=at
-        )
-        return _job_to_domain(MediaCleanupJobRecord.objects.get(id=job_id))
+    def mark_dead_letter(
+        self, *, job_id: UUID, error: str, at: datetime, expected_attempts: int
+    ) -> bool:
+        # Fenced like `mark_done`: a stale worker's failure report must
+        # never regress an already-completed job's status.
+        updated = MediaCleanupJobRecord.objects.filter(
+            id=job_id, status=MediaCleanupStatus.PENDING.value, attempts=expected_attempts
+        ).update(status=MediaCleanupStatus.DEAD_LETTER.value, last_error=error, completed_at=at)
+        return updated == 1
 
     def get(self, *, job_id: UUID) -> MediaCleanupJob | None:
         record = MediaCleanupJobRecord.objects.filter(id=job_id).first()
@@ -428,14 +444,19 @@ class LogMediaEventPublisher(MediaEventPublisher):
     delivery here means logged; a real bus can be substituted without
     changing the outbox's durability guarantees."""
 
-    def publish_photo_deleted(self, *, photo_id: UUID, owner_id: UUID) -> None:
+    def publish_photo_deleted(
+        self, *, event_id: UUID, photo_id: UUID, owner_id: UUID, occurred_at: datetime
+    ) -> None:
         logger.info(
-            "ProgressPhotoDeleted.v1 emitted for photo_id=%s, owner_id=%s",
+            "ProgressPhotoDeleted.v1 emitted for photo_id=%s, owner_id=%s, event_id=%s",
             photo_id,
             owner_id,
+            event_id,
             extra={
                 "event_type": "ProgressPhotoDeleted.v1",
+                "event_id": str(event_id),
                 "photo_id": str(photo_id),
                 "user_id": str(owner_id),
+                "occurred_at": occurred_at.isoformat(),
             },
         )

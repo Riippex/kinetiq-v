@@ -122,8 +122,13 @@ class MediaCleanupRepository(Protocol):
 
     def due_job_ids(self, *, now: datetime, limit: int) -> list[UUID]: ...
 
-    def mark_done(self, *, job_id: UUID, at: datetime) -> None:
-        """Complete a job that needs no durable event (e.g. UPLOAD_REJECTED).
+    def mark_done(self, *, job_id: UUID, at: datetime, expected_attempts: int) -> bool:
+        """Complete a job that needs no durable event (e.g. UPLOAD_REJECTED),
+        fenced on the claim's own attempt count: `False` (no-op) if the row
+        is no longer PENDING with exactly that count, meaning this worker's
+        lease already expired and another worker reclaimed (or already
+        completed) it -- completing here too would be a second, unfenced
+        writer racing the real owner.
 
         A PHOTO_DELETED job must use
         `mark_done_and_enqueue_deleted_event` instead, so completion and the
@@ -132,12 +137,17 @@ class MediaCleanupRepository(Protocol):
         ...
 
     def mark_done_and_enqueue_deleted_event(
-        self, *, job_id: UUID, photo_id: UUID, owner_id: UUID, at: datetime
-    ) -> None:
+        self, *, job_id: UUID, photo_id: UUID, owner_id: UUID, at: datetime, expected_attempts: int
+    ) -> bool:
         """Complete a PHOTO_DELETED job and durably enqueue its
         ProgressPhotoDeleted.v1 event in ONE transaction: a crash between
         "storage confirmed removed" and "event recorded" must never lose
-        the event, unlike a fire-and-forget publish attempted afterward."""
+        the event, unlike a fire-and-forget publish attempted afterward.
+        Fenced exactly like `mark_done`: `False` (no event enqueued) if this
+        worker's lease already expired and lost the race to reclaim/complete
+        this job -- otherwise two workers finishing the same lease-expired
+        job would each enqueue their own event for the same deletion,
+        defeating event-ID-based consumer deduplication."""
         ...
 
     def defer_verification(self, *, job_id: UUID, next_attempt_at: datetime) -> MediaCleanupJob:
@@ -150,7 +160,14 @@ class MediaCleanupRepository(Protocol):
         self, *, job_id: UUID, error: str, next_attempt_at: datetime
     ) -> MediaCleanupJob: ...
 
-    def mark_dead_letter(self, *, job_id: UUID, error: str, at: datetime) -> MediaCleanupJob: ...
+    def mark_dead_letter(
+        self, *, job_id: UUID, error: str, at: datetime, expected_attempts: int
+    ) -> bool:
+        """Fenced like `mark_done`: `False` (no-op) if this worker's lease
+        already expired and another worker reclaimed or completed the job --
+        a stale failure report must never regress an already-DONE job's
+        status to DEAD_LETTER."""
+        ...
 
     def get(self, *, job_id: UUID) -> MediaCleanupJob | None: ...
 
@@ -190,4 +207,12 @@ class WorkoutSessionLookup(Protocol):
 
 
 class MediaEventPublisher(Protocol):
-    def publish_photo_deleted(self, *, photo_id: UUID, owner_id: UUID) -> None: ...
+    def publish_photo_deleted(
+        self, *, event_id: UUID, photo_id: UUID, owner_id: UUID, occurred_at: datetime
+    ) -> None:
+        """`event_id` is the outbox row's own stable id: every retried
+        delivery of the SAME event (e.g. after a crash between a successful
+        publish and `mark_done`) carries this same id, so a consumer can
+        deduplicate an at-least-once redelivery instead of double-applying
+        an irreversible downstream effect."""
+        ...

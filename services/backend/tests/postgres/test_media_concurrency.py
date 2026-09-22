@@ -32,11 +32,13 @@ from kinetiq.modules.media.domain import (
     IdempotencyConflictError,
     InvalidPhotoStateError,
     MediaCleanupReason,
+    MediaCleanupStatus,
     PhotoNotFoundError,
     ProgressPhotoStatus,
 )
 from kinetiq.modules.media.infrastructure.models import (
     MediaCleanupJobRecord,
+    MediaEventOutboxRecord,
     MediaUploadReceiptRecord,
     ProgressPhotoRecord,
 )
@@ -318,6 +320,93 @@ def test_concurrent_upload_replay_and_delete_never_resurrects_a_deleted_photo() 
     # The delete committed first (widened by the receipt-lookup delay
     # above); the stale replay must see that, not resurrect authorization.
     assert isinstance(replay_outcome, InvalidPhotoStateError), replay_outcome
+
+
+@pytest.mark.django_db(transaction=True)
+def test_completing_a_job_after_its_lease_expires_never_duplicates_the_event() -> None:
+    """Sixth Codex adversarial-review pass, real concurrency: worker A
+    claims a cleanup job and its `delete_object` call runs long enough for
+    the lease to genuinely expire; worker B reclaims and completes the same
+    job first (deleting the object and enqueuing the one true event).
+    Worker A's own, now-stale completion attempt (fenced on its claim's
+    attempt count) must be a no-op -- never a second outbox event for the
+    same deletion, which would defeat event-ID-based consumer dedup."""
+    owner = User.objects.create_user(username=f"media-lease-race-{uuid4().hex[:8]}")
+    shared_storage = InMemoryMediaStorageAdapter()
+    photo_repo = DjangoProgressPhotoRepository()
+    photo, _ = photo_repo.save_upload_request_idempotently(
+        photo=_pending_photo(owner), idempotency_key="k", request_fingerprint="fp"
+    )
+    shared_storage.put_object_data(s3_key=photo.s3_key, data=b"x" * photo.byte_length)
+    tombstoned = photo_repo.tombstone_and_enqueue_cleanup(
+        photo_id=photo.id, owner_id=owner.id, deleted_at=datetime.now(UTC)
+    )
+    assert tombstoned is not None
+    _, job = tombstoned
+
+    release_b = threading.Event()
+    b_done = threading.Event()
+
+    class DelayedFirstDeleteStorage(InMemoryMediaStorageAdapter):
+        """Blocks its one delete_object call until worker B has finished,
+        sharing the same backing store as the real (non-delayed) adapter
+        worker B uses -- both target the same underlying object."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._objects = shared_storage._objects  # noqa: SLF001
+
+        def delete_object(self, *, s3_key: str) -> None:
+            release_b.set()
+            assert b_done.wait(timeout=10), "worker B did not finish in time"
+            super().delete_object(s3_key=s3_key)
+
+    a_cleanup = MediaCleanupService(
+        repository=DjangoMediaCleanupRepository(),
+        storage=DelayedFirstDeleteStorage(),
+        lease_seconds=1,
+    )
+    b_cleanup = MediaCleanupService(
+        repository=DjangoMediaCleanupRepository(), storage=shared_storage
+    )
+    results: dict[str, object] = {}
+
+    def worker_a() -> None:
+        try:
+            results["a"] = a_cleanup.attempt(job.id)
+        except BaseException as exc:  # noqa: BLE001 - reported to the test
+            results["a"] = exc
+        finally:
+            connections.close_all()
+
+    def worker_b() -> None:
+        try:
+            assert release_b.wait(timeout=10), "worker A did not claim in time"
+            time.sleep(1.2)  # let worker A's 1-second lease genuinely expire
+            results["b"] = b_cleanup.attempt(job.id)
+        except BaseException as exc:  # noqa: BLE001 - reported to the test
+            results["b"] = exc
+        finally:
+            b_done.set()
+            connections.close_all()
+
+    thread_a = threading.Thread(target=worker_a)
+    thread_b = threading.Thread(target=worker_b)
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=20)
+    thread_b.join(timeout=20)
+
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+    assert results["b"] == MediaCleanupStatus.DONE, results
+    # Fenced out, not an error: A's own attempt() reports the job's real
+    # final state (DONE, completed by B), never raises and never re-does it.
+    assert results["a"] == MediaCleanupStatus.DONE, results
+    assert MediaCleanupJobRecord.objects.get(id=job.id).status == "DONE"
+    assert MediaCleanupJobRecord.objects.get(id=job.id).attempts == 2
+    assert MediaEventOutboxRecord.objects.filter(photo_id=photo.id).count() == 1
+    assert not shared_storage.has_object(s3_key=photo.s3_key)
 
 
 def _pending_photo(owner: User):  # type: ignore[no-untyped-def]

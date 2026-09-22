@@ -630,12 +630,16 @@ def test_event_outbox_retries_a_failing_publisher_without_losing_the_event() -> 
         def __init__(self) -> None:
             self.attempts = 0
             self.delivered: list[tuple[Any, Any]] = []
+            self.delivered_event_ids: list[Any] = []
 
-        def publish_photo_deleted(self, *, photo_id: Any, owner_id: Any) -> None:
+        def publish_photo_deleted(
+            self, *, event_id: Any, photo_id: Any, owner_id: Any, occurred_at: Any
+        ) -> None:
             self.attempts += 1
             if self.attempts == 1:
                 raise RuntimeError("bus unreachable")
             self.delivered.append((photo_id, owner_id))
+            self.delivered_event_ids.append(event_id)
 
     publisher = FailOnceThenSucceedPublisher()
     outbox = MediaEventOutboxService(

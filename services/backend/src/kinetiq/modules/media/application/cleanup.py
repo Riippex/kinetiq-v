@@ -116,15 +116,28 @@ class MediaCleanupService:
                 self._repository.defer_verification(job_id=job.id, next_attempt_at=final_check_at)
                 return MediaCleanupStatus.PENDING
 
+        # Fenced on this claim's own attempt count: if this worker's lease
+        # already expired, another worker may have reclaimed and completed
+        # (or be completing) this same job. An unfenced write here could
+        # complete it a second time and, for PHOTO_DELETED, enqueue a
+        # second outbox event for the same deletion -- defeating
+        # event-ID-based consumer deduplication. A lost fence is not a
+        # failure: report whatever the job's current state actually is.
         if job.reason == MediaCleanupReason.PHOTO_DELETED:
-            # Completion and the durable event it produces commit together:
-            # a crash right here can never leave a completed job with a
-            # lost event, nor a recorded event for a job not yet complete.
-            self._repository.mark_done_and_enqueue_deleted_event(
-                job_id=job.id, photo_id=job.photo_id, owner_id=job.owner_id, at=now
+            completed = self._repository.mark_done_and_enqueue_deleted_event(
+                job_id=job.id,
+                photo_id=job.photo_id,
+                owner_id=job.owner_id,
+                at=now,
+                expected_attempts=job.attempts,
             )
         else:
-            self._repository.mark_done(job_id=job.id, at=now)
+            completed = self._repository.mark_done(
+                job_id=job.id, at=now, expected_attempts=job.attempts
+            )
+        if not completed:
+            current = self._repository.get(job_id=job.id)
+            return current.status if current is not None else MediaCleanupStatus.DONE
         return MediaCleanupStatus.DONE
 
     def process_due(self, *, limit: int = 50) -> CleanupRunSummary:
@@ -153,7 +166,15 @@ class MediaCleanupService:
                 job.attempts,
                 error,
             )
-            self._repository.mark_dead_letter(job_id=job.id, error=error, at=now)
+            # Fenced: a stale failure report (this worker's lease already
+            # expired and lost the race) must never regress an
+            # already-completed job's status to DEAD_LETTER.
+            dead_lettered = self._repository.mark_dead_letter(
+                job_id=job.id, error=error, at=now, expected_attempts=job.attempts
+            )
+            if not dead_lettered:
+                current = self._repository.get(job_id=job.id)
+                return current.status if current is not None else MediaCleanupStatus.DONE
             return MediaCleanupStatus.DEAD_LETTER
 
         delay = min(

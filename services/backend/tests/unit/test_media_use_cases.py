@@ -176,16 +176,35 @@ class FakeCleanupRepository:
         ]
         return [j.id for j in sorted(due, key=lambda j: j.next_attempt_at)][:limit]
 
-    def mark_done(self, *, job_id: UUID, at: datetime) -> None:
+    def _still_owned(self, job_id: UUID, expected_attempts: int) -> bool:
+        job = self.jobs.get(job_id)
+        return (
+            job is not None
+            and job.status == MediaCleanupStatus.PENDING
+            and job.attempts == expected_attempts
+        )
+
+    def mark_done(self, *, job_id: UUID, at: datetime, expected_attempts: int) -> bool:
+        if not self._still_owned(job_id, expected_attempts):
+            return False
         self.jobs[job_id] = replace(
             self.jobs[job_id], status=MediaCleanupStatus.DONE, completed_at=at, last_error=None
         )
+        return True
 
     def mark_done_and_enqueue_deleted_event(
-        self, *, job_id: UUID, photo_id: UUID, owner_id: UUID, at: datetime
-    ) -> None:
-        self.mark_done(job_id=job_id, at=at)
+        self,
+        *,
+        job_id: UUID,
+        photo_id: UUID,
+        owner_id: UUID,
+        at: datetime,
+        expected_attempts: int,
+    ) -> bool:
+        if not self.mark_done(job_id=job_id, at=at, expected_attempts=expected_attempts):
+            return False
         self._event_outbox.enqueue(owner_id=owner_id, photo_id=photo_id, now=at)
+        return True
 
     def mark_retry(self, *, job_id: UUID, error: str, next_attempt_at: datetime) -> MediaCleanupJob:
         self.jobs[job_id] = replace(
@@ -193,14 +212,18 @@ class FakeCleanupRepository:
         )
         return self.jobs[job_id]
 
-    def mark_dead_letter(self, *, job_id: UUID, error: str, at: datetime) -> MediaCleanupJob:
+    def mark_dead_letter(
+        self, *, job_id: UUID, error: str, at: datetime, expected_attempts: int
+    ) -> bool:
+        if not self._still_owned(job_id, expected_attempts):
+            return False
         self.jobs[job_id] = replace(
             self.jobs[job_id],
             status=MediaCleanupStatus.DEAD_LETTER,
             last_error=error,
             completed_at=at,
         )
-        return self.jobs[job_id]
+        return True
 
     def get(self, *, job_id: UUID) -> MediaCleanupJob | None:
         return self.jobs.get(job_id)
@@ -323,9 +346,13 @@ class FakeWorkoutSessionLookup:
 class FakeEventPublisher:
     def __init__(self) -> None:
         self.deleted_events: list[tuple[UUID, UUID]] = []
+        self.delivered_event_ids: list[UUID] = []
 
-    def publish_photo_deleted(self, *, photo_id: UUID, owner_id: UUID) -> None:
+    def publish_photo_deleted(
+        self, *, event_id: UUID, photo_id: UUID, owner_id: UUID, occurred_at: datetime
+    ) -> None:
         self.deleted_events.append((photo_id, owner_id))
+        self.delivered_event_ids.append(event_id)
 
 
 class Harness:
@@ -790,6 +817,50 @@ def test_cleanup_attempt_is_exclusive_while_leased() -> None:
     assert second is None
 
 
+def test_completing_a_job_after_losing_the_lease_never_duplicates_the_event() -> None:
+    """Sixth Codex adversarial-review pass: if this worker's lease expired
+    (its `delete_object` call ran longer than the lease) and another worker
+    already reclaimed and completed the same job, this worker's own,
+    now-stale completion attempt must be a no-op -- never a second outbox
+    event for the same deletion, which would defeat event-ID-based
+    consumer deduplication downstream."""
+    h = Harness()
+    photo_id = h.confirmed_photo()
+    s3_key = h.repo.photos[photo_id].s3_key
+    h.close_upload_authorization(photo_id)
+    tombstoned = h.repo.tombstone_and_enqueue_cleanup(
+        photo_id=photo_id, owner_id=h.owner_id, deleted_at=h.now
+    )
+    assert tombstoned is not None
+    _, job = tombstoned
+
+    # Worker A claims first (its delete_object call is about to hang).
+    job_a = h.cleanup_repo.claim(job_id=job.id, now=h.now, lease_seconds=300)
+    assert job_a is not None and job_a.attempts == 1
+
+    # The lease expires; a second worker reclaims and completes the job for
+    # real (through the actual service, deleting the object and enqueuing
+    # the one true event).
+    h.now += timedelta(seconds=301)
+    completed = h.cleanup.attempt(job.id)
+    assert completed == MediaCleanupStatus.DONE
+    assert not h.storage.has_object(s3_key=s3_key)
+    assert len(h.event_outbox_repo.events) == 1
+
+    # Worker A's stale delete_object call finally "returns success" and it
+    # tries to complete the SAME claim it made before the lease expired.
+    completed_again = h.cleanup_repo.mark_done_and_enqueue_deleted_event(
+        job_id=job.id,
+        photo_id=job_a.photo_id,
+        owner_id=job_a.owner_id,
+        at=h.now,
+        expected_attempts=job_a.attempts,
+    )
+
+    assert completed_again is False
+    assert len(h.event_outbox_repo.events) == 1
+
+
 def test_cleanup_completion_does_not_depend_on_the_publisher() -> None:
     """Fifth Codex adversarial-review pass: cleanup completion and durably
     recording the event happen atomically in the repository; the publisher
@@ -846,6 +917,41 @@ def test_event_outbox_retries_a_failing_publisher_without_losing_the_event() -> 
     assert second == MediaEventStatus.DONE
     assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
     assert h.event_outbox_repo.events[event_id].status == MediaEventStatus.DONE
+
+
+def test_event_outbox_redelivers_the_same_stable_event_id_after_a_crash_before_mark_done() -> None:
+    """Sixth Codex adversarial-review pass: a publish that succeeds but is
+    followed by a crash before `mark_done` (e.g. the worker process dies)
+    must be retried, and that retry must carry the exact same `event_id` --
+    the only way a downstream consumer can recognize the redelivery as the
+    same event rather than a new deletion."""
+    h = Harness()
+    photo_id = h.confirmed_photo()
+    h.close_upload_authorization(photo_id)
+    h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
+    (event_id,) = h.event_outbox_repo.events
+
+    real_mark_done = h.event_outbox_repo.mark_done
+
+    def _crash_after_publish(**_: object) -> None:
+        raise RuntimeError("worker killed after publish, before mark_done")
+
+    h.event_outbox_repo.mark_done = _crash_after_publish  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="worker killed"):
+        h.event_outbox.attempt(event_id)
+
+    assert h.publisher.delivered_event_ids == [event_id]
+    assert h.event_outbox_repo.events[event_id].status == MediaEventStatus.PENDING
+
+    # Restore normal completion; once due again, the retry redelivers with
+    # the SAME event_id.
+    h.event_outbox_repo.mark_done = real_mark_done
+    h.now += timedelta(seconds=301)
+    second = h.event_outbox.attempt(event_id)
+
+    assert second == MediaEventStatus.DONE
+    assert h.publisher.delivered_event_ids == [event_id, event_id]
 
 
 def test_event_outbox_dead_letters_an_event_after_max_attempts() -> None:

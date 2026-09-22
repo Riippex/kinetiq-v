@@ -64,7 +64,16 @@ class MediaEventOutboxService:
             return current.status if current is not None else MediaEventStatus.DONE
 
         try:
-            self._publisher.publish_photo_deleted(photo_id=event.photo_id, owner_id=event.owner_id)
+            # `event.id` is stable across every retried delivery of this same
+            # row, so a consumer can dedupe an at-least-once redelivery
+            # (e.g. a crash right after this call succeeds but before
+            # `mark_done` below) instead of double-applying the effect.
+            self._publisher.publish_photo_deleted(
+                event_id=event.id,
+                photo_id=event.photo_id,
+                owner_id=event.owner_id,
+                occurred_at=event.created_at,
+            )
         except Exception as exc:  # noqa: BLE001 - any publish failure must be retried
             return self._record_failure(event, exc, now)
 
