@@ -1,3 +1,4 @@
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -42,6 +43,15 @@ class DisplayPairingCodePaired(DisplayPairingError):
         self.code = code
 
 
+class DisplayPairingContention(DisplayPairingError):
+    """Raised when a pairing could not be committed because the code kept
+    changing under concurrent requests."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"Display pairing code '{code}' is being updated concurrently; retry")
+        self.code = code
+
+
 @dataclass(frozen=True)
 class DisplayPairingCode:
     code: str
@@ -51,6 +61,9 @@ class DisplayPairingCode:
     status: DisplayPairingStatus = DisplayPairingStatus.UNPAIRED
     paired_session_id: str | None = None
     owner_id: str | None = None
+    # Optimistic-concurrency token: incremented by every committed change, so
+    # a claim is only applied if nobody else changed the code since it was read.
+    version: int = 0
 
     def is_expired(self, now: datetime | None = None) -> bool:
         current_time = now or datetime.now(UTC)
@@ -58,19 +71,41 @@ class DisplayPairingCode:
 
 
 class DisplayPairingStore(Protocol):
-    def save(self, pairing: DisplayPairingCode) -> None:
+    def get(self, code: str) -> DisplayPairingCode | None:
         ...
 
-    def get(self, code: str) -> DisplayPairingCode | None:
+    def create_if_absent(self, pairing: DisplayPairingCode) -> bool:
+        """Atomically store a new code; False if the code already exists."""
+        ...
+
+    def compare_and_save(self, *, expected_version: int, pairing: DisplayPairingCode) -> bool:
+        """Atomically replace the stored code only if its version is still
+        `expected_version`; False if it changed or no longer exists."""
         ...
 
 
 class InMemoryDisplayPairingStore:
+    """Process-local store for unit tests and single-process development."""
+
     def __init__(self) -> None:
         self._store: dict[str, DisplayPairingCode] = {}
-
-    def save(self, pairing: DisplayPairingCode) -> None:
-        self._store[pairing.code] = pairing
+        self._lock = threading.Lock()
 
     def get(self, code: str) -> DisplayPairingCode | None:
-        return self._store.get(code)
+        with self._lock:
+            return self._store.get(code)
+
+    def create_if_absent(self, pairing: DisplayPairingCode) -> bool:
+        with self._lock:
+            if pairing.code in self._store:
+                return False
+            self._store[pairing.code] = pairing
+            return True
+
+    def compare_and_save(self, *, expected_version: int, pairing: DisplayPairingCode) -> bool:
+        with self._lock:
+            current = self._store.get(pairing.code)
+            if current is None or current.version != expected_version:
+                return False
+            self._store[pairing.code] = pairing
+            return True

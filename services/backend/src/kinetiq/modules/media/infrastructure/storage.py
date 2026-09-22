@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from kinetiq.modules.media.application.ports import MediaStoragePort
+from kinetiq.modules.media.domain.entities import MediaStorageError, StoredObjectInfo
 
 logger = logging.getLogger(__name__)
 
@@ -13,25 +14,46 @@ class InMemoryMediaStorageAdapter(MediaStoragePort):
 
     def __init__(self, bucket_name: str = "kinetiq-media-test") -> None:
         self._bucket = bucket_name
-        self._objects: dict[str, bytes] = {}
+        self._objects: dict[str, tuple[bytes, str]] = {}
+        # Test hook: the next N delete_object calls fail like an outage would.
+        self.delete_failures_remaining = 0
 
     def generate_upload_url(
-        self, *, s3_key: str, content_type: str, ttl_seconds: int = 900
+        self, *, s3_key: str, content_type: str, byte_length: int, ttl_seconds: int = 900
     ) -> str:
-        return f"https://mock-s3.local/{self._bucket}/{s3_key}?action=put&ttl={ttl_seconds}&type={content_type}"
+        return (
+            f"https://mock-s3.local/{self._bucket}/{s3_key}?action=put&ttl={ttl_seconds}"
+            f"&type={content_type}&length={byte_length}"
+        )
 
     def generate_download_url(self, *, s3_key: str, ttl_seconds: int = 900) -> str:
         return f"https://mock-s3.local/{self._bucket}/{s3_key}?action=get&ttl={ttl_seconds}"
 
-    def object_exists(self, *, s3_key: str) -> bool:
-        return s3_key in self._objects
+    def get_object_info(self, *, s3_key: str) -> StoredObjectInfo | None:
+        stored = self._objects.get(s3_key)
+        if stored is None:
+            return None
+        data, content_type = stored
+        return StoredObjectInfo(content_length=len(data), content_type=content_type)
 
     def delete_object(self, *, s3_key: str) -> None:
+        if self.delete_failures_remaining > 0:
+            self.delete_failures_remaining -= 1
+            raise MediaStorageError("simulated storage outage")
         self._objects.pop(s3_key, None)
 
     # Test helper
-    def put_object_data(self, *, s3_key: str, data: bytes = b"mock-image-data") -> None:
-        self._objects[s3_key] = data
+    def put_object_data(
+        self,
+        *,
+        s3_key: str,
+        data: bytes = b"mock-image-data",
+        content_type: str = "image/jpeg",
+    ) -> None:
+        self._objects[s3_key] = (data, content_type)
+
+    def has_object(self, *, s3_key: str) -> bool:
+        return s3_key in self._objects
 
 
 class S3MediaStorageAdapter(MediaStoragePort):
@@ -60,15 +82,20 @@ class S3MediaStorageAdapter(MediaStoragePort):
         return self._client
 
     def generate_upload_url(
-        self, *, s3_key: str, content_type: str, ttl_seconds: int = 900
+        self, *, s3_key: str, content_type: str, byte_length: int, ttl_seconds: int = 900
     ) -> str:
         client = self._get_client()
+        # ContentLength is part of the signed request, so S3 rejects a PUT whose
+        # body is not exactly the declared size. Finalization still verifies the
+        # stored size and type, which is the check that does not depend on the
+        # client honoring the signed headers.
         url = client.generate_presigned_url(
             "put_object",
             Params={
                 "Bucket": self._bucket,
                 "Key": s3_key,
                 "ContentType": content_type,
+                "ContentLength": byte_length,
             },
             ExpiresIn=ttl_seconds,
         )
@@ -83,7 +110,7 @@ class S3MediaStorageAdapter(MediaStoragePort):
         )
         return str(url)
 
-    def object_exists(self, *, s3_key: str) -> bool:
+    def get_object_info(self, *, s3_key: str) -> StoredObjectInfo | None:
         client = self._get_client()
         try:
             from botocore.exceptions import ClientError  # type: ignore[import-not-found]
@@ -91,19 +118,26 @@ class S3MediaStorageAdapter(MediaStoragePort):
             ClientError = Exception
 
         try:
-            client.head_object(Bucket=self._bucket, Key=s3_key)
-            return True
+            head = client.head_object(Bucket=self._bucket, Key=s3_key)
         except ClientError as exc:
             error_code = getattr(exc, "response", {}).get("Error", {}).get("Code")
             if error_code in ("404", "NoSuchKey", "NotFound"):
-                return False
+                return None
             if type(exc) is Exception:
-                return False
+                return None
             raise
+        return StoredObjectInfo(
+            content_length=int(head["ContentLength"]),
+            content_type=head.get("ContentType"),
+        )
 
     def delete_object(self, *, s3_key: str) -> None:
         client = self._get_client()
         try:
             client.delete_object(Bucket=self._bucket, Key=s3_key)
-        except Exception:
-            logger.exception("Failed to delete S3 object '%s' from '%s'", s3_key, self._bucket)
+        except Exception as exc:
+            # Never swallow: the caller (cleanup job) must see the failure to
+            # retry it. Deleting an absent key does not raise in S3.
+            raise MediaStorageError(
+                f"Failed to delete object '{s3_key}' from '{self._bucket}'"
+            ) from exc

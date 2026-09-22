@@ -54,8 +54,11 @@ from kinetiq.modules.media.domain import (
     IdempotencyConflictError as MediaIdempotencyConflictError,
 )
 from kinetiq.modules.media.domain import (
+    InvalidPhotoStateError,
+    MediaCleanupStatus,
     MediaPayloadTooLargeError,
     MediaUploadNotCompletedError,
+    MediaUploadRejectedError,
     PhotoNotFoundError,
     UnsupportedMediaTypeError,
 )
@@ -597,10 +600,29 @@ class ProgressPhotoResultType:
     errors: list[DomainError]
 
 
+@strawberry.enum(name="StorageCleanupStatus")
+class StorageCleanupStatusType(Enum):
+    """COMPLETED: the private object is confirmed removed. PENDING: a durable,
+    retried job still owns the removal. DEAD_LETTER: retries exhausted and an
+    operator must intervene."""
+
+    COMPLETED = "COMPLETED"
+    PENDING = "PENDING"
+    DEAD_LETTER = "DEAD_LETTER"
+
+
+_STORAGE_CLEANUP_STATUS = {
+    MediaCleanupStatus.DONE: StorageCleanupStatusType.COMPLETED,
+    MediaCleanupStatus.PENDING: StorageCleanupStatusType.PENDING,
+    MediaCleanupStatus.DEAD_LETTER: StorageCleanupStatusType.DEAD_LETTER,
+}
+
+
 @strawberry.type(name="DeletePhotoResult")
 class DeletePhotoResultType:
     success: bool
     errors: list[DomainError]
+    storage_cleanup: StorageCleanupStatusType | None = None
 
 
 @strawberry.type
@@ -1550,6 +1572,17 @@ class Mutation:
                     )
                 ],
             )
+        except InvalidPhotoStateError as exc:
+            return UploadRequestResultType(
+                upload_request=None,
+                errors=[
+                    DomainError(
+                        code="INVALID_PHOTO_STATE",
+                        message=str(exc),
+                        field="idempotencyKey",
+                    )
+                ],
+            )
         except (ValueError, TypeError) as exc:
             return UploadRequestResultType(
                 upload_request=None,
@@ -1610,6 +1643,16 @@ class Mutation:
                 photo=None,
                 errors=[DomainError(code="UPLOAD_NOT_COMPLETED", message=str(exc))],
             )
+        except MediaUploadRejectedError as exc:
+            return ProgressPhotoResultType(
+                photo=None,
+                errors=[DomainError(code="UPLOAD_REJECTED", message=str(exc))],
+            )
+        except InvalidPhotoStateError as exc:
+            return ProgressPhotoResultType(
+                photo=None,
+                errors=[DomainError(code="INVALID_PHOTO_STATE", message=str(exc), field="photoId")],
+            )
         except (ValueError, TypeError) as exc:
             return ProgressPhotoResultType(
                 photo=None,
@@ -1646,8 +1689,12 @@ class Mutation:
             )
 
         try:
-            success = delete_progress_photo().execute(owner_id=owner_id, photo_id=photo_uuid)
-            return DeletePhotoResultType(success=success, errors=[])
+            deleted = delete_progress_photo().execute(owner_id=owner_id, photo_id=photo_uuid)
+            return DeletePhotoResultType(
+                success=True,
+                errors=[],
+                storage_cleanup=_STORAGE_CLEANUP_STATUS[deleted.storage_cleanup],
+            )
         except PhotoNotFoundError as exc:
             return DeletePhotoResultType(
                 success=False,

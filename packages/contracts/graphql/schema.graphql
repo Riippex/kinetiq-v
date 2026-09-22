@@ -193,7 +193,8 @@ type ProgressPhoto {
   confirmedAt: DateTime
 }
 type ProgressPhotoResult { photo: ProgressPhoto errors: [DomainError!]! }
-type DeletePhotoResult { success: Boolean! errors: [DomainError!]! }
+enum StorageCleanupStatus { COMPLETED PENDING DEAD_LETTER }
+type DeletePhotoResult { success: Boolean! errors: [DomainError!]! storageCleanup: StorageCleanupStatus }
 type ServiceStatus { name: String! version: String! ready: Boolean! }
 enum DisplayDeviceType { FIRE_TV VEGA_OS }
 enum DisplayPairingStatus { UNPAIRED PAIRED EXPIRED }

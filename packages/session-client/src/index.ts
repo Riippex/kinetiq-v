@@ -130,9 +130,13 @@ export interface ProgressPhotoResult {
   errors: DomainError[];
 }
 
+export type StorageCleanupStatus = 'COMPLETED' | 'PENDING' | 'DEAD_LETTER';
+
 export interface DeletePhotoResult {
   success: boolean;
   errors: DomainError[];
+  /** PENDING means a durable retried job still owns removal of the private object. */
+  storageCleanup?: StorageCleanupStatus | null;
 }
 
 export interface RequestProgressPhotoUploadInput {
@@ -929,6 +933,7 @@ export const deleteProgressPhotoMutation = `
   mutation DeleteProgressPhoto($photoId: ID!) {
     deleteProgressPhoto(photoId: $photoId) {
       success
+      storageCleanup
       errors {
         code
         message

@@ -1345,6 +1345,7 @@ test('deleteProgressPhoto executes mutation and returns success result', async (
             deleteProgressPhoto: {
               success: true,
               errors: [],
+              storageCleanup: 'PENDING',
             },
           },
         }),
@@ -1354,6 +1355,7 @@ test('deleteProgressPhoto executes mutation and returns success result', async (
     const res = await indexModule.deleteProgressPhoto('http://localhost/graphql', 'photo-1');
     assert.equal(res.errors.length, 0);
     assert.equal(res.success, true);
+    assert.equal(res.storageCleanup, 'PENDING');
   } finally {
     globalThis.fetch = originalFetch;
   }

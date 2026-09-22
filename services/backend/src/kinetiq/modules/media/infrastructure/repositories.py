@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from django.db.models import Count, F
 
 from kinetiq.modules.media.application.ports import (
+    MediaCleanupRepository,
     MediaEventPublisher,
     ProgressPhotoRepository,
     WorkoutSessionLookup,
 )
 from kinetiq.modules.media.domain.entities import (
     IdempotencyConflictError,
+    MediaCleanupJob,
+    MediaCleanupReason,
+    MediaCleanupStatus,
     ProgressPhoto,
     ProgressPhotoStatus,
 )
 from kinetiq.modules.media.infrastructure.models import (
+    MediaCleanupJobRecord,
     MediaUploadReceiptRecord,
     ProgressPhotoRecord,
 )
@@ -40,6 +46,56 @@ def _record_to_domain(record: ProgressPhotoRecord) -> ProgressPhoto:
     )
 
 
+def _job_to_domain(record: MediaCleanupJobRecord) -> MediaCleanupJob:
+    return MediaCleanupJob(
+        id=record.id,
+        owner_id=record.owner_id,
+        photo_id=record.photo_id,
+        s3_key=record.s3_key,
+        reason=MediaCleanupReason(record.reason),
+        status=MediaCleanupStatus(record.status),
+        attempts=record.attempts,
+        next_attempt_at=record.next_attempt_at,
+        created_at=record.created_at,
+        last_error=record.last_error,
+        completed_at=record.completed_at,
+    )
+
+
+def _enqueue_cleanup_job(
+    *,
+    owner_id: UUID,
+    photo_id: UUID,
+    s3_key: str,
+    reason: MediaCleanupReason,
+    now: datetime,
+) -> MediaCleanupJob:
+    """Create the cleanup job, or return the one already pending for the object.
+
+    Safe to call inside a caller's transaction: the creation runs in a
+    savepoint, so losing the unique-constraint race does not poison it.
+    """
+    open_jobs = MediaCleanupJobRecord.objects.filter(
+        photo_id=photo_id, reason=reason.value, status=MediaCleanupStatus.PENDING.value
+    )
+    existing = open_jobs.first()
+    if existing is not None:
+        return _job_to_domain(existing)
+    try:
+        with transaction.atomic():
+            record = MediaCleanupJobRecord.objects.create(
+                owner_id=owner_id,
+                photo_id=photo_id,
+                s3_key=s3_key,
+                reason=reason.value,
+                status=MediaCleanupStatus.PENDING.value,
+                next_attempt_at=now,
+            )
+    except IntegrityError:
+        record = open_jobs.get()
+    return _job_to_domain(record)
+
+
 class DjangoProgressPhotoRepository(ProgressPhotoRepository):
     def save_upload_request_idempotently(
         self,
@@ -48,40 +104,58 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
         idempotency_key: str,
         request_fingerprint: str,
     ) -> tuple[ProgressPhoto, bool]:
-        with transaction.atomic():
-            receipt = (
-                MediaUploadReceiptRecord.objects.select_related("photo")
-                .filter(owner_id=photo.owner_id, idempotency_key=idempotency_key)
-                .first()
-            )
-            if receipt is not None:
-                if (
-                    request_fingerprint
-                    and receipt.request_fingerprint
-                    and receipt.request_fingerprint != request_fingerprint
-                ):
-                    raise IdempotencyConflictError(
-                        f"Idempotency key '{idempotency_key}' already used with "
-                        "different parameters"
-                    )
-                return _record_to_domain(receipt.photo), False
+        if not request_fingerprint:
+            raise ValueError("request_fingerprint is required for idempotent uploads")
 
-            record = ProgressPhotoRecord.objects.create(
-                id=photo.id,
-                owner_id=photo.owner_id,
-                session_id=photo.session_id,
-                s3_key=photo.s3_key,
-                content_type=photo.content_type,
-                byte_length=photo.byte_length,
-                status=photo.status.value,
+        try:
+            with transaction.atomic():
+                receipt = self._find_receipt(photo.owner_id, idempotency_key)
+                if receipt is not None:
+                    return self._replay(receipt, idempotency_key, request_fingerprint), False
+
+                record = ProgressPhotoRecord.objects.create(
+                    id=photo.id,
+                    owner_id=photo.owner_id,
+                    session_id=photo.session_id,
+                    s3_key=photo.s3_key,
+                    content_type=photo.content_type,
+                    byte_length=photo.byte_length,
+                    status=photo.status.value,
+                )
+                MediaUploadReceiptRecord.objects.create(
+                    owner_id=photo.owner_id,
+                    idempotency_key=idempotency_key,
+                    request_fingerprint=request_fingerprint,
+                    photo=record,
+                )
+                return _record_to_domain(record), True
+        except IntegrityError:
+            # A concurrent request with the same (owner, key) committed first.
+            # Its transaction rolled ours back, so resolve against its receipt.
+            receipt = self._find_receipt(photo.owner_id, idempotency_key)
+            if receipt is None:
+                raise
+            return self._replay(receipt, idempotency_key, request_fingerprint), False
+
+    @staticmethod
+    def _find_receipt(owner_id: UUID, idempotency_key: str) -> MediaUploadReceiptRecord | None:
+        return (
+            MediaUploadReceiptRecord.objects.select_related("photo")
+            .filter(owner_id=owner_id, idempotency_key=idempotency_key)
+            .first()
+        )
+
+    @staticmethod
+    def _replay(
+        receipt: MediaUploadReceiptRecord, idempotency_key: str, request_fingerprint: str
+    ) -> ProgressPhoto:
+        # Compared unconditionally: a receipt without a matching fingerprint
+        # (including any legacy empty one) is never a valid replay.
+        if receipt.request_fingerprint != request_fingerprint:
+            raise IdempotencyConflictError(
+                f"Idempotency key '{idempotency_key}' already used with different parameters"
             )
-            MediaUploadReceiptRecord.objects.create(
-                owner_id=photo.owner_id,
-                idempotency_key=idempotency_key,
-                request_fingerprint=request_fingerprint,
-                photo=record,
-            )
-            return _record_to_domain(record), True
+        return _record_to_domain(receipt.photo)
 
     def get_by_id(self, *, photo_id: UUID, owner_id: UUID) -> ProgressPhoto | None:
         record = ProgressPhotoRecord.objects.filter(id=photo_id, owner_id=owner_id).first()
@@ -110,9 +184,9 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
         qs = qs.order_by("-created_at")
         return [_record_to_domain(r) for r in qs]
 
-    def delete_tombstone(
+    def tombstone_and_enqueue_cleanup(
         self, *, photo_id: UUID, owner_id: UUID, deleted_at: datetime
-    ) -> ProgressPhoto | None:
+    ) -> tuple[ProgressPhoto, MediaCleanupJob] | None:
         with transaction.atomic():
             record = (
                 ProgressPhotoRecord.objects.select_for_update()
@@ -125,7 +199,78 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
             record.status = ProgressPhotoStatus.DELETED.value
             record.deleted_at = deleted_at
             record.save(update_fields=["status", "deleted_at"])
-            return _record_to_domain(record)
+            job = _enqueue_cleanup_job(
+                owner_id=owner_id,
+                photo_id=record.id,
+                s3_key=record.s3_key,
+                reason=MediaCleanupReason.PHOTO_DELETED,
+                now=deleted_at,
+            )
+            return _record_to_domain(record), job
+
+
+class DjangoMediaCleanupRepository(MediaCleanupRepository):
+    def enqueue(
+        self,
+        *,
+        owner_id: UUID,
+        photo_id: UUID,
+        s3_key: str,
+        reason: MediaCleanupReason,
+        now: datetime,
+    ) -> MediaCleanupJob:
+        return _enqueue_cleanup_job(
+            owner_id=owner_id, photo_id=photo_id, s3_key=s3_key, reason=reason, now=now
+        )
+
+    def claim(self, *, job_id: UUID, now: datetime, lease_seconds: int) -> MediaCleanupJob | None:
+        # A single conditional UPDATE is the arbiter: of any number of workers
+        # racing for one job, exactly one sees a row updated and owns it.
+        claimed = MediaCleanupJobRecord.objects.filter(
+            id=job_id,
+            status=MediaCleanupStatus.PENDING.value,
+            next_attempt_at__lte=now,
+        ).update(
+            next_attempt_at=now + timedelta(seconds=lease_seconds),
+            attempts=F("attempts") + 1,
+        )
+        if claimed != 1:
+            return None
+        return _job_to_domain(MediaCleanupJobRecord.objects.get(id=job_id))
+
+    def due_job_ids(self, *, now: datetime, limit: int) -> list[UUID]:
+        return list(
+            MediaCleanupJobRecord.objects.filter(
+                status=MediaCleanupStatus.PENDING.value, next_attempt_at__lte=now
+            )
+            .order_by("next_attempt_at")
+            .values_list("id", flat=True)[:limit]
+        )
+
+    def mark_done(self, *, job_id: UUID, at: datetime) -> None:
+        MediaCleanupJobRecord.objects.filter(id=job_id).update(
+            status=MediaCleanupStatus.DONE.value, completed_at=at, last_error=None
+        )
+
+    def mark_retry(self, *, job_id: UUID, error: str, next_attempt_at: datetime) -> MediaCleanupJob:
+        MediaCleanupJobRecord.objects.filter(id=job_id).update(
+            last_error=error, next_attempt_at=next_attempt_at
+        )
+        return _job_to_domain(MediaCleanupJobRecord.objects.get(id=job_id))
+
+    def mark_dead_letter(self, *, job_id: UUID, error: str, at: datetime) -> MediaCleanupJob:
+        MediaCleanupJobRecord.objects.filter(id=job_id).update(
+            status=MediaCleanupStatus.DEAD_LETTER.value, last_error=error, completed_at=at
+        )
+        return _job_to_domain(MediaCleanupJobRecord.objects.get(id=job_id))
+
+    def get(self, *, job_id: UUID) -> MediaCleanupJob | None:
+        record = MediaCleanupJobRecord.objects.filter(id=job_id).first()
+        return None if record is None else _job_to_domain(record)
+
+    def counts_by_status(self) -> dict[str, int]:
+        rows = MediaCleanupJobRecord.objects.values("status").annotate(total=Count("id"))
+        return {row["status"]: row["total"] for row in rows}
 
 
 class DjangoWorkoutSessionLookup(WorkoutSessionLookup):

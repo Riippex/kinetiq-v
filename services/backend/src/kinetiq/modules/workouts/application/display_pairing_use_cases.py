@@ -15,6 +15,7 @@ from kinetiq.modules.workouts.domain.display_pairing import (
     DisplayPairingCodeExpired,
     DisplayPairingCodeNotFound,
     DisplayPairingCodePaired,
+    DisplayPairingContention,
     DisplayPairingStatus,
     DisplayPairingStore,
 )
@@ -23,6 +24,7 @@ from kinetiq.modules.workouts.domain.session import SessionIntensity, SessionMod
 _CODE_ALPHABET = string.ascii_uppercase + string.digits
 _CODE_LENGTH = 6
 _MAX_GENERATION_ATTEMPTS = 10
+_MAX_CLAIM_ATTEMPTS = 8
 
 
 @dataclass(frozen=True)
@@ -53,26 +55,20 @@ class IssueDisplayPairingCodeUseCase:
         # an unrelated party pair their own display to someone else's
         # session. Retries only guard against the astronomically rare
         # collision with another still-live code for the same prefix.
-        code: str | None = None
+        # Each candidate is claimed atomically (`create_if_absent`), so two
+        # concurrent requests can never be issued the same live code.
         for _ in range(_MAX_GENERATION_ATTEMPTS):
             suffix = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
-            candidate = f"{prefix}-{suffix}"
-            existing = self._pairing_store.get(candidate)
-            if existing is None or existing.is_expired(now):
-                code = candidate
-                break
-        if code is None:
-            raise RuntimeError("Could not generate a unique display pairing code")
-
-        pairing = DisplayPairingCode(
-            code=code,
-            device_type=device_type,
-            created_at=now,
-            expires_at=expires_at,
-            status=DisplayPairingStatus.UNPAIRED,
-        )
-        self._pairing_store.save(pairing)
-        return pairing
+            pairing = DisplayPairingCode(
+                code=f"{prefix}-{suffix}",
+                device_type=device_type,
+                created_at=now,
+                expires_at=expires_at,
+                status=DisplayPairingStatus.UNPAIRED,
+            )
+            if self._pairing_store.create_if_absent(pairing):
+                return pairing
+        raise RuntimeError("Could not generate a unique display pairing code")
 
 
 class PairDisplayDeviceUseCase:
@@ -87,56 +83,67 @@ class PairDisplayDeviceUseCase:
     def execute(
         self, owner_id: str, code: str, session_id: str | None = None
     ) -> DisplayPairingCode:
-        pairing = self._pairing_store.get(code)
-        if pairing is None:
-            raise DisplayPairingCodeNotFound(code)
+        target_session_id = self._validated_session_id(owner_id, session_id)
 
-        if pairing.is_expired():
-            raise DisplayPairingCodeExpired(code)
+        # Read -> decide -> compare-and-save. The guard is re-evaluated on
+        # every attempt, so when two owners race for the same live code
+        # exactly one commit wins and the loser, on re-reading, is rejected
+        # as "already paired" instead of silently overwriting the winner.
+        for _ in range(_MAX_CLAIM_ATTEMPTS):
+            pairing = self._pairing_store.get(code)
+            if pairing is None:
+                raise DisplayPairingCodeNotFound(code)
 
-        # A code already paired to a different owner must never be
-        # re-pairable by someone else: that would let a second athlete who
-        # observed or guessed a live code redirect the display to their own
-        # session, or read the original owner's live progress. Pairing the
-        # same owner's code again (e.g. reconnecting) is allowed.
-        if (
-            pairing.status == DisplayPairingStatus.PAIRED
-            and pairing.owner_id is not None
-            and pairing.owner_id != owner_id
-        ):
-            raise DisplayPairingCodePaired(code)
+            if pairing.is_expired():
+                raise DisplayPairingCodeExpired(code)
 
-        target_session_id: str | None = None
-        if session_id:
-            try:
-                owner_uuid = UUID(owner_id)
-                session_uuid = UUID(session_id)
-            except (ValueError, TypeError) as exc:
-                raise SessionNotFound(f"Session '{session_id}' not found") from exc
+            # A code already paired to a different owner must never be
+            # re-pairable by someone else: that would let a second athlete
+            # who observed or guessed a live code redirect the display to
+            # their own session, or read the original owner's live progress.
+            # Pairing the same owner's code again (e.g. reconnecting) is fine.
+            if (
+                pairing.status == DisplayPairingStatus.PAIRED
+                and pairing.owner_id is not None
+                and pairing.owner_id != owner_id
+            ):
+                raise DisplayPairingCodePaired(code)
 
-            session = self._lifecycle_repo.get_session(
-                owner_id=owner_uuid, session_id=session_uuid
+            updated = DisplayPairingCode(
+                code=pairing.code,
+                device_type=pairing.device_type,
+                created_at=pairing.created_at,
+                expires_at=pairing.expires_at,
+                status=DisplayPairingStatus.PAIRED,
+                paired_session_id=target_session_id,
+                owner_id=owner_id,
+                version=pairing.version + 1,
             )
-            # A session_id that does not exist, or that belongs to a
-            # different owner (get_session is owner-scoped and returns
-            # None for a foreign session), must never be silently paired
-            # -- that would let a display show another athlete's session,
-            # or a nonexistent one that a client just made up.
-            if session is None:
-                raise SessionNotFound(f"Session '{session_id}' not found")
-            target_session_id = str(session.id)
+            if self._pairing_store.compare_and_save(
+                expected_version=pairing.version, pairing=updated
+            ):
+                return updated
 
-        updated = DisplayPairingCode(
-            code=pairing.code,
-            device_type=pairing.device_type,
-            created_at=pairing.created_at,
-            expires_at=pairing.expires_at,
-            status=DisplayPairingStatus.PAIRED,
-            paired_session_id=target_session_id,
-            owner_id=owner_id,
-        )
-        self._pairing_store.save(updated)
-        return updated
+        raise DisplayPairingContention(code)
+
+    def _validated_session_id(self, owner_id: str, session_id: str | None) -> str | None:
+        if not session_id:
+            return None
+        try:
+            owner_uuid = UUID(owner_id)
+            session_uuid = UUID(session_id)
+        except (ValueError, TypeError) as exc:
+            raise SessionNotFound(f"Session '{session_id}' not found") from exc
+
+        session = self._lifecycle_repo.get_session(owner_id=owner_uuid, session_id=session_uuid)
+        # A session_id that does not exist, or that belongs to a different
+        # owner (get_session is owner-scoped and returns None for a foreign
+        # session), must never be silently paired -- that would let a display
+        # show another athlete's session, or a nonexistent one that a client
+        # just made up.
+        if session is None:
+            raise SessionNotFound(f"Session '{session_id}' not found")
+        return str(session.id)
 
 
 class GetDisplaySessionStateUseCase:

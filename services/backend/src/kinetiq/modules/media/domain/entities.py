@@ -47,6 +47,15 @@ class PhotoOwnershipError(MediaError):
     """Raised when an operation violates photo ownership."""
 
 
+class MediaUploadRejectedError(MediaError):
+    """Raised when the uploaded object does not match the declared photo
+    (size or content type), so it must not be confirmed."""
+
+
+class MediaStorageError(MediaError):
+    """Raised when the object store fails to complete an operation."""
+
+
 @dataclass(frozen=True, slots=True)
 class ProgressPhoto:
     id: UUID
@@ -105,3 +114,39 @@ class ProgressPhoto:
             confirmed_at=self.confirmed_at,
             deleted_at=deleted_at,
         )
+
+
+class MediaCleanupStatus(StrEnum):
+    PENDING = "PENDING"
+    DONE = "DONE"
+    DEAD_LETTER = "DEAD_LETTER"
+
+
+class MediaCleanupReason(StrEnum):
+    PHOTO_DELETED = "PHOTO_DELETED"
+    UPLOAD_REJECTED = "UPLOAD_REJECTED"
+
+
+@dataclass(frozen=True, slots=True)
+class StoredObjectInfo:
+    """What the object store actually holds for a key."""
+
+    content_length: int
+    content_type: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MediaCleanupJob:
+    """Durable, retryable request to remove an object from private storage."""
+
+    id: UUID
+    owner_id: UUID
+    photo_id: UUID
+    s3_key: str
+    reason: MediaCleanupReason
+    status: MediaCleanupStatus
+    attempts: int
+    next_attempt_at: datetime
+    created_at: datetime
+    last_error: str | None = None
+    completed_at: datetime | None = None

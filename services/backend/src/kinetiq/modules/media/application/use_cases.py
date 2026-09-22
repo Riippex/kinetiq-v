@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+from kinetiq.modules.media.application.cleanup import MediaCleanupService
 from kinetiq.modules.media.application.ports import (
-    MediaEventPublisher,
     MediaStoragePort,
     ProgressPhotoRepository,
     WorkoutSessionLookup,
@@ -13,8 +15,12 @@ from kinetiq.modules.media.application.ports import (
 from kinetiq.modules.media.domain.entities import (
     ALLOWED_MEDIA_TYPES,
     MAX_PHOTO_BYTE_LENGTH,
+    InvalidPhotoStateError,
+    MediaCleanupReason,
+    MediaCleanupStatus,
     MediaPayloadTooLargeError,
     MediaUploadNotCompletedError,
+    MediaUploadRejectedError,
     PhotoNotFoundError,
     ProgressPhoto,
     ProgressPhotoStatus,
@@ -26,6 +32,26 @@ _CONTENT_TYPE_EXTENSIONS = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
+
+
+def upload_request_fingerprint(
+    *, session_id: UUID | None, content_type: str, byte_length: int
+) -> str:
+    """Canonical fingerprint of every field of an upload request.
+
+    The idempotency key is scoped to the owner, so the owner is not part of
+    the fingerprint. Reusing a key with any different field is a conflict.
+    """
+    canonical = json.dumps(
+        {
+            "session_id": str(session_id) if session_id is not None else None,
+            "content_type": content_type,
+            "byte_length": byte_length,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +71,15 @@ class ProgressPhotoDTO:
     status: str
     created_at: datetime
     confirmed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteProgressPhotoResultDTO:
+    """`storage_cleanup` is DONE only once the object is confirmed gone;
+    PENDING means a durable, retried cleanup job still owns the removal."""
+
+    photo_id: UUID
+    storage_cleanup: MediaCleanupStatus
 
 
 class RequestProgressPhotoUploadUseCase:
@@ -68,7 +103,6 @@ class RequestProgressPhotoUploadUseCase:
         content_type: str,
         byte_length: int,
         idempotency_key: str,
-        request_fingerprint: str = "",
     ) -> UploadRequestDTO:
         if content_type not in ALLOWED_MEDIA_TYPES:
             raise UnsupportedMediaTypeError(
@@ -109,12 +143,24 @@ class RequestProgressPhotoUploadUseCase:
         saved_photo, _ = self._repository.save_upload_request_idempotently(
             photo=photo,
             idempotency_key=idempotency_key,
-            request_fingerprint=request_fingerprint,
+            request_fingerprint=upload_request_fingerprint(
+                session_id=session_id, content_type=content_type, byte_length=byte_length
+            ),
         )
+
+        # A replayed key must never mint a fresh upload URL for a photo that is
+        # already confirmed or deleted: that would let a caller write to the
+        # key of a deleted private photo.
+        if saved_photo.status != ProgressPhotoStatus.PENDING_UPLOAD:
+            raise InvalidPhotoStateError(
+                f"Upload for idempotency key '{idempotency_key}' can no longer be "
+                f"requested: photo is {saved_photo.status.value}"
+            )
 
         upload_url = self._storage.generate_upload_url(
             s3_key=saved_photo.s3_key,
             content_type=saved_photo.content_type,
+            byte_length=saved_photo.byte_length,
             ttl_seconds=self._ttl_seconds,
         )
         expires_at = datetime.now(UTC) + timedelta(seconds=self._ttl_seconds)
@@ -131,10 +177,12 @@ class FinalizeProgressPhotoUseCase:
         self,
         repository: ProgressPhotoRepository,
         storage: MediaStoragePort,
+        cleanup: MediaCleanupService,
         ttl_seconds: int = 900,
     ) -> None:
         self._repository = repository
         self._storage = storage
+        self._cleanup = cleanup
         self._ttl_seconds = ttl_seconds
 
     def execute(self, *, owner_id: UUID, photo_id: UUID) -> ProgressPhotoDTO:
@@ -143,41 +191,46 @@ class FinalizeProgressPhotoUseCase:
             raise PhotoNotFoundError(f"Progress photo '{photo_id}' not found")
 
         if photo.status == ProgressPhotoStatus.CONFIRMED:
-            download_url = self._storage.generate_download_url(
-                s3_key=photo.s3_key, ttl_seconds=self._ttl_seconds
-            )
-            return ProgressPhotoDTO(
-                id=photo.id,
-                session_id=photo.session_id,
-                content_type=photo.content_type,
-                byte_length=photo.byte_length,
-                url=download_url,
-                status=photo.status.value,
-                created_at=photo.created_at,
-                confirmed_at=photo.confirmed_at,
-            )
+            return self._to_dto(photo)
 
-        if not self._storage.object_exists(s3_key=photo.s3_key):
+        stored = self._storage.get_object_info(s3_key=photo.s3_key)
+        if stored is None:
             raise MediaUploadNotCompletedError(
                 f"Cannot finalize photo '{photo_id}': object not found in storage"
             )
 
-        now = datetime.now(UTC)
-        confirmed_photo = photo.confirm(confirmed_at=now)
-        saved_photo = self._repository.save(photo=confirmed_photo)
+        # The declared metadata was validated at request time, but the client
+        # controls what it actually uploads. Confirm only an object that
+        # matches what was declared and authorized; remove anything else.
+        if stored.content_length != photo.byte_length or stored.content_type != photo.content_type:
+            job = self._cleanup.enqueue_object_cleanup(
+                owner_id=owner_id,
+                photo_id=photo.id,
+                s3_key=photo.s3_key,
+                reason=MediaCleanupReason.UPLOAD_REJECTED,
+            )
+            self._cleanup.attempt(job.id)
+            raise MediaUploadRejectedError(
+                f"Uploaded object for photo '{photo_id}' does not match the declared "
+                f"{photo.content_type} of {photo.byte_length} bytes "
+                f"(stored: {stored.content_type}, {stored.content_length} bytes)"
+            )
 
-        download_url = self._storage.generate_download_url(
-            s3_key=saved_photo.s3_key, ttl_seconds=self._ttl_seconds
-        )
+        confirmed_photo = photo.confirm(confirmed_at=datetime.now(UTC))
+        return self._to_dto(self._repository.save(photo=confirmed_photo))
+
+    def _to_dto(self, photo: ProgressPhoto) -> ProgressPhotoDTO:
         return ProgressPhotoDTO(
-            id=saved_photo.id,
-            session_id=saved_photo.session_id,
-            content_type=saved_photo.content_type,
-            byte_length=saved_photo.byte_length,
-            url=download_url,
-            status=saved_photo.status.value,
-            created_at=saved_photo.created_at,
-            confirmed_at=saved_photo.confirmed_at,
+            id=photo.id,
+            session_id=photo.session_id,
+            content_type=photo.content_type,
+            byte_length=photo.byte_length,
+            url=self._storage.generate_download_url(
+                s3_key=photo.s3_key, ttl_seconds=self._ttl_seconds
+            ),
+            status=photo.status.value,
+            created_at=photo.created_at,
+            confirmed_at=photo.confirmed_at,
         )
 
 
@@ -222,25 +275,21 @@ class DeleteProgressPhotoUseCase:
     def __init__(
         self,
         repository: ProgressPhotoRepository,
-        storage: MediaStoragePort,
-        event_publisher: MediaEventPublisher | None = None,
+        cleanup: MediaCleanupService,
     ) -> None:
         self._repository = repository
-        self._storage = storage
-        self._event_publisher = event_publisher
+        self._cleanup = cleanup
 
-    def execute(self, *, owner_id: UUID, photo_id: UUID) -> bool:
-        now = datetime.now(UTC)
-        deleted_photo = self._repository.delete_tombstone(
-            photo_id=photo_id, owner_id=owner_id, deleted_at=now
+    def execute(self, *, owner_id: UUID, photo_id: UUID) -> DeleteProgressPhotoResultDTO:
+        # The tombstone and the cleanup job commit atomically, so a deleted
+        # photo can never exist without a durable job owning its object.
+        deleted = self._repository.tombstone_and_enqueue_cleanup(
+            photo_id=photo_id, owner_id=owner_id, deleted_at=self._cleanup.now()
         )
-        if deleted_photo is None:
+        if deleted is None:
             raise PhotoNotFoundError(f"Progress photo '{photo_id}' not found")
+        _, job = deleted
 
-        # Object cleanup in storage is idempotent and best-effort
-        self._storage.delete_object(s3_key=deleted_photo.s3_key)
-
-        if self._event_publisher is not None:
-            self._event_publisher.publish_photo_deleted(photo_id=photo_id, owner_id=owner_id)
-
-        return True
+        # Try now; on failure the job stays PENDING and the worker retries it.
+        status = self._cleanup.attempt(job.id)
+        return DeleteProgressPhotoResultDTO(photo_id=photo_id, storage_cleanup=status)

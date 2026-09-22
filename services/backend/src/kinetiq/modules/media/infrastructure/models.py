@@ -41,3 +41,34 @@ class MediaUploadReceiptRecord(models.Model):
                 name="media_owner_idempotency_unique",
             )
         ]
+
+
+class MediaCleanupJobRecord(models.Model):
+    """Outbox of pending storage removals (survives the photo's tombstone)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    # Plain UUID (no FK): the job must outlive any later purge of the photo row.
+    photo_id = models.UUIDField(db_index=True)
+    s3_key = models.CharField(max_length=512)
+    reason = models.CharField(max_length=30)
+    status = models.CharField(max_length=20)
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=500, null=True, blank=True)
+    next_attempt_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "media_cleanup_jobs"
+        indexes = [
+            models.Index(fields=["status", "next_attempt_at"], name="media_cleanup_due_idx"),
+        ]
+        constraints = [
+            # At most one open job per object and reason.
+            models.UniqueConstraint(
+                fields=["photo_id", "reason"],
+                condition=models.Q(status="PENDING"),
+                name="media_cleanup_one_pending_per_photo_reason",
+            )
+        ]

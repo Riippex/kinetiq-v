@@ -173,7 +173,7 @@ def test_pair_display_device_expired():
         created_at=past - timedelta(minutes=15),
         expires_at=past,
     )
-    store.save(expired_code)
+    assert store.create_if_absent(expired_code)
 
     repo = DummyLifecycleRepo()
     use_case = PairDisplayDeviceUseCase(store, repo)

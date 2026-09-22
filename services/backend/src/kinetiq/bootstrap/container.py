@@ -1,3 +1,4 @@
+import redis
 from django.conf import settings as django_settings
 
 from kinetiq.modules.catalog.domain.entities import Exercise
@@ -17,10 +18,13 @@ from kinetiq.modules.media.application import (
     DeleteProgressPhotoUseCase,
     FinalizeProgressPhotoUseCase,
     ListProgressPhotosUseCase,
+    MediaCleanupRepository,
+    MediaCleanupService,
     MediaStoragePort,
     RequestProgressPhotoUploadUseCase,
 )
 from kinetiq.modules.media.infrastructure.repositories import (
+    DjangoMediaCleanupRepository,
     DjangoProgressPhotoRepository,
     LogMediaEventPublisher,
 )
@@ -73,7 +77,10 @@ from kinetiq.modules.workouts.application import (
     StartWorkoutSessionUseCase,
 )
 from kinetiq.modules.workouts.application.ports import SessionTransientStore
-from kinetiq.modules.workouts.domain.display_pairing import DisplayPairingStore
+from kinetiq.modules.workouts.domain.display_pairing import (
+    DisplayPairingStore,
+    InMemoryDisplayPairingStore,
+)
 from kinetiq.modules.workouts.infrastructure.display_pairing_store import (
     RedisDisplayPairingStore,
 )
@@ -89,12 +96,24 @@ from kinetiq.modules.workouts.infrastructure.vision_observation_adapter import (
     VisionRestObservationAdapter,
 )
 
+_MEMORY_DISPLAY_PAIRING_STORE = InMemoryDisplayPairingStore()
+_redis_client: "redis.Redis | None" = None
+
+
+def _get_redis_client() -> "redis.Redis":
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.Redis.from_url(django_settings.REDIS_URL, decode_responses=True)
+    return _redis_client
+
 
 def get_display_pairing_store() -> DisplayPairingStore:
-    # A fresh adapter per call, same as `get_session_transient_store()`
-    # below: the shared state lives in Redis, not in this Python object, so
-    # a phone and a TV on different worker processes see the same pairing.
-    return RedisDisplayPairingStore()
+    # Production uses the shared Redis store so a phone and a TV on different
+    # worker processes see one pairing and ownership claims are atomic. The
+    # process-local store is selected only by the test settings.
+    if django_settings.DISPLAY_PAIRING_STORE == "memory":
+        return _MEMORY_DISPLAY_PAIRING_STORE
+    return RedisDisplayPairingStore(_get_redis_client())
 
 
 def issue_display_pairing_code() -> IssueDisplayPairingCodeUseCase:
@@ -319,10 +338,23 @@ def request_progress_photo_upload() -> RequestProgressPhotoUploadUseCase:
     )
 
 
+def get_media_cleanup_repository() -> MediaCleanupRepository:
+    return DjangoMediaCleanupRepository()
+
+
+def process_media_cleanup() -> MediaCleanupService:
+    return MediaCleanupService(
+        repository=get_media_cleanup_repository(),
+        storage=get_media_storage(),
+        event_publisher=LogMediaEventPublisher(),
+    )
+
+
 def finalize_progress_photo() -> FinalizeProgressPhotoUseCase:
     return FinalizeProgressPhotoUseCase(
         repository=DjangoProgressPhotoRepository(),
         storage=get_media_storage(),
+        cleanup=process_media_cleanup(),
         ttl_seconds=getattr(django_settings, "MEDIA_PRESIGNED_EXPIRY_SECONDS", 900),
     )
 
@@ -338,7 +370,5 @@ def list_progress_photos() -> ListProgressPhotosUseCase:
 def delete_progress_photo() -> DeleteProgressPhotoUseCase:
     return DeleteProgressPhotoUseCase(
         repository=DjangoProgressPhotoRepository(),
-        storage=get_media_storage(),
-        event_publisher=LogMediaEventPublisher(),
+        cleanup=process_media_cleanup(),
     )
-

@@ -77,6 +77,7 @@ DELETE_PHOTO_MUTATION = """
 mutation DeletePhoto($photoId: ID!) {
   deleteProgressPhoto(photoId: $photoId) {
     success
+    storageCleanup
     errors {
       code
       message
@@ -184,7 +185,7 @@ def test_media_graphql_full_lifecycle() -> None:
     storage = get_media_storage()
     record = ProgressPhotoRecord.objects.get(id=photo_id)
     if hasattr(storage, "put_object_data"):
-        storage.put_object_data(s3_key=record.s3_key, data=b"binary-jpeg-data")
+        storage.put_object_data(s3_key=record.s3_key, data=b"x" * 2048, content_type="image/jpeg")
 
     # 4. Finalize after upload -> succeeds
     fin_ok = _post_graphql(client, FINALIZE_PHOTO_MUTATION, {"photoId": photo_id})
@@ -203,6 +204,8 @@ def test_media_graphql_full_lifecycle() -> None:
     # 6. Delete progress photo
     del_res = _post_graphql(client, DELETE_PHOTO_MUTATION, {"photoId": photo_id})
     assert del_res["data"]["deleteProgressPhoto"]["success"] is True
+    assert del_res["data"]["deleteProgressPhoto"]["storageCleanup"] == "COMPLETED"
+    assert not storage.has_object(s3_key=record.s3_key)
 
     # 7. Query progress photos after deletion -> empty
     query_after = _post_graphql(client, PROGRESS_PHOTOS_QUERY)
@@ -234,7 +237,7 @@ def test_media_graphql_cross_user_isolation() -> None:
     record = ProgressPhotoRecord.objects.get(id=photo_id)
     storage = get_media_storage()
     if hasattr(storage, "put_object_data"):
-        storage.put_object_data(s3_key=record.s3_key)
+        storage.put_object_data(s3_key=record.s3_key, data=b"x" * 1024, content_type="image/png")
 
     _post_graphql(client_a, FINALIZE_PHOTO_MUTATION, {"photoId": photo_id})
 

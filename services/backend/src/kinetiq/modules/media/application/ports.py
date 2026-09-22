@@ -4,19 +4,33 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from kinetiq.modules.media.domain.entities import ProgressPhoto
+from kinetiq.modules.media.domain.entities import (
+    MediaCleanupJob,
+    MediaCleanupReason,
+    ProgressPhoto,
+    StoredObjectInfo,
+)
 
 
 class MediaStoragePort(Protocol):
     def generate_upload_url(
-        self, *, s3_key: str, content_type: str, ttl_seconds: int = 900
-    ) -> str: ...
+        self, *, s3_key: str, content_type: str, byte_length: int, ttl_seconds: int = 900
+    ) -> str:
+        """Pre-signed PUT bound to the declared content type and exact size."""
+        ...
 
     def generate_download_url(self, *, s3_key: str, ttl_seconds: int = 900) -> str: ...
 
-    def object_exists(self, *, s3_key: str) -> bool: ...
+    def get_object_info(self, *, s3_key: str) -> StoredObjectInfo | None:
+        """Size and content type of the stored object, or None if absent."""
+        ...
 
-    def delete_object(self, *, s3_key: str) -> None: ...
+    def delete_object(self, *, s3_key: str) -> None:
+        """Idempotently remove the object; raises `MediaStorageError` on failure.
+
+        Deleting an already-absent key succeeds.
+        """
+        ...
 
 
 class ProgressPhotoRepository(Protocol):
@@ -26,7 +40,14 @@ class ProgressPhotoRepository(Protocol):
         photo: ProgressPhoto,
         idempotency_key: str,
         request_fingerprint: str,
-    ) -> tuple[ProgressPhoto, bool]: ...
+    ) -> tuple[ProgressPhoto, bool]:
+        """Persist the photo and its receipt once per (owner, idempotency_key).
+
+        Reusing the key with a different fingerprint raises
+        `IdempotencyConflictError`; identical retries, including concurrent
+        ones, resolve to the original photo.
+        """
+        ...
 
     def get_by_id(self, *, photo_id: UUID, owner_id: UUID) -> ProgressPhoto | None: ...
 
@@ -36,9 +57,46 @@ class ProgressPhotoRepository(Protocol):
         self, *, owner_id: UUID, session_id: UUID | None = None
     ) -> list[ProgressPhoto]: ...
 
-    def delete_tombstone(
+    def tombstone_and_enqueue_cleanup(
         self, *, photo_id: UUID, owner_id: UUID, deleted_at: datetime
-    ) -> ProgressPhoto | None: ...
+    ) -> tuple[ProgressPhoto, MediaCleanupJob] | None:
+        """Tombstone the photo and enqueue its storage cleanup in ONE transaction.
+
+        Returns None when the photo does not exist or is already deleted.
+        """
+        ...
+
+
+class MediaCleanupRepository(Protocol):
+    def enqueue(
+        self,
+        *,
+        owner_id: UUID,
+        photo_id: UUID,
+        s3_key: str,
+        reason: MediaCleanupReason,
+        now: datetime,
+    ) -> MediaCleanupJob:
+        """Create (or return the existing pending) cleanup job for the object."""
+        ...
+
+    def claim(self, *, job_id: UUID, now: datetime, lease_seconds: int) -> MediaCleanupJob | None:
+        """Atomically lease one due PENDING job; None if not due or already leased."""
+        ...
+
+    def due_job_ids(self, *, now: datetime, limit: int) -> list[UUID]: ...
+
+    def mark_done(self, *, job_id: UUID, at: datetime) -> None: ...
+
+    def mark_retry(
+        self, *, job_id: UUID, error: str, next_attempt_at: datetime
+    ) -> MediaCleanupJob: ...
+
+    def mark_dead_letter(self, *, job_id: UUID, error: str, at: datetime) -> MediaCleanupJob: ...
+
+    def get(self, *, job_id: UUID) -> MediaCleanupJob | None: ...
+
+    def counts_by_status(self) -> dict[str, int]: ...
 
 
 class WorkoutSessionLookup(Protocol):

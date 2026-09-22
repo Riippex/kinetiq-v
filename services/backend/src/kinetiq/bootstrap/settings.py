@@ -73,6 +73,8 @@ DATABASES = {
 }
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+# "redis" (shared, atomic claims) everywhere except the test settings.
+DISPLAY_PAIRING_STORE = os.getenv("DISPLAY_PAIRING_STORE", "redis")
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",

@@ -26,3 +26,5 @@ DATABASES = {  # noqa: F405
 }
 CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+# Process-local store: no Redis server is needed for the default suite.
+DISPLAY_PAIRING_STORE = "memory"
