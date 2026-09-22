@@ -152,9 +152,25 @@ class FakeProgressPhotoRepository:
             return p
         return None
 
-    def save(self, *, photo: ProgressPhoto) -> ProgressPhoto:
-        self.photos[photo.id] = photo
-        return photo
+    def confirm_if_pending(
+        self, *, photo_id: UUID, owner_id: UUID, confirmed_at: datetime
+    ) -> ProgressPhoto | None:
+        p = self.photos.get(photo_id)
+        if p is None or p.owner_id != owner_id or p.status != ProgressPhotoStatus.PENDING_UPLOAD:
+            return None
+        updated = p.confirm(confirmed_at=confirmed_at)
+        self.photos[photo_id] = updated
+        return updated
+
+    def refresh_upload_authorization_if_pending(
+        self, *, photo_id: UUID, owner_id: UUID, authorized_until: datetime
+    ) -> ProgressPhoto | None:
+        p = self.photos.get(photo_id)
+        if p is None or p.owner_id != owner_id or p.status != ProgressPhotoStatus.PENDING_UPLOAD:
+            return None
+        updated = p.with_upload_authorization(authorized_until)
+        self.photos[photo_id] = updated
+        return updated
 
     def list_by_owner(
         self, *, owner_id: UUID, session_id: UUID | None = None

@@ -24,11 +24,13 @@ from django.db import connection, connections
 from kinetiq.modules.identity.infrastructure.models import User
 from kinetiq.modules.media.application import (
     DeleteProgressPhotoUseCase,
+    FinalizeProgressPhotoUseCase,
     MediaCleanupService,
     RequestProgressPhotoUploadUseCase,
 )
 from kinetiq.modules.media.domain import (
     IdempotencyConflictError,
+    InvalidPhotoStateError,
     MediaCleanupReason,
     PhotoNotFoundError,
     ProgressPhotoStatus,
@@ -212,6 +214,110 @@ def test_parallel_deletes_of_one_photo_produce_a_single_tombstone_and_job() -> N
     assert MediaCleanupJobRecord.objects.filter(photo_id=photo.id).count() == 1
     assert ProgressPhotoRecord.objects.get(id=photo.id).status == "DELETED"
     assert not storage.has_object(s3_key=photo.s3_key)
+
+
+class DelayedGetObjectInfoStorage(InMemoryMediaStorageAdapter):
+    """Widens finalize's window between reading the object and writing its
+    confirmation, so a concurrent delete has time to commit its tombstone
+    first."""
+
+    def __init__(self, delay_seconds: float) -> None:
+        super().__init__()
+        self._delay_seconds = delay_seconds
+
+    def get_object_info(self, *, s3_key: str):  # type: ignore[no-untyped-def,override]
+        info = super().get_object_info(s3_key=s3_key)
+        time.sleep(self._delay_seconds)
+        return info
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_finalize_and_delete_never_resurrects_a_deleted_photo() -> None:
+    """Second Codex adversarial-review pass: a stale finalize (its object
+    read completed before a concurrent delete's tombstone commits) must
+    never overwrite that delete when it later writes its confirmation."""
+    owner = User.objects.create_user(username=f"media-finalize-delete-{uuid4().hex[:8]}")
+    storage = DelayedGetObjectInfoStorage(delay_seconds=0.3)
+    photo_repo = DjangoProgressPhotoRepository()
+    photo, _ = photo_repo.save_upload_request_idempotently(
+        photo=_pending_photo(owner), idempotency_key="k", request_fingerprint="fp"
+    )
+    storage.put_object_data(s3_key=photo.s3_key, data=b"x" * photo.byte_length)
+    cleanup = MediaCleanupService(repository=DjangoMediaCleanupRepository(), storage=storage)
+    finalize = FinalizeProgressPhotoUseCase(repository=photo_repo, storage=storage, cleanup=cleanup)
+    delete = DeleteProgressPhotoUseCase(repository=photo_repo, cleanup=cleanup)
+
+    finalize_outcome, delete_outcome = _run_parallel(
+        [
+            lambda: finalize.execute(owner_id=owner.id, photo_id=photo.id),
+            lambda: delete.execute(owner_id=owner.id, photo_id=photo.id),
+        ]
+    )
+
+    assert not isinstance(delete_outcome, BaseException), delete_outcome
+    record = ProgressPhotoRecord.objects.get(id=photo.id)
+    assert record.status == "DELETED"
+    assert record.deleted_at is not None
+    # The delete committed first (widened by the read delay above); the
+    # stale finalize must see that, not silently resurrect the photo.
+    assert isinstance(finalize_outcome, PhotoNotFoundError), finalize_outcome
+
+
+class DelayedReplayLookupRepository(DjangoProgressPhotoRepository):
+    """Widens an upload-request replay's window between reading its receipt
+    and refreshing upload authorization, so a concurrent delete has time to
+    commit its tombstone first."""
+
+    def __init__(self, delay_seconds: float) -> None:
+        self._delay_seconds = delay_seconds
+
+    def _find_receipt(self, owner_id, idempotency_key):  # type: ignore[no-untyped-def,override]
+        receipt = DjangoProgressPhotoRepository._find_receipt(owner_id, idempotency_key)
+        if receipt is not None:
+            time.sleep(self._delay_seconds)
+        return receipt
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_upload_replay_and_delete_never_resurrects_a_deleted_photo() -> None:
+    """Second Codex adversarial-review pass: a stale upload-request replay
+    (its receipt read completed before a concurrent delete's tombstone
+    commits) must never mint/extend authorization for that deleted photo."""
+    owner = User.objects.create_user(username=f"media-replay-delete-{uuid4().hex[:8]}")
+    storage = InMemoryMediaStorageAdapter()
+    photo_repo = DelayedReplayLookupRepository(delay_seconds=0.3)
+    request_use_case = RequestProgressPhotoUploadUseCase(repository=photo_repo, storage=storage)
+    cleanup = MediaCleanupService(repository=DjangoMediaCleanupRepository(), storage=storage)
+    delete = DeleteProgressPhotoUseCase(repository=photo_repo, cleanup=cleanup)
+
+    first = request_use_case.execute(
+        owner_id=owner.id,
+        session_id=None,
+        content_type="image/jpeg",
+        byte_length=64,
+        idempotency_key="replay-delete-key",
+    )
+
+    replay_outcome, delete_outcome = _run_parallel(
+        [
+            lambda: request_use_case.execute(
+                owner_id=owner.id,
+                session_id=None,
+                content_type="image/jpeg",
+                byte_length=64,
+                idempotency_key="replay-delete-key",
+            ),
+            lambda: delete.execute(owner_id=owner.id, photo_id=first.photo_id),
+        ]
+    )
+
+    assert not isinstance(delete_outcome, BaseException), delete_outcome
+    record = ProgressPhotoRecord.objects.get(id=first.photo_id)
+    assert record.status == "DELETED"
+    assert record.deleted_at is not None
+    # The delete committed first (widened by the receipt-lookup delay
+    # above); the stale replay must see that, not resurrect authorization.
+    assert isinstance(replay_outcome, InvalidPhotoStateError), replay_outcome
 
 
 def _pending_photo(owner: User):  # type: ignore[no-untyped-def]

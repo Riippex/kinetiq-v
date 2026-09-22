@@ -51,7 +51,28 @@ class ProgressPhotoRepository(Protocol):
 
     def get_by_id(self, *, photo_id: UUID, owner_id: UUID) -> ProgressPhoto | None: ...
 
-    def save(self, *, photo: ProgressPhoto) -> ProgressPhoto: ...
+    def confirm_if_pending(
+        self, *, photo_id: UUID, owner_id: UUID, confirmed_at: datetime
+    ) -> ProgressPhoto | None:
+        """Atomically transition PENDING_UPLOAD -> CONFIRMED.
+
+        None if the row is no longer PENDING_UPLOAD (concurrently confirmed
+        or deleted) -- DELETED is a terminal state a stale write must never
+        undo.
+        """
+        ...
+
+    def refresh_upload_authorization_if_pending(
+        self, *, photo_id: UUID, owner_id: UUID, authorized_until: datetime
+    ) -> ProgressPhoto | None:
+        """Atomically extend the presigned-PUT authorization deadline.
+
+        None if the row is no longer PENDING_UPLOAD (concurrently confirmed
+        or deleted) -- minting or extending authorization for either would
+        let a stale replay recreate the object or outrun deletion cleanup's
+        verification window.
+        """
+        ...
 
     def list_by_owner(
         self, *, owner_id: UUID, session_id: UUID | None = None

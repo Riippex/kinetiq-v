@@ -168,15 +168,31 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
             return None
         return _record_to_domain(record)
 
-    def save(self, *, photo: ProgressPhoto) -> ProgressPhoto:
-        ProgressPhotoRecord.objects.filter(id=photo.id, owner_id=photo.owner_id).update(
-            status=photo.status.value,
-            confirmed_at=photo.confirmed_at,
-            deleted_at=photo.deleted_at,
-            upload_authorized_until=photo.upload_authorized_until,
-        )
-        record = ProgressPhotoRecord.objects.get(id=photo.id)
-        return _record_to_domain(record)
+    def confirm_if_pending(
+        self, *, photo_id: UUID, owner_id: UUID, confirmed_at: datetime
+    ) -> ProgressPhoto | None:
+        # A single conditional UPDATE is the arbiter: a stale finalize whose
+        # photo was concurrently deleted (or already confirmed) sees 0 rows
+        # updated and must never resurrect it.
+        updated = ProgressPhotoRecord.objects.filter(
+            id=photo_id, owner_id=owner_id, status=ProgressPhotoStatus.PENDING_UPLOAD.value
+        ).update(status=ProgressPhotoStatus.CONFIRMED.value, confirmed_at=confirmed_at)
+        if updated != 1:
+            return None
+        return _record_to_domain(ProgressPhotoRecord.objects.get(id=photo_id))
+
+    def refresh_upload_authorization_if_pending(
+        self, *, photo_id: UUID, owner_id: UUID, authorized_until: datetime
+    ) -> ProgressPhoto | None:
+        # Same conditional-UPDATE arbiter: a stale replay whose photo was
+        # concurrently confirmed or deleted must never mint or extend an
+        # authorization for it.
+        updated = ProgressPhotoRecord.objects.filter(
+            id=photo_id, owner_id=owner_id, status=ProgressPhotoStatus.PENDING_UPLOAD.value
+        ).update(upload_authorized_until=authorized_until)
+        if updated != 1:
+            return None
+        return _record_to_domain(ProgressPhotoRecord.objects.get(id=photo_id))
 
     def list_by_owner(
         self, *, owner_id: UUID, session_id: UUID | None = None

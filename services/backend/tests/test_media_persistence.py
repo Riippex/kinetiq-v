@@ -242,6 +242,94 @@ def test_upload_replay_after_confirmation_or_deletion_is_refused() -> None:
 
 
 @pytest.mark.django_db
+def test_confirm_if_pending_never_resurrects_a_deleted_photo() -> None:
+    """Second Codex adversarial-review pass: a stale finalize write must
+    never undo a concurrent delete."""
+    owner = User.objects.create_user(username="confirm-guard-deleted")
+    repo = DjangoProgressPhotoRepository()
+    photo, _ = repo.save_upload_request_idempotently(
+        photo=_photo(owner), idempotency_key="k", request_fingerprint=_fingerprint()
+    )
+    assert repo.tombstone_and_enqueue_cleanup(
+        photo_id=photo.id, owner_id=owner.id, deleted_at=datetime.now(UTC)
+    )
+
+    result = repo.confirm_if_pending(
+        photo_id=photo.id, owner_id=owner.id, confirmed_at=datetime.now(UTC)
+    )
+
+    assert result is None
+    record = ProgressPhotoRecord.objects.get(id=photo.id)
+    assert record.status == "DELETED"
+    assert record.confirmed_at is None
+
+
+@pytest.mark.django_db
+def test_confirm_if_pending_does_not_overwrite_an_already_confirmed_photo() -> None:
+    owner = User.objects.create_user(username="confirm-guard-confirmed")
+    repo = DjangoProgressPhotoRepository()
+    photo, _ = repo.save_upload_request_idempotently(
+        photo=_photo(owner), idempotency_key="k", request_fingerprint=_fingerprint()
+    )
+    first_confirmed_at = datetime.now(UTC)
+    assert repo.confirm_if_pending(
+        photo_id=photo.id, owner_id=owner.id, confirmed_at=first_confirmed_at
+    )
+
+    second = repo.confirm_if_pending(
+        photo_id=photo.id, owner_id=owner.id, confirmed_at=datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    assert second is None
+    record = ProgressPhotoRecord.objects.get(id=photo.id)
+    assert record.confirmed_at == first_confirmed_at
+
+
+@pytest.mark.django_db
+def test_refresh_upload_authorization_if_pending_never_resurrects_a_deleted_photo() -> None:
+    """Second Codex adversarial-review pass: a stale upload-request replay
+    must never mint/extend authorization for a concurrently deleted photo."""
+    owner = User.objects.create_user(username="refresh-guard-deleted")
+    repo = DjangoProgressPhotoRepository()
+    photo, _ = repo.save_upload_request_idempotently(
+        photo=_photo(owner), idempotency_key="k", request_fingerprint=_fingerprint()
+    )
+    assert repo.tombstone_and_enqueue_cleanup(
+        photo_id=photo.id, owner_id=owner.id, deleted_at=datetime.now(UTC)
+    )
+    new_deadline = datetime.now(UTC) + timedelta(hours=1)
+
+    result = repo.refresh_upload_authorization_if_pending(
+        photo_id=photo.id, owner_id=owner.id, authorized_until=new_deadline
+    )
+
+    assert result is None
+    record = ProgressPhotoRecord.objects.get(id=photo.id)
+    assert record.status == "DELETED"
+    assert record.upload_authorized_until != new_deadline
+
+
+@pytest.mark.django_db
+def test_refresh_upload_authorization_if_pending_does_not_extend_a_confirmed_photo() -> None:
+    owner = User.objects.create_user(username="refresh-guard-confirmed")
+    repo = DjangoProgressPhotoRepository()
+    photo, _ = repo.save_upload_request_idempotently(
+        photo=_photo(owner), idempotency_key="k", request_fingerprint=_fingerprint()
+    )
+    assert repo.confirm_if_pending(
+        photo_id=photo.id, owner_id=owner.id, confirmed_at=datetime.now(UTC)
+    )
+
+    result = repo.refresh_upload_authorization_if_pending(
+        photo_id=photo.id,
+        owner_id=owner.id,
+        authorized_until=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert result is None
+
+
+@pytest.mark.django_db
 def test_tombstone_and_cleanup_job_are_created_together() -> None:
     owner = User.objects.create_user(username="outbox-atomic")
     repo = DjangoProgressPhotoRepository()

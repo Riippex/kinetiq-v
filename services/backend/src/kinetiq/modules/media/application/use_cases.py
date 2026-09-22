@@ -162,11 +162,22 @@ class RequestProgressPhotoUploadUseCase:
         # Every call issues a fresh presigned URL, so the object can be
         # recreated at `s3_key` until THIS authorization -- persist the
         # extended deadline (including on an idempotent replay) so deletion
-        # cleanup later knows to wait for it.
+        # cleanup later knows to wait for it. Conditioned on the photo still
+        # being PENDING_UPLOAD: a concurrent finalize or delete between the
+        # check above and this write must never be overwritten by a stale
+        # replay minting a fresh authorization.
         if saved_photo.upload_authorized_until != authorized_until:
-            saved_photo = self._repository.save(
-                photo=saved_photo.with_upload_authorization(authorized_until)
+            refreshed = self._repository.refresh_upload_authorization_if_pending(
+                photo_id=saved_photo.id, owner_id=owner_id, authorized_until=authorized_until
             )
+            if refreshed is None:
+                current = self._repository.get_by_id(photo_id=saved_photo.id, owner_id=owner_id)
+                status = current.status.value if current is not None else "DELETED"
+                raise InvalidPhotoStateError(
+                    f"Upload for idempotency key '{idempotency_key}' can no longer be "
+                    f"requested: photo is {status}"
+                )
+            saved_photo = refreshed
 
         upload_url = self._storage.generate_upload_url(
             s3_key=saved_photo.s3_key,
@@ -226,8 +237,19 @@ class FinalizeProgressPhotoUseCase:
                 f"(stored: {stored.content_type}, {stored.content_length} bytes)"
             )
 
-        confirmed_photo = photo.confirm(confirmed_at=datetime.now(UTC))
-        return self._to_dto(self._repository.save(photo=confirmed_photo))
+        confirmed = self._repository.confirm_if_pending(
+            photo_id=photo_id, owner_id=owner_id, confirmed_at=datetime.now(UTC)
+        )
+        if confirmed is None:
+            # Lost the race: the photo was concurrently confirmed (another
+            # finalize call) or deleted since the read above. Re-fetch to
+            # tell an idempotent re-finalize apart from a real deletion --
+            # never resurrect a deleted photo by returning our stale intent.
+            current = self._repository.get_by_id(photo_id=photo_id, owner_id=owner_id)
+            if current is not None and current.status == ProgressPhotoStatus.CONFIRMED:
+                return self._to_dto(current)
+            raise PhotoNotFoundError(f"Progress photo '{photo_id}' not found")
+        return self._to_dto(confirmed)
 
     def _to_dto(self, photo: ProgressPhoto) -> ProgressPhotoDTO:
         return ProgressPhotoDTO(
