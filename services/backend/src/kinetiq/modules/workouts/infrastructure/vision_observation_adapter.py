@@ -25,6 +25,9 @@ class VisionRestObservationAdapter:
         )
         observations = tuple(
             VisionObservationInfo(
+                session_id=observation.session_id,
+                target_person_id=observation.target_person_id,
+                exercise_key=observation.exercise_key,
                 epoch=observation.epoch,
                 sequence=observation.sequence,
                 tracking_state=observation.tracking_state,

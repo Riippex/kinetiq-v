@@ -459,11 +459,12 @@ def test_worker_retries_after_outage_and_completes_with_the_real_repository() ->
     s3_key = ProgressPhotoRecord.objects.get(id=photo_id).s3_key
     storage.put_object_data(s3_key=s3_key, data=b"x" * 8)
     storage.delete_failures_remaining = 1
-    # Not testing the upload-authorization window here (see
-    # test_delete_defers_completion_until_... for that): close it so a
-    # successful retry can complete right away.
+    # Not testing the upload-authorization window or its post-expiry grace
+    # here (see test_delete_defers_completion_until_... and the grace-period
+    # tests for that): close it well past the default grace so a successful
+    # retry can complete right away.
     ProgressPhotoRecord.objects.filter(id=photo_id).update(
-        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=1)
+        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
     )
 
     result = delete_progress_photo().execute(owner_id=owner.id, photo_id=photo_id)

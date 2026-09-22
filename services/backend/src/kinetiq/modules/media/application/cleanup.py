@@ -50,6 +50,7 @@ class MediaCleanupService:
         lease_seconds: int = 300,
         base_backoff_seconds: int = 30,
         max_backoff_seconds: int = 3600,
+        put_completion_grace_seconds: int = 300,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._repository = repository
@@ -59,6 +60,7 @@ class MediaCleanupService:
         self._lease_seconds = lease_seconds
         self._base_backoff_seconds = base_backoff_seconds
         self._max_backoff_seconds = max_backoff_seconds
+        self._put_completion_grace_seconds = put_completion_grace_seconds
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def now(self) -> datetime:
@@ -89,14 +91,20 @@ class MediaCleanupService:
         except Exception as exc:  # noqa: BLE001 - any storage failure must be retried
             return self._record_failure(job, exc, now)
 
-        if job.verify_after is not None and job.verify_after > now:
-            # The object is gone now, but a presigned PUT issued before this
-            # delete may still be authorized to recreate it at this key until
-            # `verify_after`. Re-check no earlier than that instant instead of
-            # declaring this job -- and the caller-visible cleanup -- done
-            # while that window is still open.
-            self._repository.defer_verification(job_id=job.id, next_attempt_at=job.verify_after)
-            return MediaCleanupStatus.PENDING
+        if job.verify_after is not None:
+            # A presigned PUT authorized before `verify_after` can still be
+            # mid-transfer past that instant: S3 validates the signature
+            # against the request's start, not its completion, so a large
+            # upload started just before the deadline can still land after
+            # it. Wait a further bounded grace period for any such transfer
+            # to finish, then re-verify (idempotent delete) once more before
+            # declaring this job -- and the caller-visible cleanup -- done.
+            final_check_at = job.verify_after + timedelta(
+                seconds=self._put_completion_grace_seconds
+            )
+            if now < final_check_at:
+                self._repository.defer_verification(job_id=job.id, next_attempt_at=final_check_at)
+                return MediaCleanupStatus.PENDING
 
         self._repository.mark_done(job_id=job.id, at=now)
         self._publish_deleted(job)

@@ -249,11 +249,16 @@ class SessionTransientStore(Protocol):
 class VisionObservationInfo:
     """Flattened read model of a single Vision observation, scoped to
     exactly what observation ingestion needs to derive a
-    TransientSessionUpdate and to reject stale/duplicate observations.
-    Deliberately decoupled from the Vision adapter's own DTOs (mirrors the
-    same pattern as VisionCandidateInfo/VisionAnalysisHandle above): an
-    infrastructure adapter translates into this shape."""
+    TransientSessionUpdate, reject stale/duplicate observations, and -- the
+    trust-boundary check -- reject one that does not belong to this
+    session/target at all. Deliberately decoupled from the Vision adapter's
+    own DTOs (mirrors the same pattern as VisionCandidateInfo/
+    VisionAnalysisHandle above): an infrastructure adapter translates into
+    this shape."""
 
+    session_id: str
+    target_person_id: str
+    exercise_key: str
     epoch: int
     sequence: int
     tracking_state: str

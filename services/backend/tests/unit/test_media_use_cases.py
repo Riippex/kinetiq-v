@@ -235,6 +235,10 @@ class Harness:
             max_attempts=3,
             lease_seconds=300,
             base_backoff_seconds=30,
+            # The post-authorization PUT-completion grace is tested on its
+            # own (see the dedicated grace-period tests); zero here keeps
+            # every other test's verify_after timing exact.
+            put_completion_grace_seconds=0,
             clock=lambda: self.now,
         )
         self.request = RequestProgressPhotoUploadUseCase(repository=self.repo, storage=self.storage)
@@ -664,6 +668,73 @@ def test_delete_removes_an_object_recreated_via_a_stale_upload_url_before_report
     assert h.storage.has_object(s3_key=s3_key)
 
     h.now = authorized_until + timedelta(seconds=1)
+    summary = h.cleanup.process_due()
+
+    assert summary.completed == 1
+    assert not h.storage.has_object(s3_key=s3_key)
+
+
+def _harness_with_grace(grace_seconds: int) -> Harness:
+    h = Harness()
+    h.cleanup = MediaCleanupService(
+        repository=h.cleanup_repo,
+        storage=h.storage,
+        event_publisher=h.publisher,
+        max_attempts=3,
+        lease_seconds=300,
+        base_backoff_seconds=30,
+        put_completion_grace_seconds=grace_seconds,
+        clock=lambda: h.now,
+    )
+    h.delete = DeleteProgressPhotoUseCase(repository=h.repo, cleanup=h.cleanup)
+    return h
+
+
+def test_delete_cleanup_waits_a_grace_period_past_authorization_before_reporting_done() -> None:
+    """A presigned PUT started just before the authorization deadline can
+    still be mid-transfer after it (S3 validates the signature at request
+    start, not completion) -- a single re-check exactly at the deadline is
+    not enough; cleanup must wait a further bounded grace period."""
+    h = _harness_with_grace(60)
+    photo_id = h.confirmed_photo()
+    authorized_until = h.repo.photos[photo_id].upload_authorized_until
+    assert authorized_until is not None
+
+    result = h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
+    assert result.storage_cleanup == MediaCleanupStatus.PENDING
+
+    # Right at the deadline: too early, a late PUT could still land.
+    h.now = authorized_until + timedelta(seconds=1)
+    assert h.cleanup.process_due().claimed == 0
+
+    # Past the deadline plus the grace period: safe to finalize.
+    h.now = authorized_until + timedelta(seconds=61)
+    summary = h.cleanup.process_due()
+
+    assert (summary.claimed, summary.completed) == (1, 1)
+    assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
+
+
+def test_delete_cleanup_removes_an_object_put_during_the_grace_period() -> None:
+    """A PUT that lands strictly after the authorization deadline but
+    within the completion grace period must still be caught, not just one
+    that lands before the deadline (see the stale-upload-url test above)."""
+    h = _harness_with_grace(60)
+    photo_id = h.confirmed_photo()
+    s3_key = h.repo.photos[photo_id].s3_key
+    authorized_until = h.repo.photos[photo_id].upload_authorized_until
+    assert authorized_until is not None
+
+    result = h.delete.execute(owner_id=h.owner_id, photo_id=photo_id)
+    assert result.storage_cleanup == MediaCleanupStatus.PENDING
+    assert not h.storage.has_object(s3_key=s3_key)
+
+    # A PUT that started just before the deadline lands during the grace window.
+    h.now = authorized_until + timedelta(seconds=30)
+    h.storage.put_object_data(s3_key=s3_key)
+    assert h.storage.has_object(s3_key=s3_key)
+
+    h.now = authorized_until + timedelta(seconds=61)
     summary = h.cleanup.process_due()
 
     assert summary.completed == 1

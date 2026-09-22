@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -9,6 +10,8 @@ from kinetiq.modules.workouts.application.ports import (
     VisionObservationSourcePort,
 )
 from kinetiq.modules.workouts.domain import WorkoutSession
+
+logger = logging.getLogger(__name__)
 
 _LOST_TRACKING_STATES = frozenset({"SEARCHING", "AMBIGUOUS", "LOST"})
 _VISIBILITY_STATE_TO_STATUS = {
@@ -34,6 +37,7 @@ class ObservationIngestionResult:
     next_cursor: str | None
     lease_contended: bool = False
     publish_failed: bool = False
+    identity_mismatch: bool = False
     cursor_advanced: bool = True
 
 
@@ -84,10 +88,19 @@ class PollVisionObservationsUseCase:
     was missing (the earlier pass wired the Redis publish/subscribe
     plumbing but had no real producer feeding it).
 
-    Rejects observations from a stale epoch (the session was re-targeted
-    since Vision produced them) and duplicate or out-of-order sequences
-    (the persisted cursor already advanced past them, e.g. an overlapping
-    poll).
+    Trust boundary: rejects any observation whose `session_id` or
+    `target_person_id` does not match this session/its confirmed target --
+    Vision's response is untrusted input, and publishing it regardless
+    would attribute another session's or person's repetitions to this
+    athlete. Rejects observations from a stale epoch (the session was
+    re-targeted since Vision produced them) and duplicate or out-of-order
+    sequences (the persisted cursor already advanced past them, e.g. an
+    overlapping poll). The resume cursor persisted for the next poll
+    advances past every stale/duplicate observation in a fully processed
+    page (using Vision's own page-end cursor), so a page that happens to be
+    entirely stale (e.g. right after a retarget) does not permanently stall
+    ingestion on it; it never advances past an identity mismatch or a
+    failed publish.
 
     Retry-safety (this pass): a per-session poll lease
     (`acquire_vision_poll_lease`) is held for the whole pass so two worker
@@ -169,11 +182,35 @@ class PollVisionObservationsUseCase:
             skipped_stale_epoch = 0
             skipped_duplicate_sequence = 0
             publish_failed = False
+            identity_mismatch = False
             latest_cursor = starting_cursor
+            expected_session_id = str(session.id)
 
             for observation in page.observations:
+                if observation.session_id != expected_session_id or (
+                    session.target_person_id is not None
+                    and observation.target_person_id != session.target_person_id
+                ):
+                    # Untrusted input: Vision's response does not belong to
+                    # this session/confirmed target. Never publish it or
+                    # advance past it -- quarantine here for operator
+                    # investigation instead of silently skipping corrupted
+                    # or mixed-analysis data.
+                    logger.error(
+                        "Vision observation identity mismatch for session %s: "
+                        "observation session_id=%s target_person_id=%s "
+                        "(expected session_id=%s target_person_id=%s)",
+                        session.id,
+                        observation.session_id,
+                        observation.target_person_id,
+                        expected_session_id,
+                        session.target_person_id,
+                    )
+                    identity_mismatch = True
+                    break
                 if observation.epoch != session.vision_epoch:
                     skipped_stale_epoch += 1
+                    latest_cursor = f"{observation.epoch}:{observation.sequence}"
                     continue
                 if (
                     last_cursor is not None
@@ -181,6 +218,7 @@ class PollVisionObservationsUseCase:
                     and observation.sequence <= last_cursor[1]
                 ):
                     skipped_duplicate_sequence += 1
+                    latest_cursor = f"{observation.epoch}:{observation.sequence}"
                     continue
 
                 update = _to_transient_update(
@@ -198,6 +236,15 @@ class PollVisionObservationsUseCase:
                 published += 1
                 last_cursor = (observation.epoch, observation.sequence)
                 latest_cursor = f"{observation.epoch}:{observation.sequence}"
+            else:
+                # The whole page was safely processed (no identity mismatch,
+                # no publish failure): Vision's own page-end cursor
+                # guarantees forward progress through its stream even when
+                # every observation in this page was stale/duplicate for
+                # us, so a page we can never locally accept does not
+                # permanently stall the next poll on the same position.
+                if page.next_cursor is not None:
+                    latest_cursor = page.next_cursor
 
             cursor_advanced = True
             if latest_cursor != starting_cursor:
@@ -216,6 +263,7 @@ class PollVisionObservationsUseCase:
                 skipped_duplicate_sequence=skipped_duplicate_sequence,
                 next_cursor=latest_cursor if cursor_advanced else starting_cursor,
                 publish_failed=publish_failed,
+                identity_mismatch=identity_mismatch,
                 cursor_advanced=cursor_advanced,
             )
         finally:

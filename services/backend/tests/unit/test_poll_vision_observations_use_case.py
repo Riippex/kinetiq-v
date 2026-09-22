@@ -21,6 +21,8 @@ from kinetiq.modules.workouts.domain import (
 )
 
 ROUTINE_ID = uuid4()
+SESSION_ID = uuid4()
+TARGET_PERSON_ID = "cand_1"
 
 
 class FakeVisionObservationSourcePort:
@@ -117,7 +119,7 @@ def tracking_session(*, epoch: int = 2, cursor: str | None = "2:5") -> WorkoutSe
         dynamic=None,
     )
     base = WorkoutSession.prepare(
-        session_id=uuid4(),
+        session_id=SESSION_ID,
         owner_id=uuid4(),
         routine_id=ROUTINE_ID,
         routine_version=1,
@@ -126,7 +128,7 @@ def tracking_session(*, epoch: int = 2, cursor: str | None = "2:5") -> WorkoutSe
     return replace(
         base,
         state=base.state,
-        target_person_id="cand_1",
+        target_person_id=TARGET_PERSON_ID,
         vision_analysis_id="an_1",
         vision_epoch=epoch,
         vision_observation_cursor=cursor,
@@ -141,8 +143,14 @@ def observation(
     visibility_state: str = "FULL",
     confirmed_repetitions: int = 0,
     last_repetition_confidence: float | None = None,
+    session_id: str = str(SESSION_ID),
+    target_person_id: str = TARGET_PERSON_ID,
+    exercise_key: str = "push_up",
 ) -> VisionObservationInfo:
     return VisionObservationInfo(
+        session_id=session_id,
+        target_person_id=target_person_id,
+        exercise_key=exercise_key,
         epoch=epoch,
         sequence=sequence,
         tracking_state=tracking_state,
@@ -193,7 +201,9 @@ def test_publishes_new_observations_and_advances_cursor() -> None:
 def test_rejects_observations_from_a_stale_epoch() -> None:
     """Regression test: an observation produced under a previous epoch
     (e.g. before a re-target) must never be published as if it were
-    current."""
+    current. The cursor still advances to Vision's own page-end cursor
+    (second Codex adversarial-review pass) so a page that is entirely
+    stale does not stall every later poll on the same position."""
     session = tracking_session(epoch=3, cursor=None)
     page = VisionObservationsPage(
         observations=(observation(epoch=2, sequence=1),),
@@ -210,7 +220,9 @@ def test_rejects_observations_from_a_stale_epoch() -> None:
     assert result.published_count == 0
     assert result.skipped_stale_epoch == 1
     assert store.published == []
-    assert repo.advance_calls == []
+    assert result.cursor_advanced is True
+    assert result.next_cursor == "2:1"
+    assert repo.advance_calls == [(session.owner_id, session.id, None, "2:1")]
 
 
 def test_rejects_duplicate_or_out_of_order_sequences() -> None:
@@ -237,6 +249,101 @@ def test_rejects_duplicate_or_out_of_order_sequences() -> None:
     assert result.skipped_duplicate_sequence == 2
     assert len(store.published) == 1
     assert repo.advance_calls == [(session.owner_id, session.id, "2:5", "2:6")]
+
+
+def test_rejects_and_quarantines_an_observation_with_a_mismatched_session_id() -> None:
+    """Third Codex adversarial-review pass, trust boundary: Vision's
+    response is untrusted input. An observation whose session_id does not
+    match the local session must never be published under this session's
+    identity, and the pass must stop there rather than skip past it."""
+    session = tracking_session(epoch=2, cursor="2:5")
+    page = VisionObservationsPage(
+        observations=(
+            observation(epoch=2, sequence=6, session_id="some-other-session"),
+            observation(epoch=2, sequence=7),  # must never be reached
+        ),
+        next_cursor="2:7",
+        has_more=False,
+    )
+    vision = FakeVisionObservationSourcePort(page)
+    store = FakeSessionTransientStore()
+    repo = FakeSessionLifecycleRepository()
+    use_case = PollVisionObservationsUseCase(repo, vision, store)
+
+    result = use_case.execute(session=session)
+
+    assert result.identity_mismatch is True
+    assert result.published_count == 0
+    assert store.published == []
+    assert result.cursor_advanced is True
+    assert result.next_cursor == "2:5"
+    assert repo.advance_calls == []
+
+
+def test_rejects_and_quarantines_an_observation_with_a_mismatched_target_person() -> None:
+    """Same trust boundary for the confirmed target: an observation for a
+    different person must never be attributed to this athlete."""
+    session = tracking_session(epoch=2, cursor="2:5")
+    page = VisionObservationsPage(
+        observations=(observation(epoch=2, sequence=6, target_person_id="cand_2"),),
+        next_cursor="2:6",
+        has_more=False,
+    )
+    vision = FakeVisionObservationSourcePort(page)
+    store = FakeSessionTransientStore()
+    repo = FakeSessionLifecycleRepository()
+    use_case = PollVisionObservationsUseCase(repo, vision, store)
+
+    result = use_case.execute(session=session)
+
+    assert result.identity_mismatch is True
+    assert result.published_count == 0
+    assert store.published == []
+    assert repo.advance_calls == []
+
+
+def test_a_fully_stale_page_advances_past_it_and_a_later_poll_reaches_current_data() -> None:
+    """Exact scenario from the second Codex adversarial-review pass: a
+    bounded page containing only prior-epoch observations must not
+    permanently poison the cursor. Two sequential polls -- the first
+    returns a fully stale page, the second (now resumed from Vision's own
+    page-end cursor) returns current-epoch data -- must together publish
+    the current-epoch observation, not stall forever on the first page."""
+    session = tracking_session(epoch=5, cursor="4:97")
+    stale_page = VisionObservationsPage(
+        observations=(
+            observation(epoch=4, sequence=98),
+            observation(epoch=4, sequence=99),
+        ),
+        next_cursor="4:99",
+        has_more=True,
+    )
+    vision = FakeVisionObservationSourcePort(stale_page)
+    store = FakeSessionTransientStore()
+    repo = FakeSessionLifecycleRepository()
+    use_case = PollVisionObservationsUseCase(repo, vision, store)
+
+    first = use_case.execute(session=session)
+
+    assert first.published_count == 0
+    assert first.skipped_stale_epoch == 2
+    assert first.cursor_advanced is True
+    assert first.next_cursor == "4:99"
+
+    # The worker persists the advanced cursor and polls again.
+    session = replace(session, vision_observation_cursor=first.next_cursor)
+    vision.page = VisionObservationsPage(
+        observations=(observation(epoch=5, sequence=1, confirmed_repetitions=1),),
+        next_cursor="5:1",
+        has_more=False,
+    )
+
+    second = use_case.execute(session=session)
+
+    assert vision.calls == [("an_1", "4:97", 50), ("an_1", "4:99", 50)]
+    assert second.published_count == 1
+    assert len(store.published) == 1
+    assert second.next_cursor == "5:1"
 
 
 def test_cursor_from_a_previous_epoch_does_not_suppress_the_new_epoch() -> None:
