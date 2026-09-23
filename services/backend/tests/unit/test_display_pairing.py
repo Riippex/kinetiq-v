@@ -33,9 +33,11 @@ class DummyLifecycleRepo:
         self._session = session
 
     def get_session(self, *, owner_id, session_id):
-        if self._session and str(self._session.id) == str(session_id) and str(
-            owner_id
-        ) == str(self._session.owner_id):
+        if (
+            self._session
+            and str(self._session.id) == str(session_id)
+            and str(owner_id) == str(self._session.owner_id)
+        ):
             return self._session
         return None
 

@@ -83,8 +83,14 @@ def test_token_with_unknown_kid_is_rejected(athlete: User) -> None:
 def test_unsigned_alg_none_token_is_rejected(athlete: User) -> None:
     now = int(time.time())
     unsigned = jwt.encode(
-        {"sub": SUBJECT, "iss": ISSUER, "exp": now + 300, "client_id": AUDIENCE,
-         "token_use": "access", "scope": SCOPE},
+        {
+            "sub": SUBJECT,
+            "iss": ISSUER,
+            "exp": now + 300,
+            "client_id": AUDIENCE,
+            "token_use": "access",
+            "scope": SCOPE,
+        },
         None,
         algorithm="none",
         headers={"kid": "trusted-key-1"},
@@ -110,8 +116,13 @@ def test_expired_token_is_rejected(athlete: User) -> None:
 
 @pytest.mark.django_db(transaction=True)
 def test_token_without_expiration_is_rejected(athlete: User) -> None:
-    payload = {"sub": SUBJECT, "iss": ISSUER, "client_id": AUDIENCE,
-               "token_use": "access", "scope": SCOPE}
+    payload = {
+        "sub": SUBJECT,
+        "iss": ISSUER,
+        "client_id": AUDIENCE,
+        "token_use": "access",
+        "scope": SCOPE,
+    }
     token = jwt.encode(payload, TRUSTED_KEY, algorithm="RS256", headers={"kid": "trusted-key-1"})
     assert verify(token) is None
 
@@ -186,9 +197,7 @@ def _authenticate_as(subject: str | None) -> None:
         auth_context_var.set(None)
         return
     auth_context_var.set(
-        AuthenticatedUser(
-            AccessToken(token="t", client_id="c", scopes=[SCOPE], subject=subject)
-        )
+        AuthenticatedUser(AccessToken(token="t", client_id="c", scopes=[SCOPE], subject=subject))
     )
 
 

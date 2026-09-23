@@ -126,9 +126,7 @@ def issue_display_pairing_code() -> IssueDisplayPairingCodeUseCase:
 
 
 def pair_display_device() -> PairDisplayDeviceUseCase:
-    return PairDisplayDeviceUseCase(
-        get_display_pairing_store(), DjangoSessionLifecycleRepository()
-    )
+    return PairDisplayDeviceUseCase(get_display_pairing_store(), DjangoSessionLifecycleRepository())
 
 
 def get_display_session_state() -> GetDisplaySessionStateUseCase:

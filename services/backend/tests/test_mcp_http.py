@@ -165,9 +165,7 @@ def test_unconfigured_oidc_rejects_every_token(athlete: User) -> None:
     async def scenario() -> None:
         app = make_app(oidc=oidc_settings(issuer="", audience=""), verifier=None)
         async with LifespanRunner(app):
-            response = await raw_mcp_post(
-                app, {"Authorization": f"Bearer {mint_token(SUBJECT)}"}
-            )
+            response = await raw_mcp_post(app, {"Authorization": f"Bearer {mint_token(SUBJECT)}"})
         assert response.status_code == 401
 
     asyncio.run(scenario())
@@ -192,9 +190,7 @@ def test_dns_rebinding_protection_validates_host_and_origin(athlete: User) -> No
 
 
 @pytest.mark.django_db(transaction=True)
-def test_dns_rebinding_allow_lists_default_to_django_settings(
-    athlete: User, settings: Any
-) -> None:
+def test_dns_rebinding_allow_lists_default_to_django_settings(athlete: User, settings: Any) -> None:
     settings.MCP_ALLOWED_HOSTS = ["mcp.kinetiq.example"]
     settings.MCP_ALLOWED_ORIGINS = ["https://alexa.example.com"]
     good = {"Authorization": f"Bearer {mint_token(SUBJECT)}"}

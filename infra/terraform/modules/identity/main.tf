@@ -1,3 +1,5 @@
+data "aws_region" "current" {}
+
 resource "aws_cognito_user_pool" "main" {
   name = "${var.project}-users-${var.environment}"
 
@@ -30,6 +32,17 @@ resource "aws_cognito_user_pool" "main" {
     Environment = var.environment
     Project     = var.project
   }
+}
+
+# Hosted UI domain: the OAuth authorization-code flow (/oauth2/authorize,
+# /oauth2/token, /login) is served from this domain, not from the pool's own
+# issuer endpoint (issuer_url/jwks_url above are for RS256 token
+# verification only and never serve the interactive login pages). Without
+# this, allowed_oauth_flows = ["code"] has no usable endpoint for the web
+# and mobile clients to redirect users to.
+resource "aws_cognito_user_pool_domain" "main" {
+  domain       = var.cognito_domain_prefix
+  user_pool_id = aws_cognito_user_pool.main.id
 }
 
 # Resource server for API scopes (provides kinetiq/coach for Alexa+ MCP)

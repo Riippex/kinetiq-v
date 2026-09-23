@@ -55,9 +55,7 @@ def oidc_settings_from_django() -> OIDCSettings:
     )
 
 
-def create_mcp_server(
-    *, token_verifier: TokenVerifier, auth: AuthSettings
-) -> MCPServer:
+def create_mcp_server(*, token_verifier: TokenVerifier, auth: AuthSettings) -> MCPServer:
     """Create a Kinetiq Coach MCP server with all tools.
 
     A new server (and therefore a new session manager) is created per ASGI

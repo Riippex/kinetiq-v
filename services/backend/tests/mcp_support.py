@@ -270,9 +270,7 @@ class UvicornThread:
     def stop(self, timeout: float = 15.0) -> None:
         self.server.should_exit = True
         self._thread.join(timeout=timeout)
-        assert not self._thread.is_alive(), (
-            "uvicorn did not shut down:\n" + self._diagnostics()
-        )
+        assert not self._thread.is_alive(), "uvicorn did not shut down:\n" + self._diagnostics()
         assert self.loop is not None and self.loop.is_closed()
         unexpected = [n for n in self.leftover_tasks if n not in _ALLOWED_LEFTOVER_TASKS]
         assert unexpected == [], f"tasks still pending at server exit: {unexpected}"

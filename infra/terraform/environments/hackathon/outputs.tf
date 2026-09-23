@@ -4,18 +4,33 @@ output "alb_dns_name" {
 }
 
 output "application_url" {
-  description = "Application entry URL (HTTP default or HTTPS if certificate configured)"
-  value       = "http://${module.compute.alb_dns_name}"
+  description = "Canonical application entry URL -- https only once a real HTTPS listener (certificate_arn or domain_name) is configured, http otherwise"
+  value       = module.compute.public_origin
 }
 
 output "graphql_endpoint" {
-  description = "Direct GraphQL API endpoint on the ALB"
-  value       = "http://${module.compute.alb_dns_name}/graphql"
+  description = "Direct GraphQL API endpoint on the canonical origin"
+  value       = "${module.compute.public_origin}/graphql/"
 }
 
 output "mcp_endpoint" {
-  description = "Alexa+ MCP Streamable HTTP endpoint"
-  value       = "http://${module.compute.alb_dns_name}/mcp"
+  description = "Alexa+ MCP Streamable HTTP endpoint on the canonical origin"
+  value       = "${module.compute.public_origin}/mcp"
+}
+
+output "has_https" {
+  description = "Whether the ALB currently has a real HTTPS listener"
+  value       = module.compute.has_https
+}
+
+output "cognito_hosted_ui_domain" {
+  description = "Cognito Hosted UI domain serving the OAuth authorization-code flow"
+  value       = module.identity.hosted_ui_domain
+}
+
+output "media_cleanup_schedule_name" {
+  description = "EventBridge Scheduler schedule that runs the media-cleanup task"
+  value       = module.compute.media_cleanup_schedule_name
 }
 
 output "cognito_user_pool_id" {

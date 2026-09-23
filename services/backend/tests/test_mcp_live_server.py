@@ -96,7 +96,8 @@ def mcp_uvicorn_url(jwks_url: str) -> Iterator[str]:
     # pending task, and no thread started by the server may outlive it.
     harness.stop()
     lingering = [
-        t for t in set(threading.enumerate()) - baseline_threads
+        t
+        for t in set(threading.enumerate()) - baseline_threads
         if t.is_alive() and not t.name.startswith(("ThreadPoolExecutor", "asgiref"))
     ]
     for thread in lingering:
@@ -115,9 +116,7 @@ def test_declared_alexa_plus_simulation_over_real_uvicorn(mcp_uvicorn_url: str) 
     )
     SeedCatalogUseCase(
         catalog_repo=DjangoCatalogRepository(), vision_capabilities=FileBasedVisionCapabilities()
-    ).execute(
-        goals=CANONICAL_GOALS, exercises=CANONICAL_EXERCISES, templates=CANONICAL_TEMPLATES
-    )
+    ).execute(goals=CANONICAL_GOALS, exercises=CANONICAL_EXERCISES, templates=CANONICAL_TEMPLATES)
 
     async def scenario() -> list[str]:
         transcript: list[str] = []

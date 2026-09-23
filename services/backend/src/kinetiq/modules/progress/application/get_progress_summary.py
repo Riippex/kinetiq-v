@@ -60,9 +60,7 @@ class GetProgressSummaryUseCase:
         self._profile_lookup = profile_lookup
         self._goal_lookup = goal_lookup
 
-    def execute(
-        self, *, owner_id: UUID, from_date: datetime, to_date: datetime
-    ) -> ProgressSummary:
+    def execute(self, *, owner_id: UUID, from_date: datetime, to_date: datetime) -> ProgressSummary:
         sessions = self._session_history_lookup.get_sessions_in_range(
             owner_id=owner_id, from_date=from_date, to_date=to_date
         )
@@ -81,9 +79,7 @@ class GetProgressSummaryUseCase:
         skipped_count = max(0, planned_sessions - completed_count)
 
         consistency_ratio = (
-            min(1.0, round(completed_count / planned_sessions, 2))
-            if planned_sessions > 0
-            else 0.0
+            min(1.0, round(completed_count / planned_sessions, 2)) if planned_sessions > 0 else 0.0
         )
 
         # Calculate streak days ending at to_date
@@ -127,9 +123,7 @@ class GetProgressSummaryUseCase:
                 exercise_names.setdefault(ex_id, pset.exercise_name)
                 reps = pset.repetitions or 0
                 session_reps_by_exercise[ex_id] = session_reps_by_exercise.get(ex_id, 0) + reps
-                exercise_self_reported_vol[ex_id] = (
-                    exercise_self_reported_vol.get(ex_id, 0) + reps
-                )
+                exercise_self_reported_vol[ex_id] = exercise_self_reported_vol.get(ex_id, 0) + reps
 
             for ex_id, reps in session_reps_by_exercise.items():
                 exercise_session_volumes.setdefault(ex_id, []).append(reps)

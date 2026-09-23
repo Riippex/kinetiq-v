@@ -15,8 +15,20 @@ budget_limit_amount        = "50.0" # Monthly USD limit
 budget_notification_emails = ["developer@example.com"]
 
 # GitHub Actions OIDC Configuration
-github_repository    = "Riippex/kinetiq-v"
-create_oidc_provider = true # Set false if https://token.actions.githubusercontent.com already exists in your AWS account
+github_repository       = "Riippex/kinetiq-v"
+github_oidc_environment = "hackathon" # Must match the GitHub Environment protecting the deploy workflow's job
+create_oidc_provider    = true        # Set false if https://token.actions.githubusercontent.com already exists in your AWS account
 
-# Optional Custom Domain / TLS
+# Custom Domain / TLS (REQUIRED -- there is no HTTP-only mode)
+# Requires an EXISTING public Route53 hosted zone for the domain in this account.
+# Terraform requests and DNS-validates a certificate for it, and every deployed
+# origin (Cognito callbacks/logout, S3 CORS, Django allowed hosts, GraphQL/MCP
+# URLs) is derived from it over HTTPS -- see docs/runbooks/infrastructure-bootstrap.md
+# and infra/terraform/modules/compute/variables.tf.
+domain_name = "hackathon.kinetiq.example"
+#
+# Alternative: bring your own already-issued certificate instead of Terraform
+# provisioning one (takes precedence over domain_name-driven issuance; domain_name
+# must still be set to the exact hostname the certificate was issued for, and an
+# external DNS record must point that hostname at the ALB's DNS name):
 # certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/abc-123"

@@ -176,15 +176,21 @@ def test_effect_failure_rolls_back_the_claim_so_a_retry_can_run() -> None:
 
     with pytest.raises(ValueError, match="boom"):
         runner.run(
-            owner_id=owner.id, tool="set_goal", key="retry-key",
-            payload={"description": "Doomed goal"}, effect=failing_effect,
+            owner_id=owner.id,
+            tool="set_goal",
+            key="retry-key",
+            payload={"description": "Doomed goal"},
+            effect=failing_effect,
         )
     assert GoalRevisionRecord.objects.filter(owner_id=owner.id).count() == 0
     assert McpToolReceipt.objects.filter(owner_id=owner.id).count() == 0
 
     result = runner.run(
-        owner_id=owner.id, tool="set_goal", key="retry-key",
-        payload={"description": "Doomed goal"}, effect=_goal_effect(owner.id, "Doomed goal"),
+        owner_id=owner.id,
+        tool="set_goal",
+        key="retry-key",
+        payload={"description": "Doomed goal"},
+        effect=_goal_effect(owner.id, "Doomed goal"),
     )
     assert result["description"] == "Doomed goal"
     assert GoalRevisionRecord.objects.filter(owner_id=owner.id).count() == 1

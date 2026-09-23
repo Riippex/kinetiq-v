@@ -82,12 +82,17 @@ resource "aws_secretsmanager_secret" "db_credentials" {
 resource "aws_secretsmanager_secret_version" "db_credentials" {
   secret_id = aws_secretsmanager_secret.db_credentials.id
   secret_string = jsonencode({
-    engine       = "postgres"
-    host         = aws_db_instance.main.address
-    port         = aws_db_instance.main.port
-    dbname       = var.db_name
-    username     = var.db_username
-    password     = random_password.db_password.result
-    database_url = "postgresql://${var.db_username}:${random_password.db_password.result}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/${var.db_name}?sslmode=require"
+    engine   = "postgres"
+    host     = aws_db_instance.main.address
+    port     = aws_db_instance.main.port
+    dbname   = var.db_name
+    username = var.db_username
+    password = random_password.db_password.result
+    # The generated password's special characters (#, %, &, ?, +, =, etc.)
+    # are valid in a Secrets Manager string but not valid unescaped inside a
+    # URI -- unescaped, they can break the URI's own delimiters (query
+    # string, fragment, userinfo separator) or simply fail to parse.
+    # urlencode() makes both the username and password components safe.
+    database_url = "postgresql://${urlencode(var.db_username)}:${urlencode(random_password.db_password.result)}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/${var.db_name}?sslmode=require"
   })
 }

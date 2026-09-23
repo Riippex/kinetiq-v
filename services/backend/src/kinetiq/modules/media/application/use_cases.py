@@ -359,9 +359,7 @@ class ListProgressPhotosUseCase:
         self._storage = storage
         self._ttl_seconds = ttl_seconds
 
-    def execute(
-        self, *, owner_id: UUID, session_id: UUID | None = None
-    ) -> list[ProgressPhotoDTO]:
+    def execute(self, *, owner_id: UUID, session_id: UUID | None = None) -> list[ProgressPhotoDTO]:
         photos = self._repository.list_by_owner(owner_id=owner_id, session_id=session_id)
         result: list[ProgressPhotoDTO] = []
         for p in photos:

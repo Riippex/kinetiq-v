@@ -56,9 +56,7 @@ class DjangoSessionHistoryLookup:
 
 class DjangoGoalLookup:
     def get_active_goal(self, *, owner_id: UUID) -> GoalRecordDTO | None:
-        record = (
-            GoalRevisionRecord.objects.filter(owner_id=owner_id).order_by("-revision").first()
-        )
+        record = GoalRevisionRecord.objects.filter(owner_id=owner_id).order_by("-revision").first()
         if record is None:
             return None
         return GoalRecordDTO(

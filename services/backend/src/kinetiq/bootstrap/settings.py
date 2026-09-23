@@ -154,9 +154,7 @@ MEDIA_S3_BUCKET = os.getenv("MEDIA_S3_BUCKET", "kinetiq-media-private")
 MEDIA_S3_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1"))
 MEDIA_PRESIGNED_EXPIRY_SECONDS = int(os.getenv("MEDIA_PRESIGNED_EXPIRY_SECONDS", "900"))
 MEDIA_S3_ENDPOINT_URL = os.getenv("MEDIA_S3_ENDPOINT_URL", None)
-USE_IN_MEMORY_MEDIA_STORAGE = (
-    os.getenv("USE_IN_MEMORY_MEDIA_STORAGE", "false").lower() == "true"
-)
+USE_IN_MEMORY_MEDIA_STORAGE = os.getenv("USE_IN_MEMORY_MEDIA_STORAGE", "false").lower() == "true"
 
 
 # MCP (Alexa+) runtime endpoint. Bearer tokens must be signed OIDC/JWT access

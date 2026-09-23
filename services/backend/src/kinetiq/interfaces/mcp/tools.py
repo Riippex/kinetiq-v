@@ -453,9 +453,7 @@ async def mcp_abandon_session(
 
     `idempotency_key` is required.
     """
-    return await _lifecycle(
-        abandon_workout_session, idempotency_key, session_id, expected_revision
-    )
+    return await _lifecycle(abandon_workout_session, idempotency_key, session_id, expected_revision)
 
 
 @tool_errors

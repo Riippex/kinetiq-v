@@ -1,6 +1,21 @@
-# Data source for AWS partition and region
+# Data source for AWS partition, region and account
 data "aws_partition" "current" {}
 data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
+locals {
+  # Deterministic ARN patterns (family names are plain strings computed from
+  # project/environment, not real Terraform resource attributes), so IAM
+  # scoping here never depends on the compute module's actual task
+  # definitions -- avoiding a module cycle (compute already depends on this
+  # module for its task/execution role ARNs).
+  worker_task_family_arn = "arn:${data.aws_partition.current.partition}:ecs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:task-definition/${var.project}-worker-${var.environment}:*"
+  ecs_cluster_arn        = "arn:${data.aws_partition.current.partition}:ecs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:cluster/${var.project}-${var.environment}-cluster"
+  # EventBridge Scheduler schedules that don't specify a group live in the
+  # "default" group -- matches aws_scheduler_schedule.media_cleanup in the
+  # compute module, which does not set group_name.
+  media_cleanup_schedule_arn = "arn:${data.aws_partition.current.partition}:scheduler:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:schedule/default/${var.project}-media-cleanup-${var.environment}"
+}
 
 # ECS Task Execution Role (assumed by ECS container agent to pull images and configure logs/secrets)
 resource "aws_iam_role" "ecs_execution_role" {
@@ -90,10 +105,11 @@ resource "aws_iam_policy" "backend_task_permissions" {
         Sid    = "ScopedMediaAccess"
         Effect = "Allow"
         Action = [
+          # s3:GetObject already authorizes HeadObject requests against the
+          # same key; "s3:HeadObject" is not a real IAM action name.
           "s3:GetObject",
           "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:HeadObject"
+          "s3:DeleteObject"
         ]
         Resource = "${var.media_bucket_arn}/photos/*"
       },
@@ -176,9 +192,9 @@ resource "aws_iam_policy" "worker_task_permissions" {
         Sid    = "ScopedMediaCleanup"
         Effect = "Allow"
         Action = [
+          # s3:GetObject already authorizes HeadObject; not a real IAM action.
           "s3:GetObject",
-          "s3:DeleteObject",
-          "s3:HeadObject"
+          "s3:DeleteObject"
         ]
         Resource = "${var.media_bucket_arn}/photos/*"
       },
@@ -234,11 +250,29 @@ resource "aws_iam_role" "github_deployer" {
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
+          # Exact match only: this role is assumable only by a workflow run
+          # that went through the `github_oidc_environment` GitHub
+          # Environment (which itself can require a manual reviewer
+          # approval before the job runs) -- never by any workflow run on
+          # any branch/PR/tag in the repository, which is what the former
+          # "repo:...:*" wildcard allowed.
+          #
+          # BLOCKED / pending verification: this uses GitHub's long-standing
+          # name-based subject format (repo:<owner>/<repo>:environment:<env>).
+          # If this repository is subject to a GitHub OIDC "immutable
+          # subject" policy requiring numeric owner/repository IDs instead
+          # of (or alongside) names, this condition must be updated to the
+          # real, GitHub-confirmed format -- this configuration does not
+          # guess it (var.github_repository_id / var.github_repository_owner_id
+          # are exposed above, accepted, and currently unused pending that
+          # confirmation). Before the first real `terraform apply`, verify
+          # which format actually applies -- see "GitHub OIDC immutable
+          # subject" in docs/runbooks/infrastructure-bootstrap.md for the
+          # exact commands (both a REST API lookup of the numeric IDs and a
+          # way to decode a real token's actual `sub` claim).
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:*"
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:${var.github_oidc_environment}"
           }
         }
       }
@@ -285,20 +319,69 @@ resource "aws_iam_policy" "github_deployer_permissions" {
           var.web_repository_arn
         ]
       },
-      # ECS deployment permissions scoped to the cluster and services
+      # ECS deployment permissions. RegisterTaskDefinition/DescribeTaskDefinition
+      # do not support resource-level scoping (AWS requires Resource "*" for
+      # them); UpdateService/RunTask/DescribeServices/DescribeTasks are
+      # further bounded below to this one cluster via an ecs:cluster
+      # condition, so this role can never touch a cluster it doesn't own.
       {
-        Sid    = "ECSDeploy"
+        Sid    = "ECSTaskDefinitions"
+        Effect = "Allow"
+        Action = [
+          "ecs:RegisterTaskDefinition",
+          "ecs:DescribeTaskDefinition"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECSDeployBoundToCluster"
         Effect = "Allow"
         Action = [
           "ecs:UpdateService",
           "ecs:DescribeServices",
-          "ecs:DescribeTaskDefinition",
-          "ecs:RegisterTaskDefinition",
-          "ecs:RunTask"
+          "ecs:RunTask",
+          "ecs:DescribeTasks"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = local.ecs_cluster_arn
+          }
+        }
+      },
+      # Read-only, unscopable-by-resource lookups the migration task's
+      # network configuration needs -- describe/list actions never support
+      # resource-level ARNs in IAM. The post-deploy health check hits the
+      # canonical HTTPS domain directly (see verify in deploy.yml) and
+      # needs no AWS API calls at all, so no elasticloadbalancing
+      # permission is granted here.
+      {
+        Sid    = "DeployWorkflowReadOnlyLookups"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups"
         ]
         Resource = "*"
       },
-      # PassRole strictly scoped to the concrete task execution and task roles
+      # Repoint the media-cleanup schedule at the worker task definition
+      # revision just registered for the newly deployed image -- otherwise
+      # the schedule keeps running whatever image was current at the last
+      # `terraform apply`, not the image this workflow run just deployed.
+      # Scoped to exactly this one schedule.
+      {
+        Sid    = "UpdateMediaCleanupSchedule"
+        Effect = "Allow"
+        Action = [
+          "scheduler:GetSchedule",
+          "scheduler:UpdateSchedule"
+        ]
+        Resource = local.media_cleanup_schedule_arn
+      },
+      # PassRole strictly scoped to the concrete task execution and task
+      # roles, plus the scheduler execution role -- required because
+      # scheduler:UpdateSchedule's request includes the target's RoleArn
+      # (unchanged, but AWS still checks PassRole for it on every update).
       {
         Sid    = "ScopedPassRole"
         Effect = "Allow"
@@ -308,7 +391,8 @@ resource "aws_iam_policy" "github_deployer_permissions" {
         Resource = [
           aws_iam_role.ecs_execution_role.arn,
           aws_iam_role.backend_task_role.arn,
-          aws_iam_role.worker_task_role.arn
+          aws_iam_role.worker_task_role.arn,
+          aws_iam_role.scheduler_execution_role.arn
         ]
       }
     ]
@@ -318,4 +402,67 @@ resource "aws_iam_policy" "github_deployer_permissions" {
 resource "aws_iam_role_policy_attachment" "github_deployer_policy" {
   role       = aws_iam_role.github_deployer.name
   policy_arn = aws_iam_policy.github_deployer_permissions.arn
+}
+
+# EventBridge Scheduler execution role: runs the one-shot media-cleanup ECS
+# task on a recurring schedule, in place of a continuously-restarting ECS
+# Service (which would crash-loop forever, since the command it runs always
+# exits). Scoped to exactly one task definition family and this cluster.
+resource "aws_iam_role" "scheduler_execution_role" {
+  name = "${var.project}-${var.environment}-scheduler-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "scheduler.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.project}-${var.environment}-scheduler-execution-role"
+    Environment = var.environment
+    Project     = var.project
+  }
+}
+
+resource "aws_iam_policy" "scheduler_execution_permissions" {
+  name        = "${var.project}-${var.environment}-scheduler-execution-policy"
+  description = "Scoped permissions for EventBridge Scheduler to run the media-cleanup task"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "RunWorkerTaskOnThisCluster"
+        Effect   = "Allow"
+        Action   = ["ecs:RunTask"]
+        Resource = [local.worker_task_family_arn]
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = local.ecs_cluster_arn
+          }
+        }
+      },
+      {
+        Sid    = "PassWorkerAndExecutionRoles"
+        Effect = "Allow"
+        Action = ["iam:PassRole"]
+        Resource = [
+          aws_iam_role.ecs_execution_role.arn,
+          aws_iam_role.worker_task_role.arn
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "scheduler_execution_policy" {
+  role       = aws_iam_role.scheduler_execution_role.name
+  policy_arn = aws_iam_policy.scheduler_execution_permissions.arn
 }

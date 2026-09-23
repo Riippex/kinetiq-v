@@ -77,9 +77,7 @@ def test_progress_summary_with_measured_and_self_reported_evidence():
         session_id=uuid4(),
         updated_at=now - timedelta(days=1),
         state="COMPLETED",
-        performed_sets=(
-            PerformedSetDTO("exercise-pushup", "Pushup", 1, 15, None),
-        ),
+        performed_sets=(PerformedSetDTO("exercise-pushup", "Pushup", 1, 15, None),),
         observation_coverage_ratio=None,  # No Vision tracking -> self-reported
     )
 
@@ -273,9 +271,7 @@ def test_progress_summary_weekly_completed_sessions_goal_without_sessions_is_zer
         goal_lookup=DummyGoalLookup(goal),
     )
 
-    summary = use_case.execute(
-        owner_id=uuid4(), from_date=now - timedelta(days=30), to_date=now
-    )
+    summary = use_case.execute(owner_id=uuid4(), from_date=now - timedelta(days=30), to_date=now)
 
     assert summary.goal_progress is not None
     assert summary.goal_progress.current_value == 0.0

@@ -308,9 +308,7 @@ def test_pair_display_device_rejects_nonexistent_session_id(athlete: User) -> No
     assert state_data["sessionId"] is None
 
 
-def test_pair_display_device_rejects_foreign_session_id(
-    athlete: User, other_athlete: User
-) -> None:
+def test_pair_display_device_rejects_foreign_session_id(athlete: User, other_athlete: User) -> None:
     """A session that exists but belongs to a different owner must be
     rejected exactly like a nonexistent one -- pairing must never let a
     display show another athlete's session."""

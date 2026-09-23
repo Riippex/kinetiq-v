@@ -71,8 +71,7 @@ class DisplayPairingCode:
 
 
 class DisplayPairingStore(Protocol):
-    def get(self, code: str) -> DisplayPairingCode | None:
-        ...
+    def get(self, code: str) -> DisplayPairingCode | None: ...
 
     def create_if_absent(self, pairing: DisplayPairingCode) -> bool:
         """Atomically store a new code; False if the code already exists."""

@@ -71,9 +71,30 @@ variable "existing_oidc_provider_arn" {
 }
 
 variable "certificate_arn" {
-  description = "Optional ACM certificate ARN for ALB HTTPS listener"
+  description = "Optional, pre-issued ACM certificate ARN for the ALB HTTPS listener, in place of Terraform's own domain_name-driven certificate issuance. MUST be a certificate actually issued for exactly domain_name."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.certificate_arn == "" || var.domain_name != ""
+    error_message = "certificate_arn is set without domain_name: set domain_name to the exact public hostname that the certificate at certificate_arn was issued for."
+  }
+}
+
+variable "domain_name" {
+  description = "Canonical public domain for this environment. Required: the hackathon deployment must have one real, usable HTTPS public origin before it is considered deployable -- there is no HTTP-only mode. Must already have a public Route53 hosted zone in this account -- see docs/runbooks/infrastructure-bootstrap.md and infra/terraform/modules/compute/variables.tf for the full explanation."
+  type        = string
+
+  validation {
+    condition     = var.domain_name != ""
+    error_message = "domain_name is required: the hackathon environment must have one real, usable HTTPS public origin. Register a domain, create a public Route53 hosted zone for it, and set domain_name (see docs/runbooks/infrastructure-bootstrap.md)."
+  }
+}
+
+variable "github_oidc_environment" {
+  description = "GitHub Environment name the deploy workflow must run under for the OIDC deployer role to be assumable"
+  type        = string
+  default     = "hackathon"
 }
 
 variable "backend_image_tag" {

@@ -57,14 +57,10 @@ def bob(db: object) -> User:
 def seed_catalog(db: object) -> None:
     SeedCatalogUseCase(
         catalog_repo=DjangoCatalogRepository(), vision_capabilities=FileBasedVisionCapabilities()
-    ).execute(
-        goals=CANONICAL_GOALS, exercises=CANONICAL_EXERCISES, templates=CANONICAL_TEMPLATES
-    )
+    ).execute(goals=CANONICAL_GOALS, exercises=CANONICAL_EXERCISES, templates=CANONICAL_TEMPLATES)
 
 
-def run_as(
-    *subjects: str, scenario: Callable[..., Awaitable[None]]
-) -> None:
+def run_as(*subjects: str, scenario: Callable[..., Awaitable[None]]) -> None:
     """Run `scenario` with one authenticated MCP session per subject."""
 
     async def main() -> None:
@@ -153,23 +149,36 @@ def test_profile_goal_routine_and_session_lifecycle(alice: User, seed_catalog: N
         sid, rev = prep["session_id"], prep["revision"]
 
         start = await call(
-            s, "start_session", idempotency_key="lifecycle-start", session_id=sid,
+            s,
+            "start_session",
+            idempotency_key="lifecycle-start",
+            session_id=sid,
             expected_revision=rev,
         )
         assert start["status"] == "ACTIVE"
         pause = await call(
-            s, "pause_session", idempotency_key="lifecycle-pause", session_id=sid,
+            s,
+            "pause_session",
+            idempotency_key="lifecycle-pause",
+            session_id=sid,
             expected_revision=start["revision"],
         )
         assert pause["status"] == "PAUSED"
         resume = await call(
-            s, "resume_session", idempotency_key="lifecycle-resume", session_id=sid,
+            s,
+            "resume_session",
+            idempotency_key="lifecycle-resume",
+            session_id=sid,
             expected_revision=pause["revision"],
         )
         assert resume["status"] == "ACTIVE"
         finish = await call(
-            s, "finish_session", idempotency_key="lifecycle-finish", session_id=sid,
-            expected_revision=resume["revision"], perceived_effort=7,
+            s,
+            "finish_session",
+            idempotency_key="lifecycle-finish",
+            session_id=sid,
+            expected_revision=resume["revision"],
+            perceived_effort=7,
             comments="Great workout via MCP",
         )
         assert finish["status"] == "COMPLETED"
@@ -188,16 +197,25 @@ def test_abandon_session(alice: User, seed_catalog: None) -> None:
     async def scenario(s: ClientSession) -> None:
         routine = await accepted_routine(s, "abandon")
         prep = await call(
-            s, "prepare_session", idempotency_key="abandon-prepare",
-            routine_id=routine["routine_id"], routine_version=routine["version"],
+            s,
+            "prepare_session",
+            idempotency_key="abandon-prepare",
+            routine_id=routine["routine_id"],
+            routine_version=routine["version"],
         )
         start = await call(
-            s, "start_session", idempotency_key="abandon-start",
-            session_id=prep["session_id"], expected_revision=prep["revision"],
+            s,
+            "start_session",
+            idempotency_key="abandon-start",
+            session_id=prep["session_id"],
+            expected_revision=prep["revision"],
         )
         abandon = await call(
-            s, "abandon_session", idempotency_key="abandon-abandon",
-            session_id=start["session_id"], expected_revision=start["revision"],
+            s,
+            "abandon_session",
+            idempotency_key="abandon-abandon",
+            session_id=start["session_id"],
+            expected_revision=start["revision"],
         )
         assert abandon["status"] == "ABANDONED"
 
@@ -317,22 +335,26 @@ def test_session_command_retries_replay_through_the_use_case(
         assert await call(s, "start_session", **start_args) == start
 
         pause_args = {
-            "idempotency_key": "pause-retry", "session_id": sid,
+            "idempotency_key": "pause-retry",
+            "session_id": sid,
             "expected_revision": start["revision"],
         }
         pause = await call(s, "pause_session", **pause_args)
         assert await call(s, "pause_session", **pause_args) == pause
 
         resume_args = {
-            "idempotency_key": "resume-retry", "session_id": sid,
+            "idempotency_key": "resume-retry",
+            "session_id": sid,
             "expected_revision": pause["revision"],
         }
         resume = await call(s, "resume_session", **resume_args)
         assert await call(s, "resume_session", **resume_args) == resume
 
         finish_args = {
-            "idempotency_key": "finish-retry", "session_id": sid,
-            "expected_revision": resume["revision"], "perceived_effort": 6,
+            "idempotency_key": "finish-retry",
+            "session_id": sid,
+            "expected_revision": resume["revision"],
+            "perceived_effort": 6,
             "comments": "once",
         }
         finish = await call(s, "finish_session", **finish_args)
@@ -352,11 +374,15 @@ def test_abandon_retry_replays(alice: User, seed_catalog: None) -> None:
     async def scenario(s: ClientSession) -> None:
         routine = await accepted_routine(s, "abandon-retry")
         prep = await call(
-            s, "prepare_session", idempotency_key="ab-prep",
-            routine_id=routine["routine_id"], routine_version=routine["version"],
+            s,
+            "prepare_session",
+            idempotency_key="ab-prep",
+            routine_id=routine["routine_id"],
+            routine_version=routine["version"],
         )
         args = {
-            "idempotency_key": "ab-abandon", "session_id": prep["session_id"],
+            "idempotency_key": "ab-abandon",
+            "session_id": prep["session_id"],
             "expected_revision": prep["revision"],
         }
         first = await call(s, "abandon_session", **args)
@@ -381,12 +407,18 @@ def test_same_idempotency_key_is_scoped_per_user(alice: User, bob: User) -> None
 
 async def active_session(s: ClientSession, prefix: str, routine: dict[str, Any]) -> dict[str, Any]:
     prep = await call(
-        s, "prepare_session", idempotency_key=f"{prefix}-prepare",
-        routine_id=routine["routine_id"], routine_version=routine["version"],
+        s,
+        "prepare_session",
+        idempotency_key=f"{prefix}-prepare",
+        routine_id=routine["routine_id"],
+        routine_version=routine["version"],
     )
     return await call(
-        s, "start_session", idempotency_key=f"{prefix}-start",
-        session_id=prep["session_id"], expected_revision=prep["revision"],
+        s,
+        "start_session",
+        idempotency_key=f"{prefix}-start",
+        session_id=prep["session_id"],
+        expected_revision=prep["revision"],
     )
 
 
@@ -420,8 +452,10 @@ def test_finish_same_key_and_identical_payload_replays_the_exact_final_response(
         routine = await accepted_routine(s, "fin-replay")
         started = await active_session(s, "fin-replay", routine)
         args = {
-            "idempotency_key": "fin-replay-finish", "session_id": started["session_id"],
-            "expected_revision": started["revision"], "perceived_effort": 7,
+            "idempotency_key": "fin-replay-finish",
+            "session_id": started["session_id"],
+            "expected_revision": started["revision"],
+            "perceived_effort": 7,
             "comments": "felt strong",
         }
         first = await call(s, "finish_session", **args)
@@ -450,8 +484,10 @@ def test_finish_same_key_with_any_different_argument_conflicts_without_effect(
         first_session = await active_session(s, f"fin-a-{change}", routine)
         other_session = await active_session(s, f"fin-b-{change}", routine)
         args: dict[str, Any] = {
-            "idempotency_key": "fin-conflict-key", "session_id": first_session["session_id"],
-            "expected_revision": first_session["revision"], "perceived_effort": 5,
+            "idempotency_key": "fin-conflict-key",
+            "session_id": first_session["session_id"],
+            "expected_revision": first_session["revision"],
+            "perceived_effort": 5,
             "comments": "original",
         }
         first = await call(s, "finish_session", **args)
@@ -490,7 +526,8 @@ def test_finish_without_feedback_then_same_key_with_feedback_adds_no_feedback(
         routine = await accepted_routine(s, "fin-nofb")
         started = await active_session(s, "fin-nofb", routine)
         base = {
-            "idempotency_key": "fin-nofb-finish", "session_id": started["session_id"],
+            "idempotency_key": "fin-nofb-finish",
+            "session_id": started["session_id"],
             "expected_revision": started["revision"],
         }
         first = await call(s, "finish_session", **base)
@@ -520,7 +557,8 @@ def test_finish_with_feedback_then_same_key_without_or_different_feedback_is_not
         routine = await accepted_routine(s, "fin-withfb")
         started = await active_session(s, "fin-withfb", routine)
         base = {
-            "idempotency_key": "fin-withfb-finish", "session_id": started["session_id"],
+            "idempotency_key": "fin-withfb-finish",
+            "session_id": started["session_id"],
             "expected_revision": started["revision"],
         }
         first = await call(
@@ -556,7 +594,8 @@ def test_finish_is_atomic_when_feedback_is_rejected(alice: User, seed_catalog: N
         routine = await accepted_routine(s, "fin-atomic")
         started = await active_session(s, "fin-atomic", routine)
         base = {
-            "idempotency_key": "fin-atomic-finish", "session_id": started["session_id"],
+            "idempotency_key": "fin-atomic-finish",
+            "session_id": started["session_id"],
             "expected_revision": started["revision"],
         }
         assert await call_error(s, "finish_session", **base, perceived_effort=99)
@@ -591,17 +630,27 @@ def test_users_only_see_and_control_their_own_data(
         await call(a, "set_goal", idempotency_key="iso-a-goal", description="Alice goal")
         routine = await accepted_routine(a, "iso-a")
         prep = await call(
-            a, "prepare_session", idempotency_key="iso-a-prep",
-            routine_id=routine["routine_id"], routine_version=routine["version"],
+            a,
+            "prepare_session",
+            idempotency_key="iso-a-prep",
+            routine_id=routine["routine_id"],
+            routine_version=routine["version"],
         )
         start = await call(
-            a, "start_session", idempotency_key="iso-a-start",
-            session_id=prep["session_id"], expected_revision=prep["revision"],
+            a,
+            "start_session",
+            idempotency_key="iso-a-start",
+            session_id=prep["session_id"],
+            expected_revision=prep["revision"],
         )
         finish = await call(
-            a, "finish_session", idempotency_key="iso-a-finish",
-            session_id=start["session_id"], expected_revision=start["revision"],
-            perceived_effort=8, comments="Alice private note",
+            a,
+            "finish_session",
+            idempotency_key="iso-a-finish",
+            session_id=start["session_id"],
+            expected_revision=start["revision"],
+            perceived_effort=8,
+            comments="Alice private note",
         )
         assert finish["status"] == "COMPLETED"
 
@@ -624,17 +673,31 @@ def test_users_only_see_and_control_their_own_data(
 
         # Bob cannot act on Alice's routine or session, even knowing the ids.
         assert await call_error(
-            b, "accept_routine", idempotency_key="iso-b-accept",
-            routine_id=routine["routine_id"], version=routine["version"],
+            b,
+            "accept_routine",
+            idempotency_key="iso-b-accept",
+            routine_id=routine["routine_id"],
+            version=routine["version"],
         )
         assert await call_error(
-            b, "prepare_session", idempotency_key="iso-b-prepare",
-            routine_id=routine["routine_id"], routine_version=routine["version"],
+            b,
+            "prepare_session",
+            idempotency_key="iso-b-prepare",
+            routine_id=routine["routine_id"],
+            routine_version=routine["version"],
         )
-        for tool in ("start_session", "pause_session", "resume_session", "abandon_session",
-                     "finish_session"):
+        for tool in (
+            "start_session",
+            "pause_session",
+            "resume_session",
+            "abandon_session",
+            "finish_session",
+        ):
             assert await call_error(
-                b, tool, idempotency_key=f"iso-b-{tool}", session_id=prep["session_id"],
+                b,
+                tool,
+                idempotency_key=f"iso-b-{tool}",
+                session_id=prep["session_id"],
                 expected_revision=finish["revision"],
             ), tool
         latest = await call(a, "get_latest_session")

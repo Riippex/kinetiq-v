@@ -538,13 +538,17 @@ def test_request_upload_is_rejected_once_the_owner_is_at_the_pending_cap() -> No
 def test_reconcile_abandoned_uploads_tombstones_expired_pending_uploads() -> None:
     owner = User.objects.create_user(username="reconcile-owner")
     _storage()
-    photo_id = request_progress_photo_upload().execute(
-        owner_id=owner.id,
-        session_id=None,
-        content_type="image/jpeg",
-        byte_length=8,
-        idempotency_key="abandoned",
-    ).photo_id
+    photo_id = (
+        request_progress_photo_upload()
+        .execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key="abandoned",
+        )
+        .photo_id
+    )
 
     # Not due yet: the authorization window is still open.
     assert reconcile_abandoned_uploads().execute().reconciled == 0
@@ -568,13 +572,17 @@ def test_reconcile_abandoned_uploads_tombstones_expired_pending_uploads() -> Non
 def test_management_command_reconciles_abandoned_uploads() -> None:
     owner = User.objects.create_user(username="command-reconcile-owner")
     storage = _storage()
-    photo_id = request_progress_photo_upload().execute(
-        owner_id=owner.id,
-        session_id=None,
-        content_type="image/jpeg",
-        byte_length=8,
-        idempotency_key="abandoned-cmd",
-    ).photo_id
+    photo_id = (
+        request_progress_photo_upload()
+        .execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key="abandoned-cmd",
+        )
+        .photo_id
+    )
     ProgressPhotoRecord.objects.filter(id=photo_id).update(
         upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
     )
@@ -596,13 +604,17 @@ def test_photo_deletion_atomically_enqueues_its_event_with_job_completion() -> N
     attempted afterward -- so a crash between the two can never lose it."""
     owner = User.objects.create_user(username="outbox-atomicity")
     storage = _storage()
-    photo_id = request_progress_photo_upload().execute(
-        owner_id=owner.id,
-        session_id=None,
-        content_type="image/jpeg",
-        byte_length=8,
-        idempotency_key="k",
-    ).photo_id
+    photo_id = (
+        request_progress_photo_upload()
+        .execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key="k",
+        )
+        .photo_id
+    )
     ProgressPhotoRecord.objects.filter(id=photo_id).update(
         upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
     )
@@ -622,13 +634,17 @@ def test_photo_deletion_atomically_enqueues_its_event_with_job_completion() -> N
 def test_event_outbox_retries_a_failing_publisher_without_losing_the_event() -> None:
     owner = User.objects.create_user(username="outbox-retry")
     _storage()
-    photo_id = request_progress_photo_upload().execute(
-        owner_id=owner.id,
-        session_id=None,
-        content_type="image/jpeg",
-        byte_length=8,
-        idempotency_key="k",
-    ).photo_id
+    photo_id = (
+        request_progress_photo_upload()
+        .execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key="k",
+        )
+        .photo_id
+    )
     ProgressPhotoRecord.objects.filter(id=photo_id).update(
         upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
     )
@@ -673,13 +689,17 @@ def test_event_outbox_retries_a_failing_publisher_without_losing_the_event() -> 
 def test_management_command_delivers_the_outboxed_event() -> None:
     owner = User.objects.create_user(username="outbox-command-deliver")
     _storage()
-    photo_id = request_progress_photo_upload().execute(
-        owner_id=owner.id,
-        session_id=None,
-        content_type="image/jpeg",
-        byte_length=8,
-        idempotency_key="k",
-    ).photo_id
+    photo_id = (
+        request_progress_photo_upload()
+        .execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key="k",
+        )
+        .photo_id
+    )
     ProgressPhotoRecord.objects.filter(id=photo_id).update(
         upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
     )
@@ -726,13 +746,17 @@ def test_deleting_the_owner_never_cascades_away_existing_cleanup_jobs_or_events(
     disappears with the account."""
     owner = User.objects.create_user(username="account-delete-survives")
     storage = _storage()
-    photo_id = request_progress_photo_upload().execute(
-        owner_id=owner.id,
-        session_id=None,
-        content_type="image/jpeg",
-        byte_length=8,
-        idempotency_key="k",
-    ).photo_id
+    photo_id = (
+        request_progress_photo_upload()
+        .execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key="k",
+        )
+        .photo_id
+    )
     ProgressPhotoRecord.objects.filter(id=photo_id).update(
         upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
     )
@@ -767,13 +791,17 @@ def test_deleting_the_owner_tombstones_and_enqueues_cleanup_for_every_live_photo
     can still be deleted by process_media_cleanup afterward."""
     owner = User.objects.create_user(username="account-delete-live-photo")
     storage = _storage()
-    photo_id = request_progress_photo_upload().execute(
-        owner_id=owner.id,
-        session_id=None,
-        content_type="image/jpeg",
-        byte_length=8,
-        idempotency_key="k",
-    ).photo_id
+    photo_id = (
+        request_progress_photo_upload()
+        .execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key="k",
+        )
+        .photo_id
+    )
     staging_key = ProgressPhotoRecord.objects.get(id=photo_id).s3_key
     storage.put_object_data(s3_key=staging_key, data=b"x" * 8, content_type="image/jpeg")
     finalize_progress_photo().execute(owner_id=owner.id, photo_id=photo_id)
@@ -826,13 +854,17 @@ def test_finalize_copies_to_an_immutable_key_the_staging_url_can_no_longer_overw
     listProgressPhotos/finalizeProgressPhoto actually serve."""
     owner = User.objects.create_user(username="finalize-immutable")
     storage = _storage()
-    photo_id = request_progress_photo_upload().execute(
-        owner_id=owner.id,
-        session_id=None,
-        content_type="image/jpeg",
-        byte_length=8,
-        idempotency_key="k",
-    ).photo_id
+    photo_id = (
+        request_progress_photo_upload()
+        .execute(
+            owner_id=owner.id,
+            session_id=None,
+            content_type="image/jpeg",
+            byte_length=8,
+            idempotency_key="k",
+        )
+        .photo_id
+    )
     staging_key = ProgressPhotoRecord.objects.get(id=photo_id).s3_key
     storage.put_object_data(s3_key=staging_key, data=b"x" * 8, content_type="image/jpeg")
 

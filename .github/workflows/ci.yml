@@ -5,6 +5,11 @@ on:
     branches: ["**"]
   push:
     branches: [develop, main]
+  # Reusable: deploy.yml requires this workflow to pass (on the exact
+  # commit it is about to build and deploy) before it may build or push
+  # anything, instead of duplicating these checks or trusting an
+  # out-of-band CI result.
+  workflow_call: {}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

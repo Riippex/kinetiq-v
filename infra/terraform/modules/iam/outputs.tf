@@ -22,3 +22,8 @@ output "github_deployer_role_arn" {
   description = "ARN of the GitHub Actions OIDC deployer role"
   value       = aws_iam_role.github_deployer.arn
 }
+
+output "scheduler_execution_role_arn" {
+  description = "ARN of the EventBridge Scheduler execution role for the media-cleanup task"
+  value       = aws_iam_role.scheduler_execution_role.arn
+}

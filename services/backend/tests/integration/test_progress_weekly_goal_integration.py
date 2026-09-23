@@ -111,9 +111,7 @@ def test_repetitions_are_never_labeled_measured_from_session_coverage() -> None:
     )
     now = datetime.now(UTC)
 
-    summary = _use_case().execute(
-        owner_id=user.id, from_date=now - timedelta(days=7), to_date=now
-    )
+    summary = _use_case().execute(owner_id=user.id, from_date=now - timedelta(days=7), to_date=now)
 
     projection = summary.performance_projections[0]
     assert projection.exercise_id == "exercise-push-up-v1"
@@ -139,9 +137,7 @@ def test_weekly_goal_counts_full_week_even_for_a_short_query_range() -> None:
     _session(user, "COMPLETED", days_ago=4)
     now = datetime.now(UTC)
 
-    summary = _use_case().execute(
-        owner_id=user.id, from_date=now - timedelta(days=2), to_date=now
-    )
+    summary = _use_case().execute(owner_id=user.id, from_date=now - timedelta(days=2), to_date=now)
 
     assert summary.goal_progress is not None
     assert summary.goal_progress.current_value == 2.0

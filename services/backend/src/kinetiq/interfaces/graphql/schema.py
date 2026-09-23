@@ -1707,7 +1707,6 @@ class Mutation:
             )
 
 
-
 def _handle_session_lifecycle(
     info: Info[Any, None],
     command: SessionCommandInput,

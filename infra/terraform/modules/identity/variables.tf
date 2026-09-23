@@ -21,6 +21,11 @@ variable "web_logout_urls" {
   default     = ["http://localhost:3000"]
 }
 
+variable "cognito_domain_prefix" {
+  description = "Domain prefix for the Cognito Hosted UI (<prefix>.auth.<region>.amazoncognito.com); the OAuth authorization/token endpoints have no other usable domain without this"
+  type        = string
+}
+
 variable "mobile_callback_urls" {
   description = "Callback URLs for Cognito Mobile App Client"
   type        = list(string)

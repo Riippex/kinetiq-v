@@ -1,0 +1,22 @@
+# Docker only reads .dockerignore from the build CONTEXT root. apps/web/Dockerfile
+# is built with `context: .` (the repo root, so packages/session-client is
+# reachable) in both .github/workflows/ci.yml and deploy.yml -- apps/web/.dockerignore
+# alone is never applied to that build and was silently sending the entire
+# repo, including every workspace's node_modules, as build context.
+node_modules
+**/node_modules
+.git
+.next
+**/.next
+.expo
+**/.expo
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.*
+services/backend/.venv
+services/backend/__pycache__
+**/__pycache__
+documents/

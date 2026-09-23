@@ -1,8 +1,23 @@
 name: Deploy
 
+# Explicitly initiated only -- never on a push. Every job below carries
+# `environment: hackathon`, so GitHub's own Environment protection rules
+# (configured in repo Settings > Environments, e.g. required reviewers) are
+# the actual approval boundary: nothing in this workflow can touch AWS
+# before a human approves the run. The GitHub OIDC role this workflow
+# assumes also trusts only workflow runs going through this exact
+# Environment (see infra/terraform/modules/iam), so the boundary is
+# enforced on the AWS side too, not just in this file.
+#
+# This workflow never runs `terraform apply` against the full stack: that
+# role would need broad, effectively-administrator AWS permissions across
+# every module (networking, database, cache, identity, storage, ...), which
+# this deploy role deliberately does not have. Infrastructure provisioning
+# and changes are a separate, manually reviewed process -- see
+# docs/runbooks/infrastructure-bootstrap.md. This workflow only ever builds
+# images, runs migrations against the exact image being deployed, and
+# updates existing ECS task definitions/services to point at that image.
 on:
-  push:
-    branches: [develop]
   workflow_dispatch:
     inputs:
       environment:
@@ -18,17 +33,55 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-${{ github.workflow }}-${{ github.ref }}
+  group: deploy-${{ github.workflow }}-${{ inputs.environment }}
   cancel-in-progress: false
 
+env:
+  AWS_REGION: us-east-1
+  CLUSTER: kinetiq-v-hackathon-cluster
+  BACKEND_SERVICE: kinetiq-v-backend-hackathon
+  WEB_SERVICE: kinetiq-v-web-hackathon
+  BACKEND_FAMILY: kinetiq-v-backend-hackathon
+  WEB_FAMILY: kinetiq-v-web-hackathon
+  WORKER_FAMILY: kinetiq-v-worker-hackathon
+  MIGRATE_FAMILY: kinetiq-v-migrate-hackathon
+  MEDIA_CLEANUP_SCHEDULE: kinetiq-v-media-cleanup-hackathon
+
 jobs:
-  deploy:
-    name: AWS Deployment (OIDC)
+  # `workflow_dispatch` has no native branch restriction the way `push`
+  # does -- it can be run against any branch/tag/ref that exists in the
+  # repository. This is the explicit, loud rejection of anything other
+  # than `develop`, in addition to (not instead of) configuring the
+  # `hackathon` GitHub Environment's own "Deployment branches" rule to
+  # allow only `develop` (Settings > Environments > hackathon), which is
+  # enforced by GitHub itself before this job even starts and is the
+  # stronger of the two controls -- see
+  # docs/runbooks/infrastructure-bootstrap.md.
+  guard-branch:
+    name: Reject Non-develop Deployments
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require github.ref == refs/heads/develop
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/develop" ]; then
+            echo "::error::Manual deployments are restricted to the develop branch. This run was dispatched against '${{ github.ref }}'."
+            exit 1
+          fi
+          echo "Dispatched against develop -- proceeding."
+
+  ci:
+    name: Required CI Checks
+    needs: guard-branch
+    uses: ./.github/workflows/ci.yml
+
+  build-and-push:
+    name: Build and Push Immutable Images
+    needs: ci
     runs-on: ubuntu-latest
     environment: hackathon
-    env:
-      AWS_REGION: us-east-1
-      ENVIRONMENT: hackathon
+    outputs:
+      backend_image: ${{ steps.image.outputs.backend_image }}
+      web_image: ${{ steps.image.outputs.web_image }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -47,6 +100,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Tagged by the exact commit SHA being deployed -- immutable, and what
+      # every later job (migrate, deploy-backend, deploy-web,
+      # deploy-worker) references. "latest" is pushed alongside purely for
+      # human browsing of the ECR console; nothing deploys from it.
       - name: Build and Push Backend Image
         uses: docker/build-push-action@v6
         with:
@@ -54,8 +111,8 @@ jobs:
           file: services/backend/Dockerfile
           push: true
           tags: |
-            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-backend-${{ env.ENVIRONMENT }}:${{ github.sha }}
-            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-backend-${{ env.ENVIRONMENT }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-backend-hackathon:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-backend-hackathon:latest
 
       - name: Build and Push Web Image
         uses: docker/build-push-action@v6
@@ -64,62 +121,240 @@ jobs:
           file: apps/web/Dockerfile
           push: true
           tags: |
-            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-web-${{ env.ENVIRONMENT }}:${{ github.sha }}
-            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-web-${{ env.ENVIRONMENT }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-web-hackathon:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-web-hackathon:latest
 
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+      - name: Record immutable image URIs
+        id: image
+        run: |
+          echo "backend_image=${{ steps.login-ecr.outputs.registry }}/kinetiq-v-backend-hackathon:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "web_image=${{ steps.login-ecr.outputs.registry }}/kinetiq-v-web-hackathon:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+  migrate:
+    name: Run Database Migrations
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: hackathon
+    steps:
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          terraform_version: "1.10.5"
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
 
-      - name: Terraform Init
-        run: terraform -chdir=infra/terraform/environments/${{ env.ENVIRONMENT }} init
-
-      - name: Terraform Apply
+      # Register a new revision of the EXISTING migrate task definition,
+      # patched only to point at the exact backend image just built --
+      # every other field (roles, secrets, log config) is preserved as
+      # Terraform last configured it.
+      - name: Render migration task definition with the new image
+        id: render-migrate
         run: |
-          terraform -chdir=infra/terraform/environments/${{ env.ENVIRONMENT }} apply -auto-approve \
-            -var backend_image_tag=${{ github.sha }} \
-            -var web_image_tag=${{ github.sha }}
+          aws ecs describe-task-definition \
+            --task-definition "$MIGRATE_FAMILY" \
+            --query 'taskDefinition' > migrate-task-def.json
+          jq --arg IMAGE "${{ needs.build-and-push.outputs.backend_image }}" \
+            '.containerDefinitions[0].image = $IMAGE
+             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .compatibilities, .registeredAt, .registeredBy)' \
+            migrate-task-def.json > migrate-task-def.rendered.json
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://migrate-task-def.rendered.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$NEW_ARN" >> "$GITHUB_OUTPUT"
 
-      - name: Run ECS Database Migration Task
+      - name: Run and verify the migration task
         run: |
-          CLUSTER="kinetiq-v-${{ env.ENVIRONMENT }}-cluster"
-          TASK_DEF="kinetiq-v-migrate-${{ env.ENVIRONMENT }}"
-          echo "Running migration task on $CLUSTER..."
+          SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=tag:Tier,Values=private-app" "Name=tag:Environment,Values=hackathon" \
+            --query "Subnets[*].SubnetId" --output text | tr '\t' ',')
+          SG=$(aws ec2 describe-security-groups \
+            --filters "Name=tag:Name,Values=kinetiq-v-hackathon-ecs-tasks-sg" \
+            --query "SecurityGroups[0].GroupId" --output text)
+
           TASK_ARN=$(aws ecs run-task \
             --cluster "$CLUSTER" \
-            --task-definition "$TASK_DEF" \
+            --task-definition "${{ steps.render-migrate.outputs.task_def_arn }}" \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[$(aws ec2 describe-subnets --filters "Name=tag:Tier,Values=private-app" "Name=tag:Environment,Values=${{ env.ENVIRONMENT }}" --query "Subnets[*].SubnetId" --output text | tr '\t' ',')],securityGroups=[$(aws ec2 describe-security-groups --filters "Name=tag:Name,Values=kinetiq-v-${{ env.ENVIRONMENT }}-ecs-tasks-sg" --query "SecurityGroups[0].GroupId" --output text)],assignPublicIp=DISABLED}" \
-            --query 'tasks[0].taskArn' \
-            --output text)
-          
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+
           if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" == "None" ]; then
             echo "Failed to start migration task."
             exit 1
           fi
-          
+
           echo "Migration task launched: $TASK_ARN. Waiting for completion..."
           aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
-          
-          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --query 'tasks[0].containers[0].exitCode' --output text)
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
           if [ "$EXIT_CODE" != "0" ]; then
-            echo "Migration task failed with exit code $EXIT_CODE"
+            echo "Migration task failed with exit code $EXIT_CODE. Deploy stops here: no service is updated to a backend image whose migrations did not apply cleanly."
             exit 1
           fi
           echo "Migrations successfully executed."
 
-      - name: Wait for Services Stability
-        run: |
-          CLUSTER="kinetiq-v-${{ env.ENVIRONMENT }}-cluster"
-          echo "Waiting for services in $CLUSTER to reach steady state..."
-          aws ecs wait services-stable \
-            --cluster "$CLUSTER" \
-            --services "kinetiq-v-backend-${{ env.ENVIRONMENT }}" "kinetiq-v-web-${{ env.ENVIRONMENT }}" "kinetiq-v-worker-${{ env.ENVIRONMENT }}"
+  deploy-backend:
+    name: Deploy Backend Service
+    needs: [build-and-push, migrate]
+    runs-on: ubuntu-latest
+    environment: hackathon
+    steps:
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
 
-      - name: Verify Post-Deployment Health
+      - name: Download current backend task definition
         run: |
-          ALB_DNS=$(terraform -chdir=infra/terraform/environments/${{ env.ENVIRONMENT }} output -raw alb_dns_name)
-          echo "Checking health endpoint at http://${ALB_DNS}/health/..."
-          curl --fail --retry 10 --retry-delay 5 "http://${ALB_DNS}/health/" || exit 1
+          aws ecs describe-task-definition --task-definition "$BACKEND_FAMILY" \
+            --query 'taskDefinition' > backend-task-def.json
+
+      - name: Render new backend task definition with the new image
+        id: render-backend
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: backend-task-def.json
+          container-name: backend
+          image: ${{ needs.build-and-push.outputs.backend_image }}
+
+      # deployment_circuit_breaker (enable+rollback) on this service, set by
+      # Terraform, is the rollback path: if the new task definition never
+      # reaches a healthy steady state, ECS automatically rolls the service
+      # back to its previous task definition without any further action
+      # here.
+      - name: Deploy backend service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-backend.outputs.task-definition }}
+          service: ${{ env.BACKEND_SERVICE }}
+          cluster: ${{ env.CLUSTER }}
+          wait-for-service-stability: true
+
+  deploy-web:
+    name: Deploy Web Service
+    needs: [build-and-push, migrate]
+    runs-on: ubuntu-latest
+    environment: hackathon
+    steps:
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Download current web task definition
+        run: |
+          aws ecs describe-task-definition --task-definition "$WEB_FAMILY" \
+            --query 'taskDefinition' > web-task-def.json
+
+      - name: Render new web task definition with the new image
+        id: render-web
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: web-task-def.json
+          container-name: web
+          image: ${{ needs.build-and-push.outputs.web_image }}
+
+      - name: Deploy web service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-web.outputs.task-definition }}
+          service: ${{ env.WEB_SERVICE }}
+          cluster: ${{ env.CLUSTER }}
+          wait-for-service-stability: true
+
+  deploy-worker:
+    name: Register Worker Task Definition
+    needs: [build-and-push, migrate]
+    runs-on: ubuntu-latest
+    environment: hackathon
+    steps:
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # The media-cleanup worker is a scheduled ECS task (EventBridge
+      # Scheduler -> ecs:RunTask), not a service. Registering a new task
+      # definition revision alone is NOT enough: the schedule's target
+      # pins an exact task-definition ARN (set by Terraform at the last
+      # `terraform apply`), not a "latest" reference, so it must be
+      # explicitly repointed at the new revision here or it would keep
+      # running the old image until the next infra apply.
+      - name: Register new worker task definition with the new image
+        id: register-worker
+        run: |
+          aws ecs describe-task-definition --task-definition "$WORKER_FAMILY" \
+            --query 'taskDefinition' > worker-task-def.json
+          jq --arg IMAGE "${{ needs.build-and-push.outputs.backend_image }}" \
+            '.containerDefinitions[0].image = $IMAGE
+             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .compatibilities, .registeredAt, .registeredBy)' \
+            worker-task-def.json > worker-task-def.rendered.json
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://worker-task-def.rendered.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$NEW_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Repoint the media-cleanup schedule at the new revision
+        run: |
+          aws scheduler get-schedule --name "$MEDIA_CLEANUP_SCHEDULE" \
+            > schedule.json
+
+          NEW_ARN="${{ steps.register-worker.outputs.task_def_arn }}"
+          jq --arg TASK_DEF_ARN "$NEW_ARN" \
+            '.Target.EcsParameters.TaskDefinitionArn = $TASK_DEF_ARN
+             | del(.Arn, .CreationDate, .LastModificationDate)' \
+            schedule.json > schedule.rendered.json
+
+          if ! aws scheduler update-schedule --cli-input-json file://schedule.rendered.json; then
+            echo "::error::Failed to repoint the media-cleanup schedule at $NEW_ARN. The worker task definition is registered but the schedule still targets the previous revision -- media cleanup would keep running the old image. Deploy stops here."
+            exit 1
+          fi
+
+          # update-schedule returns before the change is necessarily
+          # durable/consistent; confirm it actually took by reading it back.
+          for i in 1 2 3 4 5; do
+            CURRENT=$(aws scheduler get-schedule --name "$MEDIA_CLEANUP_SCHEDULE" \
+              --query 'Target.EcsParameters.TaskDefinitionArn' --output text)
+            if [ "$CURRENT" == "$NEW_ARN" ]; then
+              echo "Media-cleanup schedule confirmed pointing at $NEW_ARN."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::Schedule update did not take effect after retrying -- it still reports '$CURRENT', expected '$NEW_ARN'."
+          exit 1
+
+  verify:
+    name: Verify Post-Deployment Health
+    needs: [deploy-backend, deploy-web]
+    runs-on: ubuntu-latest
+    environment: hackathon
+    steps:
+      - name: Health check
+        run: |
+          if [ -z "${{ vars.KINETIQ_DOMAIN_NAME }}" ]; then
+            echo "::error::The hackathon GitHub Environment is missing the KINETIQ_DOMAIN_NAME variable (Settings > Environments > hackathon > Environment variables) -- it must match terraform.tfvars' domain_name exactly. See docs/runbooks/infrastructure-bootstrap.md."
+            exit 1
+          fi
+          # Hit the canonical HTTPS origin directly -- never the ALB's own
+          # DNS name with --location to follow a redirect to it: the ALB's
+          # certificate is issued for domain_name, not for the ALB's own
+          # AWS-generated hostname, so a request against that hostname
+          # (even one that eventually redirects) fails TLS validation
+          # before it ever reaches the redirect.
+          echo "Checking health endpoint at https://${{ vars.KINETIQ_DOMAIN_NAME }}/health/ ..."
+          if ! curl --fail --retry 10 --retry-delay 5 "https://${{ vars.KINETIQ_DOMAIN_NAME }}/health/"; then
+            echo "Health check failed after both ECS services report stable."
+            echo "Rollback: ECS's own deployment circuit breaker already auto-rolled back a service that never became healthy. If this failure is a health-check-specific regression in an otherwise-healthy new revision, re-run this workflow against the previous known-good commit SHA to redeploy it explicitly."
+            exit 1
+          fi
           echo "Deployment verified and healthy."

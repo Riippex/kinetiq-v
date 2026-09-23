@@ -39,15 +39,16 @@ variable "web_repository_arn" {
   type        = string
 }
 
-variable "ecs_cluster_arn" {
-  description = "ARN of the ECS cluster"
-  type        = string
-}
-
 variable "github_repository" {
   description = "GitHub repository for OIDC trust (e.g. Riippex/kinetiq-v)"
   type        = string
   default     = "Riippex/kinetiq-v"
+}
+
+variable "github_oidc_environment" {
+  description = "GitHub Environment name the deploy workflow must run under for the OIDC role to be assumable"
+  type        = string
+  default     = "hackathon"
 }
 
 variable "create_oidc_provider" {
@@ -58,6 +59,27 @@ variable "create_oidc_provider" {
 
 variable "existing_oidc_provider_arn" {
   description = "ARN of existing GitHub Actions OIDC provider if create_oidc_provider is false"
+  type        = string
+  default     = ""
+}
+
+# BLOCKED / pending verification -- see the trust-policy comment on
+# aws_iam_role.github_deployer in main.tf and "GitHub OIDC immutable
+# subject" in docs/runbooks/infrastructure-bootstrap.md. Not currently
+# wired into the trust policy: this configuration does not guess the exact
+# claim format a numeric-ID-based subject would use. Retrieve with:
+#   gh api repos/<owner>/<repo> --jq .id
+variable "github_repository_id" {
+  description = "Numeric GitHub repository ID, for a possible future numeric-ID-based OIDC subject. Currently unused -- see the comment above."
+  type        = string
+  default     = ""
+}
+
+# Retrieve with:
+#   gh api users/<owner> --jq .id   (user-owned repository)
+#   gh api orgs/<owner> --jq .id    (organization-owned repository)
+variable "github_repository_owner_id" {
+  description = "Numeric GitHub repository owner (user or org) ID, for a possible future numeric-ID-based OIDC subject. Currently unused -- see github_repository_id above."
   type        = string
   default     = ""
 }

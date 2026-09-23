@@ -32,3 +32,8 @@ output "mobile_client_id" {
   description = "Client ID for the Mobile App"
   value       = aws_cognito_user_pool_client.mobile.id
 }
+
+output "hosted_ui_domain" {
+  description = "Cognito Hosted UI domain serving the OAuth authorization-code flow"
+  value       = "${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.name}.amazoncognito.com"
+}
