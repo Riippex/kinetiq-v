@@ -19,6 +19,19 @@ github_repository       = "Riippex/kinetiq-v"
 github_oidc_environment = "hackathon" # Must match the GitHub Environment protecting the deploy workflow's job
 create_oidc_provider    = true        # Set false if https://token.actions.githubusercontent.com already exists in your AWS account
 
+# REQUIRED: numeric GitHub IDs for the environment-scoped immutable OIDC
+# subject (repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:<environment>).
+# The placeholders below are obviously fake -- replace with the real values
+# before applying, retrieved with (see docs/runbooks/infrastructure-bootstrap.md,
+# "GitHub OIDC immutable subject", for the full verification procedure):
+#   gh api repos/<owner>/<repo> --jq .id
+#   gh api users/<owner> --jq .id   (user-owned repository)
+#   gh api orgs/<owner> --jq .id    (organization-owned repository)
+# These are numeric IDs, not secrets -- safe to commit to a real
+# (non-example) terraform.tfvars if you choose to, same as github_repository.
+github_repository_id       = "000000000"
+github_repository_owner_id = "111111111"
+
 # Custom Domain / TLS (REQUIRED -- there is no HTTP-only mode)
 # Requires an EXISTING public Route53 hosted zone for the domain in this account.
 # Terraform requests and DNS-validates a certificate for it, and every deployed

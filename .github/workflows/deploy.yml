@@ -321,16 +321,17 @@ jobs:
 
           # update-schedule returns before the change is necessarily
           # durable/consistent; confirm it actually took by reading it back.
-          for i in 1 2 3 4 5; do
+          for attempt in 1 2 3 4 5; do
             CURRENT=$(aws scheduler get-schedule --name "$MEDIA_CLEANUP_SCHEDULE" \
               --query 'Target.EcsParameters.TaskDefinitionArn' --output text)
             if [ "$CURRENT" == "$NEW_ARN" ]; then
               echo "Media-cleanup schedule confirmed pointing at $NEW_ARN."
               exit 0
             fi
+            echo "Schedule not yet updated (attempt $attempt/5, currently '$CURRENT'), retrying..."
             sleep 3
           done
-          echo "::error::Schedule update did not take effect after retrying -- it still reports '$CURRENT', expected '$NEW_ARN'."
+          echo "::error::Schedule update did not take effect after 5 attempts -- it still reports '$CURRENT', expected '$NEW_ARN'."
           exit 1
 
   verify:

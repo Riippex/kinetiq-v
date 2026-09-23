@@ -53,9 +53,41 @@ variable "budget_notification_emails" {
 }
 
 variable "github_repository" {
-  description = "GitHub repository for OIDC trust (e.g. Riippex/kinetiq-v)"
+  description = "GitHub repository for OIDC trust, as <owner>/<repo> (e.g. Riippex/kinetiq-v)"
   type        = string
   default     = "Riippex/kinetiq-v"
+
+  validation {
+    condition     = can(regex("^[^/]+/[^/]+$", var.github_repository))
+    error_message = "github_repository must be exactly <owner>/<repo>, e.g. Riippex/kinetiq-v."
+  }
+}
+
+# Required: builds the environment-scoped immutable OIDC subject
+# (repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:<environment>) that
+# the GitHub Actions deployer role trusts -- see
+# infra/terraform/modules/iam/main.tf and "GitHub OIDC immutable subject"
+# in docs/runbooks/infrastructure-bootstrap.md for how to retrieve and
+# independently confirm the real values. Terraform only verifies these
+# look like numeric IDs, not that they are genuinely this repository's.
+variable "github_repository_id" {
+  description = "Numeric GitHub repository ID. Retrieve with: gh api repos/<owner>/<repo> --jq .id"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_id))
+    error_message = "github_repository_id must be a non-empty numeric string -- the repository's numeric ID, e.g. from `gh api repos/<owner>/<repo> --jq .id`."
+  }
+}
+
+variable "github_repository_owner_id" {
+  description = "Numeric GitHub repository owner (user or org) ID. Retrieve with: gh api users/<owner> --jq .id (user) or gh api orgs/<owner> --jq .id (org)"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_owner_id))
+    error_message = "github_repository_owner_id must be a non-empty numeric string -- the owner's numeric ID, e.g. from `gh api users/<owner> --jq .id` or `gh api orgs/<owner> --jq .id`."
+  }
 }
 
 variable "create_oidc_provider" {

@@ -40,9 +40,14 @@ variable "web_repository_arn" {
 }
 
 variable "github_repository" {
-  description = "GitHub repository for OIDC trust (e.g. Riippex/kinetiq-v)"
+  description = "GitHub repository for OIDC trust, as <owner>/<repo> (e.g. Riippex/kinetiq-v)"
   type        = string
   default     = "Riippex/kinetiq-v"
+
+  validation {
+    condition     = can(regex("^[^/]+/[^/]+$", var.github_repository))
+    error_message = "github_repository must be exactly <owner>/<repo>, e.g. Riippex/kinetiq-v."
+  }
 }
 
 variable "github_oidc_environment" {
@@ -63,23 +68,30 @@ variable "existing_oidc_provider_arn" {
   default     = ""
 }
 
-# BLOCKED / pending verification -- see the trust-policy comment on
-# aws_iam_role.github_deployer in main.tf and "GitHub OIDC immutable
-# subject" in docs/runbooks/infrastructure-bootstrap.md. Not currently
-# wired into the trust policy: this configuration does not guess the exact
-# claim format a numeric-ID-based subject would use. Retrieve with:
+# Required: builds the environment-scoped immutable OIDC subject this role
+# trusts (see aws_iam_role.github_deployer's assume_role_policy in main.tf).
+# Terraform can only verify this looks like a numeric ID, not that it is
+# actually this repository's -- retrieve the real value with:
 #   gh api repos/<owner>/<repo> --jq .id
 variable "github_repository_id" {
-  description = "Numeric GitHub repository ID, for a possible future numeric-ID-based OIDC subject. Currently unused -- see the comment above."
+  description = "Numeric GitHub repository ID, used to build the immutable OIDC subject claim this role trusts."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_id))
+    error_message = "github_repository_id must be a non-empty numeric string -- the repository's numeric ID, e.g. from `gh api repos/<owner>/<repo> --jq .id`."
+  }
 }
 
-# Retrieve with:
+# Required: see github_repository_id above. Retrieve the real value with:
 #   gh api users/<owner> --jq .id   (user-owned repository)
 #   gh api orgs/<owner> --jq .id    (organization-owned repository)
 variable "github_repository_owner_id" {
-  description = "Numeric GitHub repository owner (user or org) ID, for a possible future numeric-ID-based OIDC subject. Currently unused -- see github_repository_id above."
+  description = "Numeric GitHub repository owner (user or org) ID, used to build the immutable OIDC subject claim this role trusts."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_owner_id))
+    error_message = "github_repository_owner_id must be a non-empty numeric string -- the owner's numeric ID, e.g. from `gh api users/<owner> --jq .id` or `gh api orgs/<owner> --jq .id`."
+  }
 }

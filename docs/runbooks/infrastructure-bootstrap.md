@@ -108,52 +108,55 @@ Performed once by a human operator with their own sufficiently-privileged
 
 6. **GitHub OIDC immutable subject -- verify before relying on the trust
    policy.** `infra/terraform/modules/iam/main.tf`'s OIDC trust policy
-   currently uses GitHub's long-standing name-based subject format:
+   builds and matches the environment-scoped immutable subject:
    ```
-   repo:<org>/<repo>:environment:hackathon
+   repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:hackathon
    ```
-   If this repository is subject to a GitHub OIDC policy requiring
-   numeric owner/repository IDs in the subject claim instead of (or
-   alongside) names, **this configuration does not guess that format** --
-   it is explicitly left blocked pending verification, because guessing
-   wrong would produce a trust policy that looks correct but is either
-   silently broken (deploys fail) or, worse, silently wrong in a way that
-   is not obviously wrong. Before the first real `terraform apply`:
-   - Retrieve the two numeric IDs (`iam/variables.tf` already accepts
-     them as `github_repository_id` / `github_repository_owner_id`,
-     currently unused):
+   via the **required** `github_repository_id` / `github_repository_owner_id`
+   variables (`iam/variables.tf` -- Terraform only validates that these
+   look like numeric strings, not that they are genuinely this
+   repository's). Before the first real `terraform apply`, independently
+   confirm both that this is the actual format GitHub issues for this
+   repository and that the IDs you supplied are correct:
+   - Retrieve the two numeric IDs:
      ```bash
      gh api repos/<owner>/<repo> --jq .id
      gh api users/<owner> --jq .id   # user-owned repository
      gh api orgs/<owner> --jq .id    # organization-owned repository
      ```
-   - Confirm the *actual* subject claim format GitHub currently issues for
-     this repository by decoding a real OIDC token from an actual
-     workflow run, rather than trusting documentation that may be stale by
-     the time you read it. Add a temporary debug step to a workflow run
-     through the `hackathon` Environment:
+     Set them as `github_repository_id` / `github_repository_owner_id` in
+     `terraform.tfvars` (the `terraform.tfvars.example` placeholders are
+     deliberately obvious fakes -- `000000000` / `111111111`).
+   - Confirm the *actual* subject claim GitHub currently issues for this
+     repository by decoding a real OIDC token from an actual workflow run,
+     rather than trusting documentation (including this file) that may be
+     stale by the time you read it. Add a temporary debug step to a
+     workflow run through the `hackathon` Environment:
      ```yaml
-     - name: Decode the actual OIDC token claims
+     - name: Decode the actual OIDC token claims (TEMPORARY -- remove this step after verification)
        run: |
          TOKEN=$(curl -sLS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
-       env:
-         ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
-         ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
      ```
-     (requires `permissions: id-token: write`, already set on
-     `deploy.yml`). Inspect the printed `sub` claim directly -- this is
-     the ground truth, not a guess.
-   - If the real `sub` format differs from what the trust policy currently
-     matches, update the `StringEquals` condition on
-     `aws_iam_role.github_deployer` in `infra/terraform/modules/iam/main.tf`
-     to the real format (wiring in `var.github_repository_id` /
-     `var.github_repository_owner_id` as needed) **before** relying on
-     this role for anything -- remove the temporary debug step afterward.
-   - Until this is verified, treat the deploy role's trust policy as
-     **unverified against current GitHub OIDC requirements**, not as a
-     known-working configuration.
+     `ACTIONS_ID_TOKEN_REQUEST_TOKEN` and `ACTIONS_ID_TOKEN_REQUEST_URL`
+     are injected directly into the runner's shell environment by GitHub
+     whenever the job has `permissions: id-token: write` (already set on
+     `deploy.yml`) -- reference them as plain shell variables as above,
+     **not** via `${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}` or any other
+     GitHub Actions expression context, since neither is ever populated
+     into the `env` *context* (as opposed to the shell environment) by
+     GitHub. Inspect the printed `sub` claim directly against the format
+     above -- this is the ground truth, not a guess. **Remove this step
+     from the workflow file once you have verified it** -- it exists only
+     to confirm the claim shape once, not to run on every deploy.
+   - If the real `sub` claim does not match what the trust policy expects,
+     update `local.github_oidc_subject` in
+     `infra/terraform/modules/iam/main.tf` to the real format **before**
+     relying on this role for anything.
+   - Until independently verified this way, treat the deploy role's trust
+     policy as **implemented but unverified against live GitHub OIDC
+     behavior**, not as a confirmed-working configuration.
 
 7. **Verify the OIDC trust is otherwise exact.** A workflow run on any
    branch, pull request or tag that does *not* go through the `hackathon`

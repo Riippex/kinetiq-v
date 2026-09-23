@@ -145,6 +145,8 @@ module "iam" {
   backend_repository_arn     = module.ecr.backend_repository_arn
   web_repository_arn         = module.ecr.web_repository_arn
   github_repository          = var.github_repository
+  github_repository_id       = var.github_repository_id
+  github_repository_owner_id = var.github_repository_owner_id
   github_oidc_environment    = var.github_oidc_environment
   create_oidc_provider       = var.create_oidc_provider
   existing_oidc_provider_arn = var.existing_oidc_provider_arn

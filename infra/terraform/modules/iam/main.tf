@@ -15,6 +15,18 @@ locals {
   # "default" group -- matches aws_scheduler_schedule.media_cleanup in the
   # compute module, which does not set group_name.
   media_cleanup_schedule_arn = "arn:${data.aws_partition.current.partition}:scheduler:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:schedule/default/${var.project}-media-cleanup-${var.environment}"
+
+  github_owner     = split("/", var.github_repository)[0]
+  github_repo_name = split("/", var.github_repository)[1]
+
+  # Environment-scoped immutable OIDC subject: GitHub's numeric owner and
+  # repository IDs are permanent even if the repository (or its owner
+  # account) is later renamed or transferred, unlike the plain
+  # "repo:<owner>/<repo>:..." name-based subject, which would silently
+  # start matching a *different* repository that later claims the old
+  # name. var.github_repository_id / var.github_repository_owner_id are
+  # required (see variables.tf) -- there is no name-only fallback.
+  github_oidc_subject = "repo:${local.github_owner}@${var.github_repository_owner_id}/${local.github_repo_name}@${var.github_repository_id}:environment:${var.github_oidc_environment}"
 }
 
 # ECS Task Execution Role (assumed by ECS container agent to pull images and configure logs/secrets)
@@ -257,22 +269,22 @@ resource "aws_iam_role" "github_deployer" {
           # any branch/PR/tag in the repository, which is what the former
           # "repo:...:*" wildcard allowed.
           #
-          # BLOCKED / pending verification: this uses GitHub's long-standing
-          # name-based subject format (repo:<owner>/<repo>:environment:<env>).
-          # If this repository is subject to a GitHub OIDC "immutable
-          # subject" policy requiring numeric owner/repository IDs instead
-          # of (or alongside) names, this condition must be updated to the
-          # real, GitHub-confirmed format -- this configuration does not
-          # guess it (var.github_repository_id / var.github_repository_owner_id
-          # are exposed above, accepted, and currently unused pending that
-          # confirmation). Before the first real `terraform apply`, verify
-          # which format actually applies -- see "GitHub OIDC immutable
-          # subject" in docs/runbooks/infrastructure-bootstrap.md for the
-          # exact commands (both a REST API lookup of the numeric IDs and a
-          # way to decode a real token's actual `sub` claim).
+          # Environment-scoped immutable subject (local.github_oidc_subject):
+          # repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:<environment>.
+          # Uses GitHub's numeric owner/repository IDs, not just names, so
+          # the trust survives (and does not silently start matching a
+          # different repository after) a rename or ownership transfer.
+          # var.github_repository_id / var.github_repository_owner_id are
+          # required inputs (see variables.tf) -- there is no name-only
+          # fallback. Terraform can only verify these look like numeric
+          # IDs, not that they are genuinely this repository's; see
+          # "GitHub OIDC immutable subject" in
+          # docs/runbooks/infrastructure-bootstrap.md for how to retrieve
+          # and independently confirm the real values before relying on
+          # this role.
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:${var.github_oidc_environment}"
+            "token.actions.githubusercontent.com:sub" = local.github_oidc_subject
           }
         }
       }
