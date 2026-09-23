@@ -1,0 +1,22 @@
+# Example variable definitions for hackathon environment
+# Copy this file to terraform.tfvars and fill in your values.
+# NEVER commit terraform.tfvars containing real email addresses or secrets.
+
+aws_region  = "us-east-1"
+environment = "hackathon"
+project     = "kinetiq-v"
+
+# Networking & Cost Optimization
+single_nat_gateway = true # Save ~$32/mo by using 1 NAT Gateway across subnets
+use_fargate_spot   = true # Save ~70% on ECS compute costs using Spot
+
+# Budget & Spend Alerting
+budget_limit_amount        = "50.0" # Monthly USD limit
+budget_notification_emails = ["developer@example.com"]
+
+# GitHub Actions OIDC Configuration
+github_repository    = "Riippex/kinetiq-v"
+create_oidc_provider = true # Set false if https://token.actions.githubusercontent.com already exists in your AWS account
+
+# Optional Custom Domain / TLS
+# certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/abc-123"
