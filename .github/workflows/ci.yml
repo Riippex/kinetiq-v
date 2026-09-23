@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  pull_request:
+    branches: ["**"]
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/develop' }}
+
+jobs:
+  backend:
+    name: Backend Validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.6.5"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff Lint Check
+        run: uv run ruff check .
+
+      - name: Ruff Format Check
+        run: uv run ruff format --check .
+
+      - name: Django Migration Consistency Check
+        run: uv run python manage.py makemigrations --check --dry-run
+
+      - name: Run Unit Tests
+        run: uv run pytest tests/unit -v
+
+  clients:
+    name: Client Workspaces Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint across workspaces
+        run: npm run lint
+
+      - name: Typecheck across workspaces
+        run: npm run typecheck
+
+      - name: Run Session Client Tests
+        run: npm run test --workspace=@kinetiq/session-client
+
+      - name: Build Web Application (Next.js)
+        run: npm run build:web
+
+  vega:
+    name: Vega Client Validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/vega
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: apps/vega/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Vega Unit Tests
+        run: npm test
+
+      - name: Lint Vega Application
+        run: npm run lint
+
+  terraform:
+    name: Terraform Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: Terraform Init (Hackathon)
+        run: terraform -chdir=infra/terraform/environments/hackathon init -backend=false
+
+      - name: Terraform Validate (Hackathon)
+        run: terraform -chdir=infra/terraform/environments/hackathon validate
+
+  docker-build-check:
+    name: Container Build Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Backend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: services/backend
+          file: services/backend/Dockerfile
+          push: false
+          tags: kinetiq-backend:ci-check
+
+      - name: Build Web Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          tags: kinetiq-web:ci-check

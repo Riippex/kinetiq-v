@@ -1,0 +1,125 @@
+name: Deploy
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment to deploy"
+        required: true
+        default: "hackathon"
+        type: choice
+        options:
+          - hackathon
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: AWS Deployment (OIDC)
+    runs-on: ubuntu-latest
+    environment: hackathon
+    env:
+      AWS_REGION: us-east-1
+      ENVIRONMENT: hackathon
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: services/backend
+          file: services/backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-backend-${{ env.ENVIRONMENT }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-backend-${{ env.ENVIRONMENT }}:latest
+
+      - name: Build and Push Web Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-web-${{ env.ENVIRONMENT }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/kinetiq-v-web-${{ env.ENVIRONMENT }}:latest
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Terraform Init
+        run: terraform -chdir=infra/terraform/environments/${{ env.ENVIRONMENT }} init
+
+      - name: Terraform Apply
+        run: |
+          terraform -chdir=infra/terraform/environments/${{ env.ENVIRONMENT }} apply -auto-approve \
+            -var backend_image_tag=${{ github.sha }} \
+            -var web_image_tag=${{ github.sha }}
+
+      - name: Run ECS Database Migration Task
+        run: |
+          CLUSTER="kinetiq-v-${{ env.ENVIRONMENT }}-cluster"
+          TASK_DEF="kinetiq-v-migrate-${{ env.ENVIRONMENT }}"
+          echo "Running migration task on $CLUSTER..."
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "$TASK_DEF" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$(aws ec2 describe-subnets --filters "Name=tag:Tier,Values=private-app" "Name=tag:Environment,Values=${{ env.ENVIRONMENT }}" --query "Subnets[*].SubnetId" --output text | tr '\t' ',')],securityGroups=[$(aws ec2 describe-security-groups --filters "Name=tag:Name,Values=kinetiq-v-${{ env.ENVIRONMENT }}-ecs-tasks-sg" --query "SecurityGroups[0].GroupId" --output text)],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' \
+            --output text)
+          
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" == "None" ]; then
+            echo "Failed to start migration task."
+            exit 1
+          fi
+          
+          echo "Migration task launched: $TASK_ARN. Waiting for completion..."
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+          
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Migration task failed with exit code $EXIT_CODE"
+            exit 1
+          fi
+          echo "Migrations successfully executed."
+
+      - name: Wait for Services Stability
+        run: |
+          CLUSTER="kinetiq-v-${{ env.ENVIRONMENT }}-cluster"
+          echo "Waiting for services in $CLUSTER to reach steady state..."
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "kinetiq-v-backend-${{ env.ENVIRONMENT }}" "kinetiq-v-web-${{ env.ENVIRONMENT }}" "kinetiq-v-worker-${{ env.ENVIRONMENT }}"
+
+      - name: Verify Post-Deployment Health
+        run: |
+          ALB_DNS=$(terraform -chdir=infra/terraform/environments/${{ env.ENVIRONMENT }} output -raw alb_dns_name)
+          echo "Checking health endpoint at http://${ALB_DNS}/health/..."
+          curl --fail --retry 10 --retry-delay 5 "http://${ALB_DNS}/health/" || exit 1
+          echo "Deployment verified and healthy."
