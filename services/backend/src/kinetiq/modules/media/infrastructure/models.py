@@ -18,6 +18,13 @@ class ProgressPhotoRecord(models.Model):
     # The most recently issued presigned PUT is usable until this instant;
     # deletion cleanup must not report itself final before it elapses.
     upload_authorized_until = models.DateTimeField(null=True, blank=True)
+    # Set only once CONFIRMED (see FinalizeProgressPhotoUseCase): the
+    # immutable key the validated object was copied to at finalize time.
+    # `s3_key` is only ever a mutable *staging* target -- a presigned PUT
+    # issued for it remains usable until its own declared expiry regardless
+    # of the photo's later status, so it must never be the key downloads or
+    # deletion target once this is set.
+    final_s3_key = models.CharField(max_length=512, null=True, blank=True)
 
     class Meta:
         db_table = "media_progress_photos"
@@ -50,7 +57,13 @@ class MediaCleanupJobRecord(models.Model):
     """Outbox of pending storage removals (survives the photo's tombstone)."""
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
-    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    # Plain UUID (no FK): the job must outlive the owner's account being
+    # deleted, exactly like `photo_id` must outlive the photo row's purge --
+    # a CASCADE here would silently destroy the durable pointer to the S3
+    # object mid-cleanup and orphan it forever. `MediaConfig.ready()` wires a
+    # `pre_delete` signal on the user model (see `signals.py`) that
+    # tombstones + enqueues cleanup for any still-live photo first.
+    owner_id = models.UUIDField(db_index=True)
     # Plain UUID (no FK): the job must outlive any later purge of the photo row.
     photo_id = models.UUIDField(db_index=True)
     s3_key = models.CharField(max_length=512)
@@ -93,7 +106,10 @@ class MediaEventOutboxRecord(models.Model):
     """
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
-    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    # Plain UUID (no FK): same reasoning as `MediaCleanupJobRecord.owner_id`
+    # -- an account deletion must never cascade-destroy an event still
+    # awaiting delivery.
+    owner_id = models.UUIDField(db_index=True)
     # Plain UUID (no FK): the event must outlive any later purge of the photo row.
     photo_id = models.UUIDField(db_index=True)
     event_type = models.CharField(max_length=60, default="ProgressPhotoDeleted.v1")

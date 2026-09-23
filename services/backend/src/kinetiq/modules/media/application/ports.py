@@ -26,6 +26,16 @@ class MediaStoragePort(Protocol):
         """Size and content type of the stored object, or None if absent."""
         ...
 
+    def copy_object(self, *, source_s3_key: str, dest_s3_key: str) -> None:
+        """Copy an object to a key that was never itself authorized for a
+        presigned PUT, so nothing can overwrite it in place. Used to
+        finalize a photo into its immutable location: raises
+        `MediaStorageError` if the source does not exist or the copy fails.
+        Idempotent -- copying the same source to the same destination again
+        succeeds and leaves an identical object.
+        """
+        ...
+
     def delete_object(self, *, s3_key: str) -> None:
         """Idempotently remove the object; raises `MediaStorageError` on failure.
 
@@ -53,9 +63,11 @@ class ProgressPhotoRepository(Protocol):
     def get_by_id(self, *, photo_id: UUID, owner_id: UUID) -> ProgressPhoto | None: ...
 
     def confirm_if_pending(
-        self, *, photo_id: UUID, owner_id: UUID, confirmed_at: datetime
+        self, *, photo_id: UUID, owner_id: UUID, confirmed_at: datetime, final_s3_key: str
     ) -> ProgressPhoto | None:
-        """Atomically transition PENDING_UPLOAD -> CONFIRMED.
+        """Atomically transition PENDING_UPLOAD -> CONFIRMED and persist the
+        immutable `final_s3_key` in the SAME write -- a photo must never be
+        observably CONFIRMED without its immutable key already durable.
 
         None if the row is no longer PENDING_UPLOAD (concurrently confirmed
         or deleted) -- DELETED is a terminal state a stale write must never

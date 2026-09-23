@@ -19,6 +19,7 @@ from kinetiq.bootstrap.container import (
     delete_progress_photo,
     finalize_progress_photo,
     get_media_storage,
+    list_progress_photos,
     process_media_cleanup,
     reconcile_abandoned_uploads,
     request_progress_photo_upload,
@@ -261,13 +262,14 @@ def test_confirm_if_pending_never_resurrects_a_deleted_photo() -> None:
     )
 
     result = repo.confirm_if_pending(
-        photo_id=photo.id, owner_id=owner.id, confirmed_at=datetime.now(UTC)
+        photo_id=photo.id, owner_id=owner.id, confirmed_at=datetime.now(UTC), final_s3_key="final/k"
     )
 
     assert result is None
     record = ProgressPhotoRecord.objects.get(id=photo.id)
     assert record.status == "DELETED"
     assert record.confirmed_at is None
+    assert record.final_s3_key is None
 
 
 @pytest.mark.django_db
@@ -279,16 +281,23 @@ def test_confirm_if_pending_does_not_overwrite_an_already_confirmed_photo() -> N
     )
     first_confirmed_at = datetime.now(UTC)
     assert repo.confirm_if_pending(
-        photo_id=photo.id, owner_id=owner.id, confirmed_at=first_confirmed_at
+        photo_id=photo.id,
+        owner_id=owner.id,
+        confirmed_at=first_confirmed_at,
+        final_s3_key="final/first",
     )
 
     second = repo.confirm_if_pending(
-        photo_id=photo.id, owner_id=owner.id, confirmed_at=datetime.now(UTC) + timedelta(hours=1)
+        photo_id=photo.id,
+        owner_id=owner.id,
+        confirmed_at=datetime.now(UTC) + timedelta(hours=1),
+        final_s3_key="final/second",
     )
 
     assert second is None
     record = ProgressPhotoRecord.objects.get(id=photo.id)
     assert record.confirmed_at == first_confirmed_at
+    assert record.final_s3_key == "final/first"
 
 
 @pytest.mark.django_db
@@ -323,7 +332,7 @@ def test_refresh_upload_authorization_if_pending_does_not_extend_a_confirmed_pho
         photo=_photo(owner), idempotency_key="k", request_fingerprint=_fingerprint()
     )
     assert repo.confirm_if_pending(
-        photo_id=photo.id, owner_id=owner.id, confirmed_at=datetime.now(UTC)
+        photo_id=photo.id, owner_id=owner.id, confirmed_at=datetime.now(UTC), final_s3_key="final/k"
     )
 
     result = repo.refresh_upload_authorization_if_pending(
@@ -694,7 +703,7 @@ def test_management_command_reports_and_fails_loudly_on_dead_letters() -> None:
     assert "claimed=0" in out.getvalue()
 
     MediaCleanupJobRecord.objects.create(
-        owner=owner,
+        owner_id=owner.id,
         photo_id=uuid4(),
         s3_key="k",
         reason="PHOTO_DELETED",
@@ -704,6 +713,148 @@ def test_management_command_reports_and_fails_loudly_on_dead_letters() -> None:
     )
     with pytest.raises(CommandError, match="dead-lettered"):
         call_command("process_media_cleanup", stdout=StringIO())
+
+
+@pytest.mark.django_db
+def test_deleting_the_owner_never_cascades_away_existing_cleanup_jobs_or_events() -> None:
+    """Seventh Codex adversarial-review pass, finding #2: MediaCleanupJobRecord
+    and MediaEventOutboxRecord no longer FK-cascade with the owning User (see
+    the `owner_id` field comments in models.py), so a completed cleanup job
+    and its outbox event survive the account being deleted -- a CASCADE here
+    would silently destroy the durable pointer to the S3 object mid-cleanup
+    and orphan it forever. The photo's own (PII) metadata row still legitimately
+    disappears with the account."""
+    owner = User.objects.create_user(username="account-delete-survives")
+    storage = _storage()
+    photo_id = request_progress_photo_upload().execute(
+        owner_id=owner.id,
+        session_id=None,
+        content_type="image/jpeg",
+        byte_length=8,
+        idempotency_key="k",
+    ).photo_id
+    ProgressPhotoRecord.objects.filter(id=photo_id).update(
+        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
+    )
+    delete_progress_photo().execute(owner_id=owner.id, photo_id=photo_id)
+    call_command("process_media_cleanup", stdout=StringIO())
+    job = MediaCleanupJobRecord.objects.get(photo_id=photo_id)
+    event = MediaEventOutboxRecord.objects.get(photo_id=photo_id)
+    # process_media_cleanup drains both the cleanup job and its outbox event
+    # in the same run, so both are already terminal here.
+    assert job.status == "DONE"
+    assert event.status == "DONE"
+    assert not storage.has_object(s3_key=job.s3_key)
+
+    owner_id = owner.id
+    owner.delete()
+
+    assert not User.objects.filter(id=owner_id).exists()
+    assert not ProgressPhotoRecord.objects.filter(owner_id=owner_id).exists()
+    assert MediaCleanupJobRecord.objects.filter(id=job.id, owner_id=owner_id).exists()
+    assert MediaEventOutboxRecord.objects.filter(id=event.id, owner_id=owner_id).exists()
+
+
+@pytest.mark.django_db
+def test_deleting_the_owner_tombstones_and_enqueues_cleanup_for_every_live_photo() -> None:
+    """Seventh Codex adversarial-review pass, finding #2: a photo that is
+    still CONFIRMED (no cleanup job exists for it yet) when its owner is
+    deleted must not simply vanish with the CASCADE -- its S3 object would
+    become permanently unreachable, with nothing left in the database to
+    ever clean it up. `signals.tombstone_media_before_account_deletion`
+    (wired via MediaConfig.ready()) tombstones it and durably enqueues its
+    cleanup job before the account row is actually removed, so the object
+    can still be deleted by process_media_cleanup afterward."""
+    owner = User.objects.create_user(username="account-delete-live-photo")
+    storage = _storage()
+    photo_id = request_progress_photo_upload().execute(
+        owner_id=owner.id,
+        session_id=None,
+        content_type="image/jpeg",
+        byte_length=8,
+        idempotency_key="k",
+    ).photo_id
+    staging_key = ProgressPhotoRecord.objects.get(id=photo_id).s3_key
+    storage.put_object_data(s3_key=staging_key, data=b"x" * 8, content_type="image/jpeg")
+    finalize_progress_photo().execute(owner_id=owner.id, photo_id=photo_id)
+    confirmed_record = ProgressPhotoRecord.objects.get(id=photo_id)
+    assert confirmed_record.status == "CONFIRMED"
+    # Finalize already copied the object to its immutable key and removed
+    # the staging one (finding #1) -- the live object this test is about now
+    # lives at final_s3_key.
+    final_key = confirmed_record.final_s3_key
+    assert final_key and not storage.has_object(s3_key=staging_key)
+    assert MediaCleanupJobRecord.objects.count() == 0
+    ProgressPhotoRecord.objects.filter(id=photo_id).update(
+        upload_authorized_until=datetime.now(UTC) - timedelta(seconds=400)
+    )
+
+    owner_id = owner.id
+    owner.delete()
+
+    assert not User.objects.filter(id=owner_id).exists()
+    assert not ProgressPhotoRecord.objects.filter(id=photo_id).exists()
+    job = MediaCleanupJobRecord.objects.get(photo_id=photo_id)
+    assert job.owner_id == owner_id
+    assert job.reason == "PHOTO_DELETED"
+    assert job.status == "PENDING"
+    assert job.s3_key == final_key
+    assert storage.has_object(s3_key=final_key)
+
+    call_command("process_media_cleanup", stdout=StringIO())
+
+    assert not storage.has_object(s3_key=final_key)
+    assert MediaCleanupJobRecord.objects.get(id=job.id).status == "DONE"
+
+
+@pytest.mark.django_db
+def test_deleting_the_owner_with_no_live_photos_is_a_no_op_for_the_signal() -> None:
+    """The signal must not misfire (create phantom jobs) when the owner has
+    no non-DELETED photo at all."""
+    owner = User.objects.create_user(username="account-delete-no-photos")
+    owner.delete()
+    assert MediaCleanupJobRecord.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_finalize_copies_to_an_immutable_key_the_staging_url_can_no_longer_overwrite() -> None:
+    """Seventh Codex adversarial-review pass, finding #1: a presigned PUT
+    for the staging key remains valid until its own declared expiry
+    regardless of the photo's later status -- finalize must copy the
+    validated object to an immutable key nothing was ever authorized to
+    PUT to, so a stale re-upload to the staging key can never reach what
+    listProgressPhotos/finalizeProgressPhoto actually serve."""
+    owner = User.objects.create_user(username="finalize-immutable")
+    storage = _storage()
+    photo_id = request_progress_photo_upload().execute(
+        owner_id=owner.id,
+        session_id=None,
+        content_type="image/jpeg",
+        byte_length=8,
+        idempotency_key="k",
+    ).photo_id
+    staging_key = ProgressPhotoRecord.objects.get(id=photo_id).s3_key
+    storage.put_object_data(s3_key=staging_key, data=b"x" * 8, content_type="image/jpeg")
+
+    dto = finalize_progress_photo().execute(owner_id=owner.id, photo_id=photo_id)
+
+    record = ProgressPhotoRecord.objects.get(id=photo_id)
+    final_key = record.final_s3_key
+    assert final_key and final_key != staging_key
+    assert storage.has_object(s3_key=final_key)
+    assert not storage.has_object(s3_key=staging_key)
+
+    # The client still holds the (still-valid) presigned PUT URL for the
+    # staging key and re-uploads different content to it.
+    storage.put_object_data(s3_key=staging_key, data=b"y" * 999, content_type="image/png")
+
+    listed = list_progress_photos().execute(owner_id=owner.id)
+    assert len(listed) == 1
+    assert listed[0].url == dto.url
+    served = storage.get_object_info(s3_key=final_key)
+    assert served is not None
+    assert served.content_length == 8
+    assert served.content_type == "image/jpeg"
 
 
 @pytest.mark.django_db

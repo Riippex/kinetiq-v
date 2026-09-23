@@ -193,7 +193,10 @@ def test_media_graphql_full_lifecycle() -> None:
     assert photo_data["id"] == photo_id
     assert photo_data["status"] == "CONFIRMED"
     assert photo_data["confirmedAt"] is not None
-    assert "photos/" in photo_data["url"]
+    # Seventh Codex adversarial-review pass, finding #1: downloads are served
+    # from the immutable key finalize copied the validated object to, never
+    # from the mutable staging key a stale presigned PUT could still target.
+    assert "photos-confirmed/" in photo_data["url"]
 
     # 5. Query progress photos
     query_res = _post_graphql(client, PROGRESS_PHOTOS_QUERY)

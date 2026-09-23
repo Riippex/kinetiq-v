@@ -36,6 +36,12 @@ class InMemoryMediaStorageAdapter(MediaStoragePort):
         data, content_type = stored
         return StoredObjectInfo(content_length=len(data), content_type=content_type)
 
+    def copy_object(self, *, source_s3_key: str, dest_s3_key: str) -> None:
+        stored = self._objects.get(source_s3_key)
+        if stored is None:
+            raise MediaStorageError(f"Cannot copy '{source_s3_key}': object not found")
+        self._objects[dest_s3_key] = stored
+
     def delete_object(self, *, s3_key: str) -> None:
         if self.delete_failures_remaining > 0:
             self.delete_failures_remaining -= 1
@@ -130,6 +136,19 @@ class S3MediaStorageAdapter(MediaStoragePort):
             content_length=int(head["ContentLength"]),
             content_type=head.get("ContentType"),
         )
+
+    def copy_object(self, *, source_s3_key: str, dest_s3_key: str) -> None:
+        client = self._get_client()
+        try:
+            client.copy_object(
+                Bucket=self._bucket,
+                Key=dest_s3_key,
+                CopySource={"Bucket": self._bucket, "Key": source_s3_key},
+            )
+        except Exception as exc:
+            raise MediaStorageError(
+                f"Failed to copy object '{source_s3_key}' to '{dest_s3_key}' in '{self._bucket}'"
+            ) from exc
 
     def delete_object(self, *, s3_key: str) -> None:
         client = self._get_client()

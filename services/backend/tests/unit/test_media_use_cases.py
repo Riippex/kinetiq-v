@@ -266,12 +266,12 @@ class FakeProgressPhotoRepository:
         return None
 
     def confirm_if_pending(
-        self, *, photo_id: UUID, owner_id: UUID, confirmed_at: datetime
+        self, *, photo_id: UUID, owner_id: UUID, confirmed_at: datetime, final_s3_key: str
     ) -> ProgressPhoto | None:
         p = self.photos.get(photo_id)
         if p is None or p.owner_id != owner_id or p.status != ProgressPhotoStatus.PENDING_UPLOAD:
             return None
-        updated = p.confirm(confirmed_at=confirmed_at)
+        updated = p.confirm(confirmed_at=confirmed_at, final_s3_key=final_s3_key)
         self.photos[photo_id] = updated
         return updated
 
@@ -308,7 +308,7 @@ class FakeProgressPhotoRepository:
         job = self.cleanup_repo.enqueue(
             owner_id=owner_id,
             photo_id=photo_id,
-            s3_key=p.s3_key,
+            s3_key=p.final_s3_key or p.s3_key,
             reason=MediaCleanupReason.PHOTO_DELETED,
             now=deleted_at,
             verify_after=p.upload_authorized_until,
@@ -429,6 +429,12 @@ class Harness:
         self.upload(photo_id)
         self.finalize.execute(owner_id=self.owner_id, photo_id=photo_id)
         return photo_id
+
+    def object_key(self, photo_id: UUID) -> str:
+        """The key that actually backs this photo's object right now --
+        `final_s3_key` once CONFIRMED, else the mutable staging `s3_key`."""
+        p = self.repo.photos[photo_id]
+        return p.final_s3_key or p.s3_key
 
     def close_upload_authorization(self, photo_id: UUID) -> None:
         """Test-only: simulate the presigned URL's authorization window having
@@ -645,6 +651,7 @@ def test_finalize_photo_not_in_storage_raises() -> None:
 def test_finalize_photo_success_after_upload() -> None:
     h = Harness()
     photo_id = h.request_upload(key="key-fin-ok")
+    staging_key = h.repo.photos[photo_id].s3_key
     h.upload(photo_id)
 
     dto = h.finalize.execute(owner_id=h.owner_id, photo_id=photo_id)
@@ -652,11 +659,43 @@ def test_finalize_photo_success_after_upload() -> None:
     assert dto.status == ProgressPhotoStatus.CONFIRMED.value
     assert dto.confirmed_at is not None
     assert "mock-s3.local" in dto.url
+    # Seventh Codex adversarial-review pass, finding #1: the validated object
+    # is copied to its own immutable key, and the mutable staging key (which
+    # a still-valid presigned PUT could otherwise recreate content at) is
+    # cleaned up right away.
+    final_key = h.repo.photos[photo_id].final_s3_key
+    assert final_key is not None and final_key != staging_key
+    assert h.storage.has_object(s3_key=final_key)
+    assert not h.storage.has_object(s3_key=staging_key)
 
     # Idempotent re-finalize returns confirmed photo
     re_dto = h.finalize.execute(owner_id=h.owner_id, photo_id=photo_id)
     assert re_dto.id == dto.id
     assert re_dto.status == ProgressPhotoStatus.CONFIRMED.value
+
+
+def test_a_stale_upload_url_cannot_overwrite_an_already_confirmed_photo() -> None:
+    """Seventh Codex adversarial-review pass, finding #1: a presigned PUT
+    issued before finalize remains usable until its own declared expiry (S3
+    validates the signature at request start, not completion), so finalize
+    must copy the validated object to an immutable key that was never
+    itself a PUT target -- a client re-PUTting to the staging key
+    afterward must never be able to touch what is actually served."""
+    h = Harness()
+    photo_id = h.confirmed_photo("stale-put")
+    staging_key = h.repo.photos[photo_id].s3_key
+    final_key = h.repo.photos[photo_id].final_s3_key
+    assert final_key is not None and final_key != staging_key
+    served_before = h.storage.get_object_info(s3_key=final_key)
+
+    # The client still holds the (still-valid) presigned PUT URL for the
+    # staging key and re-uploads different content to it.
+    h.storage.put_object_data(s3_key=staging_key, data=b"y" * 999, content_type="image/png")
+
+    list_use_case = ListProgressPhotosUseCase(repository=h.repo, storage=h.storage)
+    (listed,) = list_use_case.execute(owner_id=h.owner_id)
+    assert listed.url == h.storage.generate_download_url(s3_key=final_key, ttl_seconds=900)
+    assert h.storage.get_object_info(s3_key=final_key) == served_before
 
 
 @pytest.mark.parametrize(
@@ -729,12 +768,12 @@ def test_list_and_delete_photo_flow() -> None:
     list_use_case = ListProgressPhotosUseCase(repository=h.repo, storage=h.storage)
     assert len(list_use_case.execute(owner_id=h.owner_id)) == 2
 
-    s3_key = h.repo.photos[photo1].s3_key
+    final_key = h.object_key(photo1)
     h.close_upload_authorization(photo1)
     result = h.delete.execute(owner_id=h.owner_id, photo_id=photo1)
 
     assert result.storage_cleanup == MediaCleanupStatus.DONE
-    assert not h.storage.has_object(s3_key=s3_key)
+    assert not h.storage.has_object(s3_key=final_key)
     h.deliver_events()
     assert h.publisher.deleted_events == [(photo1, h.owner_id)]
 
@@ -748,7 +787,7 @@ def test_list_and_delete_photo_flow() -> None:
 def test_delete_is_durable_when_storage_is_down_and_event_waits_for_removal() -> None:
     h = Harness()
     photo_id = h.confirmed_photo()
-    s3_key = h.repo.photos[photo_id].s3_key
+    final_key = h.object_key(photo_id)
     h.close_upload_authorization(photo_id)
     h.storage.delete_failures_remaining = 1
 
@@ -757,7 +796,7 @@ def test_delete_is_durable_when_storage_is_down_and_event_waits_for_removal() ->
     # Tombstoned and hidden, but the caller is told removal is still pending.
     assert result.storage_cleanup == MediaCleanupStatus.PENDING
     assert h.repo.photos[photo_id].status == ProgressPhotoStatus.DELETED
-    assert h.storage.has_object(s3_key=s3_key)
+    assert h.storage.has_object(s3_key=final_key)
     # The job hasn't completed yet, so no event was even enqueued.
     assert h.deliver_events().claimed == 0
 
@@ -768,7 +807,7 @@ def test_delete_is_durable_when_storage_is_down_and_event_waits_for_removal() ->
     summary = h.cleanup.process_due()
 
     assert (summary.claimed, summary.completed) == (1, 1)
-    assert not h.storage.has_object(s3_key=s3_key)
+    assert not h.storage.has_object(s3_key=final_key)
     assert h.deliver_events().completed == 1
     assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
     assert h.cleanup.process_due().claimed == 0
@@ -826,7 +865,7 @@ def test_completing_a_job_after_losing_the_lease_never_duplicates_the_event() ->
     consumer deduplication downstream."""
     h = Harness()
     photo_id = h.confirmed_photo()
-    s3_key = h.repo.photos[photo_id].s3_key
+    final_key = h.object_key(photo_id)
     h.close_upload_authorization(photo_id)
     tombstoned = h.repo.tombstone_and_enqueue_cleanup(
         photo_id=photo_id, owner_id=h.owner_id, deleted_at=h.now
@@ -844,7 +883,7 @@ def test_completing_a_job_after_losing_the_lease_never_duplicates_the_event() ->
     h.now += timedelta(seconds=301)
     completed = h.cleanup.attempt(job.id)
     assert completed == MediaCleanupStatus.DONE
-    assert not h.storage.has_object(s3_key=s3_key)
+    assert not h.storage.has_object(s3_key=final_key)
     assert len(h.event_outbox_repo.events) == 1
 
     # Worker A's stale delete_object call finally "returns success" and it
@@ -990,12 +1029,16 @@ def test_delete_of_another_owners_photo_is_not_found() -> None:
 
 
 def test_delete_defers_completion_until_the_upload_authorization_window_elapses() -> None:
-    """A presigned PUT issued before delete stays authorized to recreate the
-    object at `s3_key` until it expires -- cleanup must not report itself
-    done, or publish the deleted event, while that window is still open."""
+    """A presigned PUT issued before delete stays authorized until it
+    expires -- cleanup must not report itself done, or publish the deleted
+    event, while that window is still open. (Since the fix for finding #1,
+    that PUT only ever targets the mutable staging key, not the confirmed
+    photo's immutable `final_s3_key` -- see the stale-upload-url tests
+    below for what that separation actually buys -- but the deferred-
+    completion *timing* itself is still exercised unconditionally.)"""
     h = Harness()
     photo_id = h.confirmed_photo()
-    s3_key = h.repo.photos[photo_id].s3_key
+    final_key = h.object_key(photo_id)
     authorized_until = h.repo.photos[photo_id].upload_authorized_until
     assert authorized_until is not None and authorized_until > h.now
 
@@ -1003,7 +1046,7 @@ def test_delete_defers_completion_until_the_upload_authorization_window_elapses(
 
     # Removed immediately, but not yet reported final.
     assert result.storage_cleanup == MediaCleanupStatus.PENDING
-    assert not h.storage.has_object(s3_key=s3_key)
+    assert not h.storage.has_object(s3_key=final_key)
     # The job hasn't completed yet, so no event was even enqueued.
     assert h.deliver_events().claimed == 0
     (job,) = h.cleanup_repo.jobs.values()
@@ -1023,12 +1066,17 @@ def test_delete_defers_completion_until_the_upload_authorization_window_elapses(
     assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
 
 
-def test_delete_removes_an_object_recreated_via_a_stale_upload_url_before_reporting_done() -> None:
-    """A client holding the still-valid presigned URL PUTs again after the
-    delete's first pass -- the deferred verification must remove it too."""
+def test_delete_removes_a_never_finalized_uploads_object_recreated_via_its_stale_url() -> None:
+    """A client holding the still-valid presigned URL PUTs again after a
+    PENDING_UPLOAD photo (never finalized, so its only key is the mutable
+    staging one) is deleted -- the deferred verification must remove it
+    too. A CONFIRMED photo's served object is immune to this by
+    construction once finding #1's fix is in place: see
+    test_a_stale_upload_url_cannot_overwrite_an_already_confirmed_photo."""
     h = Harness()
-    photo_id = h.confirmed_photo()
+    photo_id = h.request_upload(key="never-finalized-stale-put")
     s3_key = h.repo.photos[photo_id].s3_key
+    h.upload(photo_id)
     authorized_until = h.repo.photos[photo_id].upload_authorized_until
     assert authorized_until is not None
 
@@ -1088,13 +1136,18 @@ def test_delete_cleanup_waits_a_grace_period_past_authorization_before_reporting
     assert h.publisher.deleted_events == [(photo_id, h.owner_id)]
 
 
-def test_delete_cleanup_removes_an_object_put_during_the_grace_period() -> None:
+def test_grace_period_removes_a_never_finalized_uploads_late_put() -> None:
     """A PUT that lands strictly after the authorization deadline but
     within the completion grace period must still be caught, not just one
-    that lands before the deadline (see the stale-upload-url test above)."""
+    that lands before the deadline (see the stale-upload-url test above).
+    Exercised on a never-finalized (PENDING_UPLOAD) photo, the only
+    remaining case where a live presigned PUT still targets the same key
+    cleanup is removing -- see finding #1's fix for why a CONFIRMED photo's
+    `final_s3_key` is immune to this."""
     h = _harness_with_grace(60)
-    photo_id = h.confirmed_photo()
+    photo_id = h.request_upload(key="never-finalized-grace")
     s3_key = h.repo.photos[photo_id].s3_key
+    h.upload(photo_id)
     authorized_until = h.repo.photos[photo_id].upload_authorized_until
     assert authorized_until is not None
 

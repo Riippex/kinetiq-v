@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -20,6 +21,7 @@ from kinetiq.modules.media.domain.entities import (
     MediaCleanupReason,
     MediaCleanupStatus,
     MediaPayloadTooLargeError,
+    MediaStorageError,
     MediaUploadNotCompletedError,
     MediaUploadRejectedError,
     PhotoNotFoundError,
@@ -29,11 +31,25 @@ from kinetiq.modules.media.domain.entities import (
     UnsupportedMediaTypeError,
 )
 
+logger = logging.getLogger(__name__)
+
 _CONTENT_TYPE_EXTENSIONS = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
 }
+
+
+def _final_s3_key(*, owner_id: UUID, photo_id: UUID, content_type: str) -> str:
+    """Deterministic immutable key a confirmed photo's object is copied to.
+
+    Never itself the target of a presigned PUT, and derived only from
+    stable identifiers, so re-finalizing (a retry after a crash, or a
+    concurrent racer) always converges on copying to this exact same key --
+    idempotent by construction, no extra bookkeeping needed.
+    """
+    ext = _CONTENT_TYPE_EXTENSIONS.get(content_type, ".jpg")
+    return f"photos-confirmed/{owner_id}/{photo_id}{ext}"
 
 
 def upload_request_fingerprint(
@@ -256,8 +272,38 @@ class FinalizeProgressPhotoUseCase:
                 f"(stored: {stored.content_type}, {stored.content_length} bytes)"
             )
 
+        # Copy the validated object to a key that was never itself authorized
+        # for a presigned PUT, BEFORE persisting CONFIRMED: the staging key
+        # (`photo.s3_key`) remains a live PUT target until its own presigned
+        # URL expires, however long after this call that is, and could
+        # otherwise silently overwrite an already-served, confirmed photo.
+        # Deterministic naming makes this idempotent, so a crash here just
+        # means the next finalize call (or race loser) safely re-copies to
+        # the same destination.
+        final_s3_key = _final_s3_key(
+            owner_id=owner_id, photo_id=photo.id, content_type=photo.content_type
+        )
+        try:
+            self._storage.copy_object(source_s3_key=photo.s3_key, dest_s3_key=final_s3_key)
+        except MediaStorageError:
+            # The staging object can vanish between our read above and this
+            # copy: a concurrent delete (its own tombstone-then-cleanup
+            # already ran, removing it) may have won the race. Re-check
+            # before treating this as a genuine storage failure -- a stale
+            # finalize losing that race must surface as PhotoNotFoundError,
+            # never an opaque storage error, exactly like the confirm below.
+            current = self._repository.get_by_id(photo_id=photo_id, owner_id=owner_id)
+            if current is not None and current.status == ProgressPhotoStatus.PENDING_UPLOAD:
+                raise
+            if current is not None and current.status == ProgressPhotoStatus.CONFIRMED:
+                return self._to_dto(current)
+            raise PhotoNotFoundError(f"Progress photo '{photo_id}' not found") from None
+
         confirmed = self._repository.confirm_if_pending(
-            photo_id=photo_id, owner_id=owner_id, confirmed_at=datetime.now(UTC)
+            photo_id=photo_id,
+            owner_id=owner_id,
+            confirmed_at=datetime.now(UTC),
+            final_s3_key=final_s3_key,
         )
         if confirmed is None:
             # Lost the race: the photo was concurrently confirmed (another
@@ -268,6 +314,23 @@ class FinalizeProgressPhotoUseCase:
             if current is not None and current.status == ProgressPhotoStatus.CONFIRMED:
                 return self._to_dto(current)
             raise PhotoNotFoundError(f"Progress photo '{photo_id}' not found")
+
+        # Best-effort: the staging key is no longer relevant to anything
+        # served (downloads and future deletion now target final_s3_key
+        # exclusively), so its own still-live presigned PUT can no longer
+        # affect the confirmed photo either way. A failure here is a bounded
+        # storage-hygiene leak, not a correctness or security issue, so it
+        # is logged, never raised.
+        try:
+            self._storage.delete_object(s3_key=photo.s3_key)
+        except MediaStorageError:
+            logger.warning(
+                "Failed to remove staging object %s after finalizing photo %s "
+                "into %s; it is no longer served but may need manual cleanup.",
+                photo.s3_key,
+                photo_id,
+                final_s3_key,
+            )
         return self._to_dto(confirmed)
 
     def _to_dto(self, photo: ProgressPhoto) -> ProgressPhotoDTO:
@@ -277,7 +340,7 @@ class FinalizeProgressPhotoUseCase:
             content_type=photo.content_type,
             byte_length=photo.byte_length,
             url=self._storage.generate_download_url(
-                s3_key=photo.s3_key, ttl_seconds=self._ttl_seconds
+                s3_key=photo.final_s3_key or photo.s3_key, ttl_seconds=self._ttl_seconds
             ),
             status=photo.status.value,
             created_at=photo.created_at,
@@ -305,7 +368,7 @@ class ListProgressPhotosUseCase:
             if p.status == ProgressPhotoStatus.DELETED:
                 continue
             download_url = self._storage.generate_download_url(
-                s3_key=p.s3_key, ttl_seconds=self._ttl_seconds
+                s3_key=p.final_s3_key or p.s3_key, ttl_seconds=self._ttl_seconds
             )
             result.append(
                 ProgressPhotoDTO(

@@ -126,9 +126,10 @@ def test_confirm_transitions_status() -> None:
     )
 
     confirmed_time = datetime.now(UTC)
-    confirmed = photo.confirm(confirmed_time)
+    confirmed = photo.confirm(confirmed_time, final_s3_key="photos-confirmed/test.jpg")
     assert confirmed.status == ProgressPhotoStatus.CONFIRMED
     assert confirmed.confirmed_at == confirmed_time
+    assert confirmed.final_s3_key == "photos-confirmed/test.jpg"
 
 
 def test_cannot_confirm_deleted_photo() -> None:
@@ -146,7 +147,7 @@ def test_cannot_confirm_deleted_photo() -> None:
     )
 
     with pytest.raises(InvalidPhotoStateError, match="Cannot confirm a deleted"):
-        photo.confirm(datetime.now(UTC))
+        photo.confirm(datetime.now(UTC), final_s3_key="photos-confirmed/test.jpg")
 
 
 def test_mark_deleted_sets_tombstone() -> None:

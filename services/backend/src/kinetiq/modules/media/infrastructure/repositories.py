@@ -48,6 +48,7 @@ def _record_to_domain(record: ProgressPhotoRecord) -> ProgressPhoto:
         confirmed_at=record.confirmed_at,
         deleted_at=record.deleted_at,
         upload_authorized_until=record.upload_authorized_until,
+        final_s3_key=record.final_s3_key,
     )
 
 
@@ -187,14 +188,20 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
         return _record_to_domain(record)
 
     def confirm_if_pending(
-        self, *, photo_id: UUID, owner_id: UUID, confirmed_at: datetime
+        self, *, photo_id: UUID, owner_id: UUID, confirmed_at: datetime, final_s3_key: str
     ) -> ProgressPhoto | None:
         # A single conditional UPDATE is the arbiter: a stale finalize whose
         # photo was concurrently deleted (or already confirmed) sees 0 rows
-        # updated and must never resurrect it.
+        # updated and must never resurrect it. `final_s3_key` is persisted in
+        # the SAME write as the CONFIRMED status, so the photo can never be
+        # observably confirmed without its immutable key already durable.
         updated = ProgressPhotoRecord.objects.filter(
             id=photo_id, owner_id=owner_id, status=ProgressPhotoStatus.PENDING_UPLOAD.value
-        ).update(status=ProgressPhotoStatus.CONFIRMED.value, confirmed_at=confirmed_at)
+        ).update(
+            status=ProgressPhotoStatus.CONFIRMED.value,
+            confirmed_at=confirmed_at,
+            final_s3_key=final_s3_key,
+        )
         if updated != 1:
             return None
         return _record_to_domain(ProgressPhotoRecord.objects.get(id=photo_id))
@@ -242,7 +249,14 @@ class DjangoProgressPhotoRepository(ProgressPhotoRepository):
             job = _enqueue_cleanup_job(
                 owner_id=owner_id,
                 photo_id=record.id,
-                s3_key=record.s3_key,
+                # Once CONFIRMED, the real (served) object lives at
+                # final_s3_key -- s3_key is by then a mutable staging key
+                # that should already be gone (deleted right after finalize
+                # copied it) and is never what needs removing here. A photo
+                # deleted or reconciled before ever being finalized has no
+                # final_s3_key, so s3_key (the only object that could exist)
+                # is still the correct target.
+                s3_key=record.final_s3_key or record.s3_key,
                 reason=MediaCleanupReason.PHOTO_DELETED,
                 now=deleted_at,
                 # A presigned PUT issued before this delete may still be

@@ -84,6 +84,15 @@ class ProgressPhoto:
     # until this instant, even after the photo is deleted -- deletion
     # cleanup must not report itself final before it elapses.
     upload_authorized_until: datetime | None = None
+    # Set only once CONFIRMED: the immutable key the validated object was
+    # copied to at finalize time. `s3_key` is only ever a mutable *staging*
+    # target -- a presigned PUT issued for it before confirmation remains
+    # usable (S3 validates the signature at request start, not completion)
+    # until its own declared expiry regardless of the photo's later status,
+    # so it could otherwise silently overwrite an already-served, confirmed
+    # photo. Every download and every deletion of a CONFIRMED photo must
+    # target `final_s3_key`, never `s3_key`, once it is set.
+    final_s3_key: str | None = None
 
     def __post_init__(self) -> None:
         if self.content_type not in ALLOWED_MEDIA_TYPES:
@@ -101,7 +110,7 @@ class ProgressPhoto:
         if not self.s3_key.strip():
             raise ValueError("s3_key cannot be empty")
 
-    def confirm(self, confirmed_at: datetime) -> ProgressPhoto:
+    def confirm(self, confirmed_at: datetime, final_s3_key: str) -> ProgressPhoto:
         if self.status == ProgressPhotoStatus.DELETED:
             raise InvalidPhotoStateError("Cannot confirm a deleted progress photo")
         return ProgressPhoto(
@@ -116,6 +125,7 @@ class ProgressPhoto:
             confirmed_at=confirmed_at,
             deleted_at=None,
             upload_authorized_until=self.upload_authorized_until,
+            final_s3_key=final_s3_key,
         )
 
     def mark_deleted(self, deleted_at: datetime) -> ProgressPhoto:
@@ -131,6 +141,7 @@ class ProgressPhoto:
             confirmed_at=self.confirmed_at,
             deleted_at=deleted_at,
             upload_authorized_until=self.upload_authorized_until,
+            final_s3_key=self.final_s3_key,
         )
 
     def with_upload_authorization(self, authorized_until: datetime) -> ProgressPhoto:
@@ -148,6 +159,7 @@ class ProgressPhoto:
             confirmed_at=self.confirmed_at,
             deleted_at=self.deleted_at,
             upload_authorized_until=authorized_until,
+            final_s3_key=self.final_s3_key,
         )
 
 
