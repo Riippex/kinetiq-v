@@ -9,5 +9,6 @@ Canonical skills live in .agents/skills/. Byte-identical copies under .claude/sk
 | kinetiq-delivery | Preparing direct develop commits or task PRs |
 | kinetiq-aws-review | Terraform, IAM, deployment costs and managed MLflow |
 | kinetiq-product-slice | An end-to-end product behavior across client, API and persistence |
+| kinetiq-review-checkpoint | Freeze an implementation block for direct review in Codex; Claude does not launch the reviewer |
 
 Use installed Amazon Vega skills for Vega manifests, SDK setup, navigation/focus and build work when relevant. They are external dependencies, not copied into this repository. If unavailable consult official platform documentation and report missing tooling. Developer MCPs assist development; the runtime Alexa+ MCP remains application code.
