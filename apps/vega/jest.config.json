@@ -3,6 +3,7 @@
   "testRegex": "/test/.*\\.(test|spec)\\.(ts|tsx|js)$",
   "moduleFileExtensions": ["ts", "tsx", "js", "jsx", "json", "node"],
   "moduleNameMapper": {
+    "^@babel/runtime/(.*)$": "<rootDir>/node_modules/@babel/runtime/$1",
     "^react-native$": "@amazon-devices/react-native-kepler",
     "^react-native/(.*)$": "@amazon-devices/react-native-kepler/$1",
     "^~/(.*)$": "<rootDir>/src/$1"
