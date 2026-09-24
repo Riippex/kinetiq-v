@@ -22,6 +22,7 @@ import {
   skipDynamicChallenge,
   startSession,
   startSessionVisionAnalysis,
+  submitVisionEnrollmentFrame,
   subscribeToTransientSessionUpdates,
   syncSessionState,
   toggleExclusion,
@@ -780,6 +781,40 @@ test('fetchVisionCandidates surfaces a transport error when the request fails', 
     const result = await fetchVisionCandidates('/api/graphql', 'sess-001');
     assert.deepEqual(result.candidates, []);
     assert.equal(result.errors[0].code, 'TRANSPORT_ERROR');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('submitVisionEnrollmentFrame sends the captured still and returns bounding boxes', async () => {
+  const originalFetch = globalThis.fetch;
+  let variables: unknown;
+  globalThis.fetch = (async (_url: string, options: { body: string }) => {
+    variables = JSON.parse(options.body).variables;
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          submitVisionEnrollmentFrame: {
+            candidates: [{candidateId: 'person-1', confidence: 0.97, bbox: [0.1, 0.2, 0.3, 0.4]}],
+            errors: [],
+          },
+        },
+      }),
+    } as Response;
+  }) as typeof fetch;
+
+  try {
+    const input = {
+      sessionId: 'sess-001',
+      imageBase64: 'encoded-jpeg',
+      frameIndex: 2,
+      timestampMs: 123.5,
+    };
+    const result = await submitVisionEnrollmentFrame('/api/graphql', input);
+    assert.deepEqual(variables, {input});
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.candidates[0].bbox, [0.1, 0.2, 0.3, 0.4]);
   } finally {
     globalThis.fetch = originalFetch;
   }

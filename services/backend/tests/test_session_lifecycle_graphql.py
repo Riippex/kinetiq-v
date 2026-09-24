@@ -8,6 +8,7 @@ from kinetiq.modules.identity.infrastructure.models import User
 from kinetiq.modules.routines.infrastructure.models import RoutineRecord
 from kinetiq.modules.workouts.application import (
     ConfirmSessionTargetUseCase,
+    IngestVisionEnrollmentFrameUseCase,
     StartSessionVisionAnalysisUseCase,
 )
 from kinetiq.modules.workouts.application.ports import (
@@ -50,9 +51,27 @@ class FakeVisionSessionAnalysisPort:
 
     def list_candidates(self, *, analysis_id: str) -> tuple[VisionCandidateInfo, ...]:
         return (
-            VisionCandidateInfo(candidate_id="person-target-alpha", confidence=0.95),
-            VisionCandidateInfo(candidate_id="person-target-beta", confidence=0.9),
+            VisionCandidateInfo(
+                candidate_id="person-target-alpha",
+                confidence=0.95,
+                bbox=(0.1, 0.1, 0.35, 0.8),
+            ),
+            VisionCandidateInfo(
+                candidate_id="person-target-beta",
+                confidence=0.9,
+                bbox=(0.55, 0.1, 0.35, 0.8),
+            ),
         )
+
+    def ingest_enrollment_frame(
+        self,
+        *,
+        analysis_id: str,
+        image_base64: str,
+        frame_index: int,
+        timestamp_ms: float,
+    ) -> tuple[VisionCandidateInfo, ...]:
+        return self.list_candidates(analysis_id=analysis_id)
 
     def select_target(
         self,
@@ -79,6 +98,12 @@ def _fake_start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
         DjangoSessionLifecycleRepository(),
         FakeVisionSessionAnalysisPort(),
         DjangoRoutineItemLookup(),
+    )
+
+
+def _fake_ingest_vision_enrollment_frame() -> IngestVisionEnrollmentFrameUseCase:
+    return IngestVisionEnrollmentFrameUseCase(
+        DjangoSessionLifecycleRepository(), FakeVisionSessionAnalysisPort()
     )
 
 
@@ -777,6 +802,10 @@ def test_invalid_uuid_rejected(athlete: User) -> None:
 @pytest.mark.django_db
 @patch("kinetiq.interfaces.graphql.schema.confirm_session_target", _fake_confirm_session_target)
 @patch(
+    "kinetiq.interfaces.graphql.schema.ingest_vision_enrollment_frame",
+    _fake_ingest_vision_enrollment_frame,
+)
+@patch(
     "kinetiq.interfaces.graphql.schema.start_session_vision_analysis",
     _fake_start_session_vision_analysis,
 )
@@ -825,6 +854,35 @@ def test_confirm_session_target_lifecycle(athlete: User, accepted_routine: Routi
     ).json()["data"]["startSessionVisionAnalysis"]
     assert start_analysis_resp["errors"] == []
     assert start_analysis_resp["session"]["revision"] == 2
+
+    frame_resp = client.post(
+        "/graphql/",
+        data={
+            "query": """
+              mutation SubmitFrame($input: VisionEnrollmentFrameInput!) {
+                submitVisionEnrollmentFrame(input: $input) {
+                  candidates { candidateId confidence bbox }
+                  errors { code message field }
+                }
+              }
+            """,
+            "variables": {
+                "input": {
+                    "sessionId": session_id,
+                    "imageBase64": "encoded-jpeg",
+                    "frameIndex": 1,
+                    "timestampMs": 10.0,
+                }
+            },
+        },
+        content_type="application/json",
+    ).json()["data"]["submitVisionEnrollmentFrame"]
+    assert frame_resp["errors"] == []
+    assert frame_resp["candidates"][0] == {
+        "candidateId": "person-target-alpha",
+        "confidence": 0.95,
+        "bbox": [0.1, 0.1, 0.35, 0.8],
+    }
 
     # Confirm target now that an analysis exists (revision 2 -> 3)
     response = client.post(

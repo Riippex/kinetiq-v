@@ -402,6 +402,35 @@ class VisionRestAdapter:
             for c in data.get("candidates", [])
         )
 
+    def ingest_enrollment_frame(
+        self,
+        *,
+        analysis_id: str,
+        image_base64: str,
+        frame_index: int,
+        timestamp_ms: float,
+        correlation_id: str | None = None,
+    ) -> tuple[VisionCandidateDTO, ...]:
+        data = self._execute_http(
+            "POST",
+            f"/v1/analyses/{analysis_id}/frames",
+            payload={
+                "image_base64": image_base64,
+                "frame_index": frame_index,
+                "timestamp_ms": timestamp_ms,
+            },
+            correlation_id=correlation_id,
+        )
+        return tuple(
+            VisionCandidateDTO(
+                candidate_id=c["candidate_id"],
+                bbox=tuple(c["bbox"]),
+                confidence=c["confidence"],
+                detected_at=c["detected_at"],
+            )
+            for c in data.get("candidates", [])
+        )
+
     def validate_observation_payload(self, data: dict[str, Any]) -> VisionObservationDTO:
         """Validate raw dictionary against observation schema and return strongly-typed DTO."""
         if self._observation_validator:

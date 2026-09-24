@@ -6,7 +6,7 @@
 
 A connected home workout coach that creates routines around personal goals, coordinates sessions, and tracks progress across phone, browser, Fire OS, Vega and Alexa+.
 
-**Status:** executable platform foundations and the first session-preparation slice; live workout, vision integration, Alexa+ and cloud infrastructure remain under construction.
+**Status:** the product loop, GraphQL and Alexa+ MCP boundaries, phone target enrollment, Vision integration, TV pairing foundations, and AWS infrastructure are implemented. Physical Android/TV evidence, authorized real-media evaluation, and live AWS qualification remain release gates.
 
 This repository owns the modular Django product, GraphQL API, clients, PostgreSQL records, Redis cache, business events and Alexa+ MCP. [Kinetiq V Vision](https://github.com/Riippex/kinetiq-v-vision) owns perception and movement analysis.
 
@@ -16,6 +16,8 @@ This repository owns the modular Django product, GraphQL API, clients, PostgreSQ
 - [Coaching experience](docs/coaching-experience.md)
 - [Routine planning](docs/routine-planning.md)
 - [Session preparation and Dynamic mode](docs/session-preparation.md)
+- [Vision target enrollment](docs/vision-enrollment.md)
+- [Submission evidence](docs/submission-evidence.md)
 - [GraphQL contract](packages/contracts/graphql/schema.graphql)
 - [Business events](contracts/events/README.md)
 - [Contributor workflow](docs/runbooks/pull-requests.md)

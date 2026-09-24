@@ -159,6 +159,7 @@ class UserProfileLookup(Protocol):
 class VisionCandidateInfo:
     candidate_id: str
     confidence: float
+    bbox: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +209,15 @@ class VisionSessionAnalysisPort(Protocol):
     ) -> VisionAnalysisHandle: ...
 
     def list_candidates(self, *, analysis_id: str) -> tuple[VisionCandidateInfo, ...]: ...
+
+    def ingest_enrollment_frame(
+        self,
+        *,
+        analysis_id: str,
+        image_base64: str,
+        frame_index: int,
+        timestamp_ms: float,
+    ) -> tuple[VisionCandidateInfo, ...]: ...
 
     def select_target(
         self,

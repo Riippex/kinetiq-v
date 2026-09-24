@@ -68,6 +68,7 @@ from kinetiq.modules.workouts.application import (
     GetLatestWorkoutSessionUseCase,
     GetSessionDynamicChallengesUseCase,
     GetWorkoutSessionUseCase,
+    IngestVisionEnrollmentFrameUseCase,
     IssueDisplayPairingCodeUseCase,
     ListVisionCandidatesUseCase,
     PairDisplayDeviceUseCase,
@@ -172,6 +173,12 @@ def start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
 
 def list_vision_candidates() -> ListVisionCandidatesUseCase:
     return ListVisionCandidatesUseCase(
+        DjangoSessionLifecycleRepository(), get_vision_rest_adapter()
+    )
+
+
+def ingest_vision_enrollment_frame() -> IngestVisionEnrollmentFrameUseCase:
+    return IngestVisionEnrollmentFrameUseCase(
         DjangoSessionLifecycleRepository(), get_vision_rest_adapter()
     )
 

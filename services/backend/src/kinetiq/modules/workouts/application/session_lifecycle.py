@@ -504,6 +504,42 @@ class ListVisionCandidatesUseCase:
         return self._vision.list_candidates(analysis_id=session.vision_analysis_id)
 
 
+class IngestVisionEnrollmentFrameUseCase:
+    """Relays one explicit, ephemeral enrollment still to Vision.
+
+    Ownership is checked locally and the Vision analysis identifier is read
+    from the owned session, so clients cannot address arbitrary analyses or
+    receive the service credential. The frame is not persisted by Product.
+    """
+
+    def __init__(
+        self, repository: SessionLifecycleRepository, vision_client: VisionSessionAnalysisPort
+    ) -> None:
+        self._repository = repository
+        self._vision = vision_client
+
+    def execute(
+        self,
+        *,
+        owner_id: UUID,
+        session_id: UUID,
+        image_base64: str,
+        frame_index: int,
+        timestamp_ms: float,
+    ) -> tuple[VisionCandidateInfo, ...]:
+        session = self._repository.get_session(owner_id=owner_id, session_id=session_id)
+        if session is None:
+            raise SessionNotFound(f"Workout session '{session_id}' not found")
+        if session.vision_analysis_id is None:
+            raise VisionAnalysisNotStartedError(session.id)
+        return self._vision.ingest_enrollment_frame(
+            analysis_id=session.vision_analysis_id,
+            image_base64=image_base64,
+            frame_index=frame_index,
+            timestamp_ms=timestamp_ms,
+        )
+
+
 class ConfirmSessionTargetUseCase(BaseSessionLifecycleUseCase):
     """Confirms a Vision-detected candidate as the session's target.
 

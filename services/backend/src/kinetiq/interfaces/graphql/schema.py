@@ -28,6 +28,7 @@ from kinetiq.bootstrap.container import (
     get_session_dynamic_challenges,
     get_session_transient_store,
     get_workout_session,
+    ingest_vision_enrollment_frame,
     issue_display_pairing_code,
     list_catalog_exercises,
     list_goal_revisions,
@@ -431,6 +432,13 @@ class SessionResultType:
 class VisionCandidateType:
     candidate_id: str
     confidence: float
+    bbox: list[float]
+
+
+@strawberry.type(name="VisionCandidateResult")
+class VisionCandidateResultType:
+    candidates: list[VisionCandidateType]
+    errors: list[DomainError]
 
 
 @strawberry.type(name="DynamicChallenge")
@@ -533,6 +541,14 @@ class SessionCommandInput:
     session_id: strawberry.ID
     expected_revision: int
     idempotency_key: str
+
+
+@strawberry.input
+class VisionEnrollmentFrameInput:
+    session_id: strawberry.ID
+    image_base64: str
+    frame_index: int
+    timestamp_ms: float
 
 
 @strawberry.input
@@ -680,7 +696,11 @@ class Query:
         except SessionNotFound:
             return []
         return [
-            VisionCandidateType(candidate_id=c.candidate_id, confidence=c.confidence)
+            VisionCandidateType(
+                candidate_id=c.candidate_id,
+                confidence=c.confidence,
+                bbox=list(c.bbox),
+            )
             for c in candidates
         ]
 
@@ -1233,6 +1253,63 @@ class Mutation:
             return _failure("VISION_UNAVAILABLE", str(error))
         except (ValueError, TypeError) as error:
             return _failure("INVALID_INPUT", str(error))
+
+    @strawberry.mutation
+    def submit_vision_enrollment_frame(
+        self, info: Info[Any, None], input: VisionEnrollmentFrameInput
+    ) -> VisionCandidateResultType:
+        owner_id = _authenticated_owner_id(info)
+        if owner_id is None:
+            return VisionCandidateResultType(
+                candidates=[],
+                errors=[
+                    DomainError(
+                        code="AUTHENTICATION_REQUIRED",
+                        message="Sign in before using Vision",
+                    )
+                ],
+            )
+        try:
+            session_id = UUID(str(input.session_id))
+            if not input.image_base64 or len(input.image_base64) > 2_000_000:
+                raise ValueError("Enrollment frame must be a non-empty image under 1.5 MB")
+            if input.frame_index < 0 or input.timestamp_ms < 0:
+                raise ValueError("Frame index and timestamp must be non-negative")
+            candidates = ingest_vision_enrollment_frame().execute(
+                owner_id=owner_id,
+                session_id=session_id,
+                image_base64=input.image_base64,
+                frame_index=input.frame_index,
+                timestamp_ms=input.timestamp_ms,
+            )
+            return VisionCandidateResultType(
+                candidates=[
+                    VisionCandidateType(
+                        candidate_id=c.candidate_id,
+                        confidence=c.confidence,
+                        bbox=list(c.bbox),
+                    )
+                    for c in candidates
+                ],
+                errors=[],
+            )
+        except SessionNotFound as error:
+            return VisionCandidateResultType(
+                candidates=[], errors=[DomainError(code="SESSION_NOT_FOUND", message=str(error))]
+            )
+        except VisionAnalysisNotStartedError as error:
+            return VisionCandidateResultType(
+                candidates=[],
+                errors=[DomainError(code="VISION_ANALYSIS_NOT_STARTED", message=str(error))],
+            )
+        except VisionAdapterError as error:
+            return VisionCandidateResultType(
+                candidates=[], errors=[DomainError(code="VISION_UNAVAILABLE", message=str(error))]
+            )
+        except (ValueError, TypeError) as error:
+            return VisionCandidateResultType(
+                candidates=[], errors=[DomainError(code="INVALID_INPUT", message=str(error))]
+            )
 
     @strawberry.mutation
     def disable_dynamic_mode(

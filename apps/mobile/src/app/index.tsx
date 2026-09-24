@@ -22,6 +22,7 @@ import {useEffect, useState} from 'react';
 import {Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {OnboardingModal} from '../features/onboarding/OnboardingModal';
+import {TargetEnrollmentCard} from '../features/session/TargetEnrollmentCard';
 
 const endpoint = process.env.EXPO_PUBLIC_KINETIQ_GRAPHQL_URL ?? '';
 const defaultRoutineId = process.env.EXPO_PUBLIC_KINETIQ_DEMO_ROUTINE_ID;
@@ -359,6 +360,14 @@ export default function HomeScreen() {
                 : 'Confirm and prepare'}
           </Text>
         </Pressable>
+
+        {preparedSession ? (
+          <TargetEnrollmentCard
+            endpoint={endpoint}
+            onSessionChange={setPreparedSession}
+            session={preparedSession}
+          />
+        ) : null}
 
         {preparedSession ? (
           <View style={styles.pairingSection} testID="pairing-section">

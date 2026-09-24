@@ -232,6 +232,42 @@ class VisionRestAdapterAnalysesRoutesTests(unittest.TestCase):
         )
 
     @patch("urllib.request.urlopen")
+    def test_ingest_enrollment_frame_posts_pixels_and_parses_candidates(self, mock_urlopen) -> None:
+        mock_urlopen.return_value = _mock_response(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "person-1",
+                        "bbox": [0.1, 0.2, 0.3, 0.4],
+                        "confidence": 0.97,
+                        "detected_at": "2026-09-24T00:00:00Z",
+                    }
+                ]
+            }
+        )
+
+        candidates = self.adapter.ingest_enrollment_frame(
+            analysis_id="an_1",
+            image_base64="encoded-jpeg",
+            frame_index=2,
+            timestamp_ms=123.5,
+        )
+
+        self.assertEqual("person-1", candidates[0].candidate_id)
+        self.assertEqual((0.1, 0.2, 0.3, 0.4), candidates[0].bbox)
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual("POST", req.get_method())
+        self.assertEqual("http://vision-service.local:8080/v1/analyses/an_1/frames", req.full_url)
+        self.assertEqual(
+            {
+                "image_base64": "encoded-jpeg",
+                "frame_index": 2,
+                "timestamp_ms": 123.5,
+            },
+            json.loads(req.data.decode("utf-8")),
+        )
+
+    @patch("urllib.request.urlopen")
     def test_poll_observations_passes_cursor_and_limit_and_validates(self, mock_urlopen) -> None:
         obs_payload = _load_fixture("observation_repetition.v1.json")
         mock_urlopen.return_value = _mock_response(

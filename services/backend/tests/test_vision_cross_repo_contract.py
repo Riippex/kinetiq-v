@@ -18,11 +18,15 @@ kinetiq-v-vision `bootstrap/container.py`) -- no database, Redis, or ML
 model weights are required, so it starts in well under a second.
 """
 
+import base64
 import os
 import shutil
 import socket
+import struct
 import subprocess
+import tempfile
 import time
+import zlib
 from pathlib import Path
 from uuid import uuid4
 
@@ -37,6 +41,22 @@ from kinetiq.modules.integrations.vision_adapter import (
 
 _DEFAULT_VISION_REPO = Path(__file__).resolve().parents[4] / "kinetiq-v-vision"
 VISION_REPO_PATH = Path(os.environ.get("KINETIQ_VISION_REPO_PATH", _DEFAULT_VISION_REPO))
+
+
+def _png_base64(width: int = 32, height: int = 24) -> str:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    rows = b"".join(b"\x00" + (b"\x00\x00\x00" * width) for _ in range(height))
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+    return base64.b64encode(png).decode("ascii")
 
 
 def _find_free_port() -> int:
@@ -64,10 +84,11 @@ def vision_base_url():
     port = _find_free_port()
     base_url = f"http://127.0.0.1:{port}"
 
+    process_log = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
     proc = subprocess.Popen(
         ["uv", "run", "kinetiq-vision", "run", "--host", "127.0.0.1", "--port", str(port)],
         cwd=str(VISION_REPO_PATH),
-        stdout=subprocess.PIPE,
+        stdout=process_log,
         stderr=subprocess.STDOUT,
         text=True,
     )
@@ -80,7 +101,8 @@ def vision_base_url():
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                output = proc.stdout.read() if proc.stdout else ""
+                process_log.seek(0)
+                output = process_log.read()
                 pytest.fail(
                     f"kinetiq-v-vision process exited early (code {proc.returncode}):\n{output}"
                 )
@@ -103,6 +125,7 @@ def vision_base_url():
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5.0)
+        process_log.close()
 
 
 @pytest.fixture()
@@ -135,13 +158,18 @@ def test_full_analysis_lifecycle_against_real_vision_service(adapter: VisionRest
     assert status.epoch == 1
     assert status.state == "AWAITING_SELECTION"
 
-    # No frames have been fed to this analysis (the REST contract does not
-    # expose a way to do that -- tracking is not yet wired to a live
-    # endpoint per VV-401), so candidates are genuinely empty. This is real
-    # evidence the route and response shape (`{"candidates": [...]}`) match
-    # what the adapter expects, not evidence of candidate-detection logic.
-    candidates = adapter.list_candidates(analysis_id=created.analysis_id)
-    assert candidates == ()
+    candidates = adapter.ingest_enrollment_frame(
+        analysis_id=created.analysis_id,
+        image_base64=_png_base64(),
+        frame_index=1,
+        timestamp_ms=10.0,
+    )
+    assert len(candidates) == 1
+    assert candidates[0].candidate_id == "candidate_01"
+    assert candidates[0].bbox == (0.2, 0.1, 0.6, 0.8)
+
+    listed_candidates = adapter.list_candidates(analysis_id=created.analysis_id)
+    assert listed_candidates == candidates
 
     page = adapter.poll_observations(analysis_id=created.analysis_id, limit=10)
     assert page.observations == ()

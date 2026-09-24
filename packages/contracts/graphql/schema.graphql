@@ -120,7 +120,8 @@ type WorkoutSession {
   targetPersonId: String
 }
 type SessionPage { nodes: [WorkoutSession!]! endCursor: String hasNextPage: Boolean! }
-type VisionCandidate { candidateId: String! confidence: Float! }
+type VisionCandidate { candidateId: String! confidence: Float! bbox: [Float!]! }
+type VisionCandidateResult { candidates: [VisionCandidate!]! errors: [DomainError!]! }
 # TransientSessionUpdate is server-produced only (published exclusively
 # by PollVisionObservationsUseCase polling real Vision observations).
 # There is deliberately no client-facing input/mutation for it: an
@@ -141,6 +142,7 @@ type TransientSessionUpdate {
 type ProgressSummary { completedSessions: Int! partialSessions: Int! from: DateTime! to: DateTime! }
 input RoutineContext { goalId: ID! minutes: Int! equipment: [String!]! excludedExerciseIds: [ID!]! }
 input SessionCommand { sessionId: ID! expectedRevision: Int! idempotencyKey: String! }
+input VisionEnrollmentFrameInput { sessionId: ID! imageBase64: String! frameIndex: Int! timestampMs: Float! }
 input PerformedSetInput {
   exerciseId: ID!
   setOrder: Int!
@@ -277,6 +279,7 @@ type Mutation {
   prepareSession(input: PrepareSessionInput!): SessionResult!
   startSession(command: SessionCommand!): SessionResult!
   startSessionVisionAnalysis(command: SessionCommand!): SessionResult!
+  submitVisionEnrollmentFrame(input: VisionEnrollmentFrameInput!): VisionCandidateResult!
   confirmSessionTarget(command: SessionCommand!, targetPersonId: String!): SessionResult!
   disableDynamicMode(command: SessionCommand!): SessionResult!
   pauseSession(command: SessionCommand!): SessionResult!

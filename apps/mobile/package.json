@@ -5,6 +5,7 @@
   "dependencies": {
     "@kinetiq/session-client": "0.1.0",
     "expo": "~57.0.20",
+    "expo-camera": "~57.0.5",
     "expo-constants": "~57.0.17",
     "expo-linking": "~57.0.9",
     "expo-router": "~57.0.19",

@@ -8,6 +8,8 @@ The TV presents a reduced remote-friendly flow with mode, intensity, and start c
 
 The capture preview must identify and confirm the session target before movement observations count. Target confirmation is session-scoped and does not create a persistent biometric identity. Device readiness and target confirmation are separate from accepting a routine.
 
+The executable phone enrollment flow and its privacy/security boundary are documented in [Vision target enrollment](vision-enrollment.md).
+
 ## Session Modes
 
 `NORMAL` follows the prescribed routine with guidance and supported movement tracking. `DYNAMIC` follows the same prescription and inserts bounded game challenges selected from an approved catalog. Dynamic mode changes presentation and pacing; it cannot silently change the accepted training prescription.

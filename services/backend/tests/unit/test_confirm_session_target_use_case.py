@@ -17,6 +17,7 @@ from kinetiq.modules.workouts.application.prepare_session import IdempotencyConf
 from kinetiq.modules.workouts.application.session_lifecycle import (
     ConfirmSessionTargetUseCase,
     ConfirmTargetCommand,
+    IngestVisionEnrollmentFrameUseCase,
     RevisionConflict,
     SessionLifecycleCommand,
     SessionNotFound,
@@ -147,6 +148,7 @@ class FakeVisionSessionAnalysisPort:
         self.create_analysis_calls = 0
         self.list_candidates_calls = 0
         self.select_target_calls: list[tuple[str, str, int]] = []
+        self.ingest_frame_calls: list[tuple[str, str, int, float]] = []
 
     def create_analysis(
         self,
@@ -162,6 +164,17 @@ class FakeVisionSessionAnalysisPort:
 
     def list_candidates(self, *, analysis_id: str) -> tuple[VisionCandidateInfo, ...]:
         self.list_candidates_calls += 1
+        return self.candidates
+
+    def ingest_enrollment_frame(
+        self,
+        *,
+        analysis_id: str,
+        image_base64: str,
+        frame_index: int,
+        timestamp_ms: float,
+    ) -> tuple[VisionCandidateInfo, ...]:
+        self.ingest_frame_calls.append((analysis_id, image_base64, frame_index, timestamp_ms))
         return self.candidates
 
     def select_target(
@@ -218,6 +231,44 @@ def make_confirm_command(
         idempotency_key=idempotency_key,
         target_person_id=target_person_id,
     )
+
+
+def test_ingest_enrollment_frame_is_owner_scoped_and_uses_attached_analysis() -> None:
+    session = session_with_analysis("an-owned")
+    repository = FakeSessionLifecycleRepository(session)
+    candidate = VisionCandidateInfo(
+        candidate_id="person-1", confidence=0.96, bbox=(0.1, 0.2, 0.3, 0.4)
+    )
+    vision = FakeVisionSessionAnalysisPort(candidates=(candidate,))
+    use_case = IngestVisionEnrollmentFrameUseCase(repository, vision)
+
+    result = use_case.execute(
+        owner_id=session.owner_id,
+        session_id=session.id,
+        image_base64="encoded-frame",
+        frame_index=3,
+        timestamp_ms=42.5,
+    )
+
+    assert result == (candidate,)
+    assert vision.ingest_frame_calls == [("an-owned", "encoded-frame", 3, 42.5)]
+
+
+def test_ingest_enrollment_frame_requires_started_analysis() -> None:
+    session = ready_session()
+    vision = FakeVisionSessionAnalysisPort()
+    use_case = IngestVisionEnrollmentFrameUseCase(FakeSessionLifecycleRepository(session), vision)
+
+    with pytest.raises(VisionAnalysisNotStartedError):
+        use_case.execute(
+            owner_id=session.owner_id,
+            session_id=session.id,
+            image_base64="encoded-frame",
+            frame_index=0,
+            timestamp_ms=0,
+        )
+
+    assert vision.ingest_frame_calls == []
 
 
 ROUTINE_ITEMS = (

@@ -269,6 +269,14 @@ export interface PreparedSession {
 export interface VisionCandidate {
   candidateId: string;
   confidence: number;
+  bbox: [number, number, number, number];
+}
+
+export interface VisionEnrollmentFrameInput {
+  sessionId: string;
+  imageBase64: string;
+  frameIndex: number;
+  timestampMs: number;
 }
 
 export interface SessionCommand {
@@ -551,6 +559,16 @@ const visionCandidatesQuery = `
     visionCandidates(sessionId: $sessionId) {
       candidateId
       confidence
+      bbox
+    }
+  }
+`;
+
+const submitVisionEnrollmentFrameMutation = `
+  mutation SubmitVisionEnrollmentFrame($input: VisionEnrollmentFrameInput!) {
+    submitVisionEnrollmentFrame(input: $input) {
+      candidates { candidateId confidence bbox }
+      errors { code message field }
     }
   }
 `;
@@ -1418,6 +1436,23 @@ export async function fetchVisionCandidates(
     return { candidates: [], errors: result.errors };
   }
   return { candidates: result.data?.visionCandidates ?? [], errors: [] };
+}
+
+export async function submitVisionEnrollmentFrame(
+  endpoint: string,
+  input: VisionEnrollmentFrameInput,
+  authorization?: string,
+): Promise<{ candidates: VisionCandidate[]; errors: DomainError[] }> {
+  const result = await executeGraphQL<{
+    submitVisionEnrollmentFrame: { candidates: VisionCandidate[]; errors: DomainError[] };
+  }>(endpoint, submitVisionEnrollmentFrameMutation, { input }, authorization);
+  if (result.errors) {
+    return { candidates: [], errors: result.errors };
+  }
+  return result.data?.submitVisionEnrollmentFrame ?? {
+    candidates: [],
+    errors: [{ code: 'INVALID_RESPONSE', message: 'The backend returned an incomplete response' }],
+  };
 }
 
 export async function pauseSession(
