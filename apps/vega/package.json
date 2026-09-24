@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@amazon-devices/react-native-kepler": "~4.0.0+rn0.83.0",
+    "@kinetiq/session-client": "file:../../packages/session-client",
     "react": "19.2.0",
     "react-native": "0.83.0"
   },

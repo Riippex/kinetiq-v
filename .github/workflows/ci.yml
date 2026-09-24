@@ -46,6 +46,8 @@ jobs:
 
       - name: Django Migration Consistency Check
         run: uv run python manage.py makemigrations --check --dry-run
+        env:
+          DJANGO_SECRET_KEY: ci-only-django-secret-key-not-for-production-use
 
       - name: Run Unit Tests
         run: uv run pytest tests/unit -v
