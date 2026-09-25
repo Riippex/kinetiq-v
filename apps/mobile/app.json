@@ -14,7 +14,7 @@
       "package": "com.riippex.kinetiqv.mobile",
       "adaptiveIcon": {
         "backgroundColor": "#070B14",
-        "foregroundImage": "./assets/images/brand-mark.png"
+        "foregroundImage": "./assets/images/adaptive-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
