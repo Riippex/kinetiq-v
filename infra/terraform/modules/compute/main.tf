@@ -519,6 +519,14 @@ resource "aws_ecs_service" "backend" {
     rollback = true
   }
 
+  # The deployment workflow registers immutable task definition revisions and
+  # promotes the exact revision it just verified. Terraform continues to own
+  # the service configuration, but must not roll that release pointer back to
+  # the revision captured by the last infrastructure apply.
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
+
   depends_on = [aws_lb_listener.http]
 
   tags = {
@@ -554,6 +562,12 @@ resource "aws_ecs_service" "web" {
   deployment_circuit_breaker {
     enable   = true
     rollback = true
+  }
+
+  # See the backend service: application releases own this pointer while
+  # Terraform owns the surrounding service infrastructure.
+  lifecycle {
+    ignore_changes = [task_definition]
   }
 
   depends_on = [aws_lb_listener.http]
