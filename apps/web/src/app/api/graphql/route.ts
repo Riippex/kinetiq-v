@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import { NextRequest, NextResponse } from "next/server";
 
 const backendUrl =
@@ -6,7 +8,7 @@ const maxBodyBytes = 64 * 1024;
 
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
-  if (origin && !isSameOrigin(origin, request.nextUrl.host)) {
+  if (!origin || !isSameOrigin(origin, request.nextUrl.host)) {
     return NextResponse.json({ errors: [{ message: "Cross-origin request rejected" }] }, { status: 403 });
   }
 
@@ -15,8 +17,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ errors: [{ message: "GraphQL request is too large" }] }, { status: 413 });
   }
 
-  const headers = new Headers({ "content-type": "application/json" });
-  for (const name of ["authorization", "cookie", "x-csrftoken", "x-request-id"]) {
+  // Django remains protected by CsrfViewMiddleware. Once this BFF has
+  // verified the browser's Origin, it creates a matching cookie/header pair
+  // for the server-to-server hop while preserving the user's session cookie.
+  const csrfToken = randomBytes(16).toString("hex");
+  const headers = new Headers({
+    "content-type": "application/json",
+    cookie: withCsrfCookie(request.headers.get("cookie"), csrfToken),
+    "x-csrftoken": csrfToken,
+  });
+  for (const name of ["authorization", "x-request-id"]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
@@ -35,6 +45,15 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ errors: [{ message: "Backend unavailable" }] }, { status: 503 });
   }
+}
+
+function withCsrfCookie(cookieHeader: string | null, token: string) {
+  const cookies = (cookieHeader ?? "")
+    .split(";")
+    .map((cookie) => cookie.trim())
+    .filter((cookie) => cookie && !cookie.startsWith("csrftoken="));
+  cookies.push(`csrftoken=${token}`);
+  return cookies.join("; ");
 }
 
 function isSameOrigin(origin: string, expectedHost: string) {

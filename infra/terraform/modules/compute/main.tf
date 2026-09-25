@@ -203,6 +203,25 @@ resource "aws_lb_listener" "https" {
   }
 }
 
+# Next.js owns the same-origin GraphQL BFF endpoint. It must be evaluated
+# before the broader backend /api/* rule below, or the ALB sends the request
+# straight to Django where /api/graphql does not exist.
+resource "aws_lb_listener_rule" "web_graphql_proxy_https" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 5
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/api/graphql", "/api/graphql/"]
+    }
+  }
+}
+
 resource "aws_lb_listener_rule" "backend_routes_https" {
   listener_arn = aws_lb_listener.https.arn
   priority     = 10
