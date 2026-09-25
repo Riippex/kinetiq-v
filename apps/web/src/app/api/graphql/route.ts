@@ -8,7 +8,8 @@ const maxBodyBytes = 64 * 1024;
 
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
-  if (!origin || !isSameOrigin(origin, request.nextUrl.host)) {
+  const publicHost = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+  if (!origin || !publicHost || !isSameOrigin(origin, publicHost)) {
     return NextResponse.json({ errors: [{ message: "Cross-origin request rejected" }] }, { status: 403 });
   }
 
