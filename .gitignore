@@ -68,6 +68,8 @@ tfplan-*
 /output/
 /tmp/
 *.log
+.idea/
+*.iml
 .DS_Store
 Thumbs.db
 
