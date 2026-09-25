@@ -4,17 +4,17 @@ import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from jsonschema import Draft202012Validator
 
+from kinetiq.bootstrap.paths import REPOSITORY_ROOT
 from kinetiq.modules.workouts.domain.session import PauseReason
 
 logger = logging.getLogger(__name__)
 
-CONTRACTS_DIR = Path(__file__).resolve().parents[6] / "contracts" / "vision" / "v1" / "schema"
+CONTRACTS_DIR = REPOSITORY_ROOT / "contracts" / "vision" / "v1" / "schema"
 OBSERVATION_SCHEMA_PATH = CONTRACTS_DIR / "vision-observation.v1.schema.json"
 
 

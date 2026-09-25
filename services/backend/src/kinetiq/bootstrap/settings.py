@@ -1,14 +1,13 @@
 import os
-from pathlib import Path
 
 import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
+from kinetiq.bootstrap.paths import BACKEND_ROOT, REPOSITORY_ROOT
 from kinetiq.bootstrap.vision_settings import resolve_vision_settings
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-REPOSITORY_ROOT = BASE_DIR.parents[1]
+BASE_DIR = BACKEND_ROOT
 load_dotenv(REPOSITORY_ROOT / ".env")
 
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"

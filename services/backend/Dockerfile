@@ -9,12 +9,12 @@ ENV UV_LINK_MODE=copy
 WORKDIR /app
 
 # Install dependencies without installing the project itself
-COPY pyproject.toml uv.lock ./
+COPY services/backend/pyproject.toml services/backend/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy source and install project
-COPY src/ ./src/
-COPY manage.py ./
+COPY services/backend/src/ ./src/
+COPY services/backend/manage.py ./
 RUN uv sync --frozen --no-dev
 
 # Stage 2: Minimal runtime image
@@ -35,6 +35,7 @@ RUN groupadd -g 1001 appuser && \
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
 COPY --from=builder /app/manage.py /app/manage.py
+COPY contracts/vision/v1 /app/contracts/vision/v1
 
 USER appuser
 
