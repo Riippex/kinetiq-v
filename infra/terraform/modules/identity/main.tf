@@ -41,8 +41,9 @@ resource "aws_cognito_user_pool" "main" {
 # this, allowed_oauth_flows = ["code"] has no usable endpoint for the web
 # and mobile clients to redirect users to.
 resource "aws_cognito_user_pool_domain" "main" {
-  domain       = var.cognito_domain_prefix
-  user_pool_id = aws_cognito_user_pool.main.id
+  domain                = var.cognito_domain_prefix
+  user_pool_id          = aws_cognito_user_pool.main.id
+  managed_login_version = 2
 }
 
 # Resource server for API scopes (provides kinetiq/coach for Alexa+ MCP)
