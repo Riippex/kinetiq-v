@@ -52,7 +52,7 @@ variable "max_allocated_storage" {
 variable "engine_version" {
   description = "PostgreSQL engine version"
   type        = string
-  default     = "17.4"
+  default     = "17.11"
 }
 
 variable "multi_az" {
