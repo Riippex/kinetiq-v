@@ -136,7 +136,7 @@ jobs:
           echo "web_image=${{ steps.login-ecr.outputs.registry }}/kinetiq-v-web-hackathon:${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
   migrate:
-    name: Run Database Migrations
+    name: Migrate and Seed Database
     needs: build-and-push
     runs-on: ubuntu-latest
     environment: hackathon
@@ -198,7 +198,7 @@ jobs:
             echo "Migration task failed with exit code $EXIT_CODE. Deploy stops here: no service is updated to a backend image whose migrations did not apply cleanly."
             exit 1
           fi
-          echo "Migrations successfully executed."
+          echo "Migrations and canonical catalog seed successfully executed."
 
   deploy-backend:
     name: Deploy Backend Service

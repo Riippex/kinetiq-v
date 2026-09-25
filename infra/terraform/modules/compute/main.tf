@@ -479,7 +479,11 @@ resource "aws_ecs_task_definition" "migrate" {
       name      = "migrate"
       image     = var.backend_image
       essential = true
-      command   = ["python", "manage.py", "migrate", "--noinput"]
+      command = [
+        "sh",
+        "-c",
+        "python manage.py migrate --noinput && python manage.py seed_catalog"
+      ]
 
       environment = [
         { name = "DJANGO_DEBUG", value = "false" },
