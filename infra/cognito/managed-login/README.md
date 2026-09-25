@@ -19,4 +19,4 @@ $clientId = terraform -chdir=$environmentPath output -raw cognito_web_client_id
   -Region us-east-1
 ```
 
-Run the script again after changing `settings.json` or the brand mark. The script discovers the branding identifier from the app client, uploads both color-mode logo assets, and replaces the settings in one request.
+Run the script once for each Cognito app client (web and mobile), and again after changing `settings.json` or the brand mark. The script discovers the branding identifier from the selected app client, uploads both color-mode logo assets, and replaces the settings in one request.

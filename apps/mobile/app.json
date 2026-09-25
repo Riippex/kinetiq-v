@@ -41,7 +41,9 @@
           "image": "./assets/images/brand-mark.png",
           "imageWidth": 180
         }
-      ]
+      ],
+      "expo-secure-store",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

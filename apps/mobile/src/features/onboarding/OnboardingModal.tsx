@@ -29,6 +29,7 @@ import {
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 interface OnboardingModalProps {
+  authorization: string;
   visible: boolean;
   endpoint: string;
   onClose: () => void;
@@ -49,7 +50,7 @@ const spaceList = [
   {id: 'HOME_GYM', label: 'Home Gym'},
 ];
 
-export function OnboardingModal({visible, endpoint, onClose, onSaved}: OnboardingModalProps) {
+export function OnboardingModal({authorization, visible, endpoint, onClose, onSaved}: OnboardingModalProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -94,7 +95,11 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
     if (!endpoint) return;
     setLoading(true);
     setErrorMessage(null);
-    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint), fetchExercises(endpoint)])
+    Promise.all([
+      fetchProfile(endpoint, authorization),
+      fetchActiveGoal(endpoint, authorization),
+      fetchExercises(endpoint, authorization),
+    ])
       .then(([profileRes, goalRes, exercisesRes]) => {
         if (profileRes.errors.length && profileRes.errors[0].code !== 'AUTHENTICATION_REQUIRED') {
           setErrorMessage(profileRes.errors[0].message);
@@ -108,13 +113,17 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
         setErrorMessage('Could not connect to service. Check network and retry.');
         setLoading(false);
       });
-  }, [endpoint, applyData]);
+  }, [authorization, endpoint, applyData]);
 
   useEffect(() => {
     if (!visible || !endpoint) return;
     let active = true;
 
-    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint), fetchExercises(endpoint)])
+    Promise.all([
+      fetchProfile(endpoint, authorization),
+      fetchActiveGoal(endpoint, authorization),
+      fetchExercises(endpoint, authorization),
+    ])
       .then(([profileRes, goalRes, exercisesRes]) => {
         if (!active) return;
         if (profileRes.errors.length && profileRes.errors[0].code !== 'AUTHENTICATION_REQUIRED') {
@@ -134,7 +143,7 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
     return () => {
       active = false;
     };
-  }, [visible, endpoint, applyData]);
+  }, [authorization, visible, endpoint, applyData]);
 
   function toggleEquipment(id: string) {
     if (id === 'NONE') {
@@ -167,7 +176,7 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
         coachingTone: tone,
         exclusions,
         limitations: parseLimitationsInput(limitationsText),
-      });
+      }, authorization);
 
       if (profRes.errors.length) {
         setErrorMessage(profRes.errors[0].message);
@@ -181,7 +190,7 @@ export function OnboardingModal({visible, endpoint, onClose, onSaved}: Onboardin
         baseline: 0,
         target: goalTarget,
         unit: 'sessions/week',
-      });
+      }, authorization);
 
       if (goalRes.errors.length) {
         setErrorMessage(goalRes.errors[0].message);

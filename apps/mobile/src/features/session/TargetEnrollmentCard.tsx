@@ -10,12 +10,13 @@ import {useRef, useState} from 'react';
 import {Image, Pressable, StyleSheet, Text, View} from 'react-native';
 
 interface Props {
+  authorization: string;
   endpoint: string;
   session: PreparedSession;
   onSessionChange: (session: PreparedSession) => void;
 }
 
-export function TargetEnrollmentCard({endpoint, session, onSessionChange}: Props) {
+export function TargetEnrollmentCard({authorization, endpoint, session, onSessionChange}: Props) {
   const camera = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [analysisSession, setAnalysisSession] = useState(session);
@@ -58,7 +59,7 @@ export function TargetEnrollmentCard({endpoint, session, onSessionChange}: Props
         sessionId: session.id,
         expectedRevision: session.revision,
         idempotencyKey: `enrollment-${session.id}`,
-      });
+      }, authorization);
       if (!result.session) {
         setMessage(result.errors[0]?.message ?? 'Could not start Vision enrollment.');
         return;
@@ -88,7 +89,7 @@ export function TargetEnrollmentCard({endpoint, session, onSessionChange}: Props
         imageBase64: picture.base64,
         frameIndex: nextFrame,
         timestampMs: Date.now(),
-      });
+      }, authorization);
       if (result.errors.length) {
         setMessage(result.errors[0].message);
         return;
@@ -123,6 +124,7 @@ export function TargetEnrollmentCard({endpoint, session, onSessionChange}: Props
           idempotencyKey: `target-${analysisSession.id}-${candidate.candidateId}`,
         },
         candidate.candidateId,
+        authorization,
       );
       if (!result.session) {
         setMessage(result.errors[0]?.message ?? 'Target confirmation failed.');

@@ -22,12 +22,28 @@ import {useEffect, useState} from 'react';
 import {Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {OnboardingModal} from '../features/onboarding/OnboardingModal';
+import {useAuth} from '../features/auth/AuthProvider';
+import {SignInScreen} from '../features/auth/SignInScreen';
 import {TargetEnrollmentCard} from '../features/session/TargetEnrollmentCard';
 
 const endpoint = process.env.EXPO_PUBLIC_KINETIQ_GRAPHQL_URL ?? '';
 const defaultRoutineId = process.env.EXPO_PUBLIC_KINETIQ_DEMO_ROUTINE_ID;
 
 export default function HomeScreen() {
+  const {authorization, signOut, status} = useAuth();
+  if (status !== 'authenticated' || !authorization) {
+    return <SignInScreen />;
+  }
+  return <AuthenticatedHome authorization={authorization} onSignOut={signOut} />;
+}
+
+function AuthenticatedHome({
+  authorization,
+  onSignOut,
+}: {
+  authorization: string;
+  onSignOut: () => Promise<void>;
+}) {
   const [mode, setMode] = useState<SessionMode>('NORMAL');
   const [intensity, setIntensity] = useState<SessionIntensity>('PLANNED');
   const [tone, setTone] = useState<CoachingTone>('MOTIVATIONAL');
@@ -53,7 +69,11 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!endpoint) return;
-    Promise.all([fetchProfile(endpoint), fetchActiveGoal(endpoint), fetchCurrentRoutine(endpoint)])
+    Promise.all([
+      fetchProfile(endpoint, authorization),
+      fetchActiveGoal(endpoint, authorization),
+      fetchCurrentRoutine(endpoint, authorization),
+    ])
       .then(([pRes, gRes, rRes]) => {
         if (pRes.profile) {
           setAthleteProfile(pRes.profile);
@@ -69,7 +89,7 @@ export default function HomeScreen() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [authorization]);
 
   async function handleProposeRoutine() {
     if (!endpoint) return;
@@ -77,7 +97,7 @@ export default function HomeScreen() {
     setMessage(null);
     setUnsupportedLimitation(false);
     try {
-      const res = await proposeRoutine(endpoint);
+      const res = await proposeRoutine(endpoint, authorization);
       if (res.errors.length) {
         setMessage(res.errors[0].message);
         setUnsupportedLimitation(isUnsupportedLimitationError(res.errors));
@@ -97,7 +117,7 @@ export default function HomeScreen() {
     setMessage(null);
     setUnsupportedLimitation(false);
     try {
-      const res = await acceptRoutine(endpoint, currentRoutine.id, currentRoutine.version);
+      const res = await acceptRoutine(endpoint, currentRoutine.id, currentRoutine.version, authorization);
       if (res.errors.length) {
         setMessage(res.errors[0].message);
       } else if (res.routine) {
@@ -144,7 +164,7 @@ export default function HomeScreen() {
               narrationEnabled: true,
             }
           : undefined,
-    });
+    }, authorization);
     setSubmitting(false);
     setMessage(
       result.session
@@ -166,6 +186,7 @@ export default function HomeScreen() {
         endpoint,
         pairingCodeInput.trim().toUpperCase(),
         preparedSession.id,
+        authorization,
       );
       if (res.errors.length) {
         setPairingMessage(res.errors[0].message);
@@ -192,7 +213,12 @@ export default function HomeScreen() {
             />
             <Text style={styles.brand}>Kinetiq V</Text>
           </View>
-          <Text style={styles.status}>SESSION SETUP</Text>
+          <View style={styles.headerActions}>
+            <Text style={styles.status}>SESSION SETUP</Text>
+            <Pressable accessibilityRole="button" onPress={() => void onSignOut()} style={styles.signOutButton}>
+              <Text style={styles.signOutText}>Sign out</Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* Athlete Context & Onboarding Section */}
@@ -370,6 +396,7 @@ export default function HomeScreen() {
 
         {preparedSession ? (
           <TargetEnrollmentCard
+            authorization={authorization}
             endpoint={endpoint}
             onSessionChange={setPreparedSession}
             session={preparedSession}
@@ -416,6 +443,7 @@ export default function HomeScreen() {
       </ScrollView>
 
       <OnboardingModal
+        authorization={authorization}
         visible={showOnboarding}
         endpoint={endpoint}
         onClose={() => setShowOnboarding(false)}
@@ -450,10 +478,13 @@ const styles = StyleSheet.create({
   safeArea: {flex: 1, backgroundColor: '#070B14'},
   content: {paddingHorizontal: 24, paddingVertical: 20, paddingBottom: 40},
   header: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24},
+  headerActions: {alignItems: 'flex-end', gap: 7},
   brandLockup: {flexDirection: 'row', alignItems: 'center', gap: 8},
   brandMark: {width: 30, height: 30, resizeMode: 'contain'},
   brand: {color: '#F4F7FB', fontSize: 20, fontWeight: '700'},
   status: {color: '#A3FF12', fontSize: 10, fontWeight: '800', letterSpacing: 1.5},
+  signOutButton: {paddingHorizontal: 2, paddingVertical: 2},
+  signOutText: {color: '#9CA3AF', fontSize: 11, fontWeight: '600'},
   athleteSection: {
     backgroundColor: '#111827',
     borderColor: '#293244',
