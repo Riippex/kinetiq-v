@@ -76,6 +76,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "kinetiq.modules.identity.infrastructure.cognito_auth.CognitoBearerAuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -148,6 +149,17 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "kinetiq_identity.User"
+
+# Cognito user authentication for GraphQL HTTP clients. The middleware fails
+# closed for bearer credentials when these values are absent or invalid, while
+# requests with no bearer token remain anonymous for public schema fields.
+COGNITO_ISSUER_URL = os.getenv("COGNITO_ISSUER_URL", "")
+COGNITO_JWKS_URL = os.getenv("COGNITO_JWKS_URL", "")
+COGNITO_ALLOWED_CLIENT_IDS = [
+    item.strip()
+    for item in os.getenv("COGNITO_ALLOWED_CLIENT_IDS", "").split(",")
+    if item.strip()
+]
 
 # Private S3 media settings
 MEDIA_S3_BUCKET = os.getenv("MEDIA_S3_BUCKET", "kinetiq-media-private")

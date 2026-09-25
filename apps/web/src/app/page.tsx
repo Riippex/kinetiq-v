@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { type Routine } from "@kinetiq/session-client";
 import { SessionPreparationDialog } from "@/features/session-preparation/SessionPreparationDialog";
+import { AuthControls } from "@/features/auth/AuthControls";
 import { OnboardingCard } from "@/features/onboarding/OnboardingCard";
 import { RoutinePlanningCard } from "@/features/routines/RoutinePlanningCard";
 
@@ -20,9 +21,7 @@ export default function Home() {
       <div className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-6xl flex-col justify-between rounded-[2rem] border border-white/10 bg-[radial-gradient(circle_at_top_right,_rgba(163,255,18,0.14),_transparent_40%),linear-gradient(145deg,#111827,#090d16)] p-8 shadow-2xl sm:p-12">
         <nav className="flex items-center justify-between">
           <span className="text-lg font-semibold tracking-tight">Kinetiq V</span>
-          <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-[var(--muted)]">
-            Foundation
-          </span>
+          <AuthControls />
         </nav>
 
         <section className="max-w-3xl py-12">

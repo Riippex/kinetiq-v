@@ -307,6 +307,9 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "AWS_REGION", value = data.aws_region.current.name },
         { name = "MEDIA_S3_BUCKET", value = var.media_bucket_id },
         { name = "DISPLAY_PAIRING_STORE", value = "redis" },
+        { name = "COGNITO_ISSUER_URL", value = var.cognito_issuer_url },
+        { name = "COGNITO_JWKS_URL", value = var.cognito_jwks_url },
+        { name = "COGNITO_ALLOWED_CLIENT_IDS", value = "${var.cognito_web_client_id},${var.cognito_mobile_client_id}" },
         { name = "MCP_OIDC_ISSUER", value = var.cognito_issuer_url },
         { name = "MCP_OIDC_AUDIENCE", value = var.cognito_web_client_id },
         { name = "MCP_OIDC_JWKS_URL", value = var.cognito_jwks_url },
@@ -376,6 +379,9 @@ resource "aws_ecs_task_definition" "web" {
       environment = [
         { name = "NODE_ENV", value = "production" },
         { name = "PORT", value = "3000" },
+        { name = "KINETIQ_PUBLIC_ORIGIN", value = local.public_origin },
+        { name = "COGNITO_HOSTED_UI_DOMAIN", value = var.cognito_hosted_ui_domain },
+        { name = "COGNITO_WEB_CLIENT_ID", value = var.cognito_web_client_id },
         # apps/web/src/app/api/graphql/route.ts reads KINETIQ_BACKEND_GRAPHQL_URL
         # server-side (a BFF proxy, never exposed to the browser) --
         # NEXT_PUBLIC_GRAPHQL_ENDPOINT is never read anywhere in the app and

@@ -175,6 +175,8 @@ module "compute" {
   cognito_issuer_url           = module.identity.issuer_url
   cognito_jwks_url             = module.identity.jwks_url
   cognito_web_client_id        = module.identity.web_client_id
+  cognito_mobile_client_id     = module.identity.mobile_client_id
+  cognito_hosted_ui_domain     = module.identity.hosted_ui_domain
   certificate_arn              = var.certificate_arn
   domain_name                  = var.domain_name
   use_fargate_spot             = var.use_fargate_spot

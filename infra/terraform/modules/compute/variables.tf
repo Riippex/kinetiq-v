@@ -94,6 +94,16 @@ variable "cognito_web_client_id" {
   type        = string
 }
 
+variable "cognito_mobile_client_id" {
+  description = "Cognito Mobile Client ID accepted by the product API"
+  type        = string
+}
+
+variable "cognito_hosted_ui_domain" {
+  description = "Cognito Hosted UI domain for browser authorization-code flows"
+  type        = string
+}
+
 variable "certificate_arn" {
   description = "Optional, pre-issued ACM certificate ARN for the HTTPS listener, in place of Terraform's own domain_name-driven certificate issuance. MUST be a certificate actually issued for exactly domain_name -- see its validation below."
   type        = string

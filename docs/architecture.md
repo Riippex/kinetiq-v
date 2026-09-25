@@ -41,6 +41,25 @@ Each module exposes application use cases/DTOs. Do not import another module's O
 
 GraphQL resolvers and MCP tools contain transport adaptation and authorization checks, then invoke use cases. Next.js never writes the database. Django Admin invokes domain validation for edits with business invariants; it cannot bypass accepted-routine immutability.
 
+## Identity and Browser Sessions
+
+Browser sign-in uses Cognito Hosted UI with the OAuth authorization-code flow
+and PKCE. Next.js owns the browser session boundary: OAuth state, PKCE verifier,
+access, refresh and ID tokens are stored only in secure, HTTP-only, same-site
+cookies. The GraphQL BFF verifies the request origin, refreshes an expiring
+access token and forwards it to Django as a bearer credential. Tokens are never
+placed in browser storage or exposed through a public environment variable.
+
+Django validates the access-token signature against the configured Cognito
+JWKS, then checks issuer, expiry, token use and the allowed web/mobile client
+IDs before mapping the `sub` claim to an active local user. A valid first login
+creates that local subject mapping; an invalid bearer credential receives 401,
+while requests without a credential remain anonymous for explicitly public
+GraphQL fields. MCP independently requires its configured audience and
+`kinetiq/coach` scope. Mobile authorization uses the separate public Cognito
+client and PKCE; its client-side sign-in UI remains a distinct implementation
+slice.
+
 ```text
 services/backend/
   src/kinetiq/
