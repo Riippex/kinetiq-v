@@ -74,7 +74,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
-    "django.middleware.csrf.CsrfViewMiddleware",
+    "kinetiq.interfaces.graphql.csrf.GraphQLBearerAwareCsrfMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "kinetiq.modules.identity.infrastructure.cognito_auth.CognitoBearerAuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
