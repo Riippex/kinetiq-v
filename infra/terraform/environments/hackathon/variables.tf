@@ -140,3 +140,9 @@ variable "web_image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "bootstrap_mode" {
+  description = "Safe first-deployment mode: provision compute with ECS desired counts at zero and the media-cleanup schedule disabled until images and migrations are ready"
+  type        = bool
+  default     = true
+}

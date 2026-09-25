@@ -495,7 +495,7 @@ resource "aws_ecs_service" "backend" {
   name            = "${var.project}-backend-${var.environment}"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.backend.arn
-  desired_count   = 1
+  desired_count   = var.bootstrap_mode ? 0 : 1
 
   capacity_provider_strategy {
     capacity_provider = var.use_fargate_spot ? "FARGATE_SPOT" : "FARGATE"
@@ -532,7 +532,7 @@ resource "aws_ecs_service" "web" {
   name            = "${var.project}-web-${var.environment}"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.web.arn
-  desired_count   = 1
+  desired_count   = var.bootstrap_mode ? 0 : 1
 
   capacity_provider_strategy {
     capacity_provider = var.use_fargate_spot ? "FARGATE_SPOT" : "FARGATE"
@@ -585,6 +585,7 @@ resource "aws_scheduler_schedule" "media_cleanup" {
   name                         = "${var.project}-media-cleanup-${var.environment}"
   schedule_expression          = var.media_cleanup_schedule_expression
   schedule_expression_timezone = "UTC"
+  state                        = var.bootstrap_mode ? "DISABLED" : "ENABLED"
 
   flexible_time_window {
     mode = "OFF"

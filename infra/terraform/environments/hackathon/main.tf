@@ -178,5 +178,6 @@ module "compute" {
   certificate_arn              = var.certificate_arn
   domain_name                  = var.domain_name
   use_fargate_spot             = var.use_fargate_spot
+  bootstrap_mode               = var.bootstrap_mode
   scheduler_execution_role_arn = module.iam.scheduler_execution_role_arn
 }

@@ -27,6 +27,11 @@ on:
         type: choice
         options:
           - hackathon
+      bootstrap_only:
+        description: "Build images and run migrations without updating services (first deployment only)"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   id-token: write
@@ -198,6 +203,7 @@ jobs:
   deploy-backend:
     name: Deploy Backend Service
     needs: [build-and-push, migrate]
+    if: ${{ !inputs.bootstrap_only }}
     runs-on: ubuntu-latest
     environment: hackathon
     steps:
@@ -237,6 +243,7 @@ jobs:
   deploy-web:
     name: Deploy Web Service
     needs: [build-and-push, migrate]
+    if: ${{ !inputs.bootstrap_only }}
     runs-on: ubuntu-latest
     environment: hackathon
     steps:
@@ -271,6 +278,7 @@ jobs:
   deploy-worker:
     name: Register Worker Task Definition
     needs: [build-and-push, migrate]
+    if: ${{ !inputs.bootstrap_only }}
     runs-on: ubuntu-latest
     environment: hackathon
     steps:

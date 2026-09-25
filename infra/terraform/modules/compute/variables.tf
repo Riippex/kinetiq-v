@@ -146,3 +146,9 @@ variable "media_cleanup_schedule_expression" {
   type        = string
   default     = "rate(15 minutes)"
 }
+
+variable "bootstrap_mode" {
+  description = "Create compute resources without starting ECS services or the media-cleanup schedule. Keep true until the initial images exist in ECR and the database migration has succeeded."
+  type        = bool
+  default     = true
+}

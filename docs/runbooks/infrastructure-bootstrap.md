@@ -38,7 +38,7 @@ So:
   Actions workflow, gated by the `hackathon` GitHub Environment and the
   OIDC role's environment-scoped trust policy (see below).
 
-## One-time bootstrap (manual, before the first `terraform apply`)
+## One-time bootstrap (manual, before the first normal deployment)
 
 Performed once by a human operator with their own sufficiently-privileged
 (but not root) AWS credentials.
@@ -61,12 +61,15 @@ Performed once by a human operator with their own sufficiently-privileged
    nameservers at that zone, before setting `domain_name` in
    `terraform.tfvars`.
 
-3. **Run the first `terraform apply`** for the whole stack (networking
-   through compute), following the plan/review/apply steps in Section 5 of
-   `docs/runbooks/aws-deployment-costs.md`. This is what actually creates
-   the `github_deployer` IAM role and its OIDC trust relationship -- until
-   this step has run once, there is no role for the GitHub Actions
-   workflow to assume at all.
+3. **Run the first `terraform apply` with `bootstrap_mode = true`.** This is
+   the safe default in both `variables.tf` and `terraform.tfvars.example`.
+   It creates the whole stack and the `github_deployer` IAM role, but keeps
+   the backend and web ECS services at desired count zero and leaves the
+   media-cleanup schedule disabled. The ECR repositories are empty during
+   this first apply, so starting tasks here would make ECS repeatedly fail
+   to pull nonexistent `latest` images. Follow the saved-plan review and
+   apply steps in Section 5 of
+   `docs/runbooks/aws-deployment-costs.md`; never use `-auto-approve`.
 
 4. **Record the deployer role's ARN as a GitHub secret, and the domain as
    a GitHub variable.** After the apply above:
@@ -163,6 +166,22 @@ Performed once by a human operator with their own sufficiently-privileged
    Environment cannot assume this role, regardless of what the workflow
    file says -- confirm this by attempting `aws sts get-caller-identity`
    from a PR-triggered workflow run; it must fail.
+
+8. **Seed ECR and migrate with the bootstrap-only deployment.** Dispatch
+   `.github/workflows/deploy.yml` from `develop`, select `hackathon`, and
+   set `bootstrap_only` to `true`. The workflow runs CI, pushes immutable
+   and `latest` backend/web images, and executes the database migration
+   task. It intentionally skips updates to the zero-count ECS services and
+   the scheduled worker. Do not continue unless the workflow succeeds and
+   the migration container exits with code zero.
+
+9. **Activate the runtime with a second reviewed Terraform apply.** Change
+   `bootstrap_mode` to `false` in the local, ignored `terraform.tfvars`,
+   create and review a new saved plan, then apply that exact plan. This
+   raises the backend and web desired counts to one and enables the
+   media-cleanup schedule now that their images and database schema exist.
+   Verify the HTTPS health endpoint before using normal deployments with
+   `bootstrap_only = false`.
 
 ## Ongoing IAM hygiene
 

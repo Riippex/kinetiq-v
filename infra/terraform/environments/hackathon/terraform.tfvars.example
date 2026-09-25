@@ -10,6 +10,12 @@ project     = "kinetiq-v"
 single_nat_gateway = true # Save ~$32/mo by using 1 NAT Gateway across subnets
 use_fargate_spot   = true # Save ~70% on ECS compute costs using Spot
 
+# Safe first deployment. Keep true for the initial apply so ECS does not try
+# to pull images before the new ECR repositories contain them. After pushing
+# both images and successfully running the migration task, change to false,
+# review a new saved plan, and apply it to start the services and scheduler.
+bootstrap_mode = true
+
 # Budget & Spend Alerting
 budget_limit_amount        = "50.0" # Monthly USD limit
 budget_notification_emails = ["developer@example.com"]
