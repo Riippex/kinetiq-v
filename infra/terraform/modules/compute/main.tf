@@ -214,7 +214,7 @@ resource "aws_lb_listener_rule" "backend_routes_https" {
 
   condition {
     path_pattern {
-      values = ["/api/*", "/graphql*", "/ws/*", "/mcp*"]
+      values = ["/api/*", "/graphql*", "/health*", "/ws/*", "/mcp*"]
     }
   }
 }
