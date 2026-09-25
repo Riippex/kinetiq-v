@@ -19,7 +19,7 @@ import {
   type SessionMode,
 } from '@kinetiq/session-client';
 import {useEffect, useState} from 'react';
-import {Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
+import {Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {OnboardingModal} from '../features/onboarding/OnboardingModal';
 import {TargetEnrollmentCard} from '../features/session/TargetEnrollmentCard';
@@ -184,7 +184,14 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <Text style={styles.brand}>Kinetiq V</Text>
+          <View style={styles.brandLockup}>
+            <Image
+              accessibilityIgnoresInvertColors
+              source={require('../../assets/images/brand-mark.png')}
+              style={styles.brandMark}
+            />
+            <Text style={styles.brand}>Kinetiq V</Text>
+          </View>
           <Text style={styles.status}>SESSION SETUP</Text>
         </View>
 
@@ -443,6 +450,8 @@ const styles = StyleSheet.create({
   safeArea: {flex: 1, backgroundColor: '#070B14'},
   content: {paddingHorizontal: 24, paddingVertical: 20, paddingBottom: 40},
   header: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24},
+  brandLockup: {flexDirection: 'row', alignItems: 'center', gap: 8},
+  brandMark: {width: 30, height: 30, resizeMode: 'contain'},
   brand: {color: '#F4F7FB', fontSize: 20, fontWeight: '700'},
   status: {color: '#A3FF12', fontSize: 10, fontWeight: '800', letterSpacing: 1.5},
   athleteSection: {
