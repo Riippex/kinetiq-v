@@ -332,6 +332,7 @@ class VisionRestAdapter:
         payload = {
             "session_id": str(session_id),
             "source_id": source_id,
+            "source_mode": "PUSHED_FRAMES",
             "exercise_key": exercise_key,
             "exercise_version": exercise_version,
             "idempotency_key": idempotency_key,

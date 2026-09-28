@@ -130,6 +130,7 @@ class VisionRestAdapterAnalysesRoutesTests(unittest.TestCase):
         body = json.loads(req.data.decode("utf-8"))
         self.assertEqual(str(session_id), body["session_id"])
         self.assertEqual("camera-front", body["source_id"])
+        self.assertEqual("PUSHED_FRAMES", body["source_mode"])
         self.assertEqual("bodyweight_squat", body["exercise_key"])
         self.assertEqual("idem-1", body["idempotency_key"])
 

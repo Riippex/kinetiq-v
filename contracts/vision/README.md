@@ -8,6 +8,7 @@ This contract defines the boundary between the Kinetiq V product backend and the
 2. **Single Target Identity:** Tracking is bound to an active `session_id`, `epoch`, and `target_person_id`. Distractors or other people in the camera frame never contribute observations to the workout session.
 3. **Pausable Integrity:** When visibility is lost (`OUT_OF_FRAME`, `OCCLUSION`) or ambiguity is detected (`TARGET_AMBIGUOUS`), the Vision service emits the corresponding reason code. The product backend pauses progression without erasing confirmed repetitions.
 4. **Explicit Enrollment:** The phone captures one ephemeral JPEG/PNG still, Product verifies session ownership, and Vision returns normalized person boxes. A human selects the session target; pixels are not treated as identity and are not persisted by this flow.
+5. **Explicit Source Mode:** Product creates phone-camera analyses with `source_mode: PUSHED_FRAMES`; Vision must not resolve the device identifier as a local media filename or start a controlled-media worker. Recorded evaluation clips use `CONTROLLED_MEDIA`.
 
 ## Structure
 
