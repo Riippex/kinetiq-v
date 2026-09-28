@@ -28,6 +28,21 @@ import {TargetEnrollmentCard} from '../features/session/TargetEnrollmentCard';
 
 const endpoint = process.env.EXPO_PUBLIC_KINETIQ_GRAPHQL_URL ?? '';
 const defaultRoutineId = process.env.EXPO_PUBLIC_KINETIQ_DEMO_ROUTINE_ID;
+const displayPairingCodePattern = /^(WEB|FIRE|VEGA)-[A-Z0-9]{6}$/;
+
+function normalizeDisplayPairingCode(value: string) {
+  const compact = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
+  const prefix = ['FIRE', 'VEGA', 'WEB'].find(candidate => compact.startsWith(candidate));
+  if (!prefix) return compact;
+  return `${prefix}-${compact.slice(prefix.length, prefix.length + 6)}`;
+}
+
+function displayNameForCode(code: string) {
+  if (code.startsWith('FIRE-')) return 'Fire TV';
+  if (code.startsWith('VEGA-')) return 'Vega TV';
+  if (code.startsWith('WEB-')) return 'web browser';
+  return null;
+}
 
 export default function HomeScreen() {
   const {authorization, signOut, status} = useAuth();
@@ -66,6 +81,9 @@ function AuthenticatedHome({
   const [pairingCodeInput, setPairingCodeInput] = useState('');
   const [pairingMessage, setPairingMessage] = useState<string | null>(null);
   const [pairing, setPairing] = useState(false);
+  const [pairingSucceeded, setPairingSucceeded] = useState(false);
+  const pairingCodeIsValid = displayPairingCodePattern.test(pairingCodeInput);
+  const pairingDisplayName = displayNameForCode(pairingCodeInput);
 
   useEffect(() => {
     if (!endpoint) return;
@@ -176,15 +194,21 @@ function AuthenticatedHome({
   }
 
   async function handlePairDisplay() {
-    if (!endpoint || !preparedSession || !pairingCodeInput.trim()) {
+    if (!endpoint || !preparedSession) {
+      return;
+    }
+    if (!pairingCodeIsValid) {
+      setPairingSucceeded(false);
+      setPairingMessage('Enter the complete code shown on the display, including its WEB, FIRE, or VEGA prefix.');
       return;
     }
     setPairing(true);
+    setPairingSucceeded(false);
     setPairingMessage(null);
     try {
       const res = await pairDisplayDevice(
         endpoint,
-        pairingCodeInput.trim().toUpperCase(),
+        pairingCodeInput,
         preparedSession.id,
         authorization,
       );
@@ -197,6 +221,7 @@ function AuthenticatedHome({
             : res.state.deviceType === 'VEGA_OS'
               ? 'Vega'
               : 'web';
+        setPairingSucceeded(true);
         setPairingMessage(`Paired with your ${displayName} display.`);
       }
     } catch {
@@ -414,32 +439,56 @@ function AuthenticatedHome({
             <Text style={styles.optionHelp}>
               Enter the code shown on your web, Fire TV, or Vega display to mirror this session.
             </Text>
+            <Text style={styles.pairingInputLabel}>DISPLAY CODE</Text>
             <TextInput
               accessibilityLabel="Display pairing code"
               autoCapitalize="characters"
               autoCorrect={false}
-              onChangeText={setPairingCodeInput}
-              placeholder="e.g. FIRE-A1B2C3"
+              maxLength={16}
+              onChangeText={value => {
+                setPairingCodeInput(normalizeDisplayPairingCode(value));
+                setPairingMessage(null);
+                setPairingSucceeded(false);
+              }}
+              onSubmitEditing={() => {
+                if (pairingCodeIsValid && !pairing) void handlePairDisplay();
+              }}
+              placeholder="WEB-A1B2C3"
               placeholderTextColor="#6B7280"
-              style={styles.pairingInput}
+              returnKeyType="done"
+              selectTextOnFocus
+              style={[styles.pairingInput, pairingCodeIsValid && styles.pairingInputValid]}
               testID="pairing-code-input"
               value={pairingCodeInput}
             />
+            <View style={styles.pairingHintRow}>
+              <Text style={[styles.pairingHint, pairingCodeIsValid && styles.pairingHintValid]}>
+                {pairingDisplayName
+                  ? `${pairingDisplayName} detected${pairingCodeIsValid ? ' · code ready' : ' · enter all 6 characters'}`
+                  : 'Accepted formats: WEB-XXXXXX, FIRE-XXXXXX, VEGA-XXXXXX'}
+              </Text>
+            </View>
             <Pressable
               accessibilityRole="button"
-              disabled={pairing || !pairingCodeInput.trim()}
+              disabled={pairing || !pairingCodeIsValid}
               onPress={handlePairDisplay}
               style={({pressed}) => [
                 styles.pairButton,
                 pressed && styles.buttonPressed,
-                (pairing || !pairingCodeInput.trim()) && styles.buttonDisabled,
+                (pairing || !pairingCodeIsValid) && styles.buttonDisabled,
               ]}
               testID="pair-display-button"
             >
-              <Text style={styles.pairButtonText}>{pairing ? 'Pairing…' : 'Pair Display'}</Text>
+              <Text style={styles.pairButtonText}>
+                {pairing ? 'Pairing…' : pairingDisplayName ? `Pair ${pairingDisplayName}` : 'Pair display'}
+              </Text>
             </Pressable>
             {pairingMessage ? (
-              <Text style={styles.pairingMessage} testID="pairing-message">
+              <Text
+                accessibilityLiveRegion="polite"
+                style={[styles.pairingMessage, pairingSucceeded && styles.pairingMessageSuccess]}
+                testID="pairing-message"
+              >
                 {pairingMessage}
               </Text>
             ) : null}
@@ -708,12 +757,18 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     color: '#F4F7FB',
-    fontSize: 16,
+    fontFamily: 'monospace',
+    fontSize: 20,
     fontWeight: '700',
-    letterSpacing: 1,
-    marginTop: 12,
-    padding: 12,
+    letterSpacing: 2.5,
+    paddingHorizontal: 14,
+    paddingVertical: 15,
   },
+  pairingInputLabel: {color: '#D1D5DB', fontSize: 11, fontWeight: '800', letterSpacing: 1.2, marginBottom: 7, marginTop: 16},
+  pairingInputValid: {borderColor: '#A3FF12'},
+  pairingHintRow: {marginTop: 8, minHeight: 18},
+  pairingHint: {color: '#9CA3AF', fontSize: 12, lineHeight: 18},
+  pairingHintValid: {color: '#A3FF12'},
   pairButton: {
     alignItems: 'center',
     backgroundColor: '#A3FF12',
@@ -722,5 +777,6 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   pairButtonText: {color: '#070B14', fontSize: 14, fontWeight: '800'},
-  pairingMessage: {color: '#D1D5DB', fontSize: 13, marginTop: 10},
+  pairingMessage: {color: '#FCA5A5', fontSize: 13, lineHeight: 19, marginTop: 10},
+  pairingMessageSuccess: {color: '#A3FF12'},
 });
