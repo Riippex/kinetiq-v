@@ -10,6 +10,7 @@ from kinetiq.modules.workouts.application.ports import (
     SessionLifecycleRepository,
     UnknownVisionCandidateError,
     VisionCandidateInfo,
+    VisionExerciseKeyLookup,
     VisionSessionAnalysisPort,
 )
 from kinetiq.modules.workouts.domain import (
@@ -365,7 +366,11 @@ class AbandonWorkoutSessionUseCase(BaseSessionLifecycleUseCase):
 
 
 def _resolve_exercise_key(
-    *, routine_items: RoutineItemLookup, owner_id: UUID, session: WorkoutSession
+    *,
+    routine_items: RoutineItemLookup,
+    vision_exercises: VisionExerciseKeyLookup,
+    owner_id: UUID,
+    session: WorkoutSession,
 ) -> str:
     items = routine_items.get_accepted_routine_items(
         owner_id=owner_id, routine_id=session.routine_id, version=session.routine_version
@@ -375,16 +380,17 @@ def _resolve_exercise_key(
             f"No accepted routine items found for session '{session.id}'; "
             "cannot determine which exercise to start a Vision analysis for"
         )
-    # Simplification, disclosed: one Vision analysis per session is
-    # started against the routine's first prescribed exercise. Catalog
-    # exercise IDs and Vision's exercise_key vocabulary are the same
-    # reconciled strings (bodyweight_squat, push_up, plank,
-    # glute_bridge -- see VV-101/contract adoption), so this is a
-    # direct pass-through, not a guess. Per-exercise Vision analysis
-    # switching as the session progresses through the routine is not
-    # implemented; the same analysis (and its exercise_key) is reused
-    # for the whole session until VV-501 exercise engines exist.
-    return items[0].exercise_id
+    # One Vision analysis currently tracks the routine's first prescribed
+    # exercise. Product catalog IDs are stable business identifiers, while
+    # Vision owns a separate canonical exercise-key vocabulary; resolve that
+    # boundary explicitly instead of deriving or forwarding the catalog ID.
+    exercise_id = items[0].exercise_id
+    exercise_key = vision_exercises.get_vision_exercise_key(exercise_id)
+    if exercise_key is None:
+        raise ValueError(
+            f"Exercise '{exercise_id}' is not configured for Vision analysis"
+        )
+    return exercise_key
 
 
 class StartSessionVisionAnalysisUseCase(BaseSessionLifecycleUseCase):
@@ -409,10 +415,12 @@ class StartSessionVisionAnalysisUseCase(BaseSessionLifecycleUseCase):
         repository: SessionLifecycleRepository,
         vision_client: VisionSessionAnalysisPort,
         routine_items: RoutineItemLookup,
+        vision_exercises: VisionExerciseKeyLookup,
     ) -> None:
         super().__init__(repository)
         self._vision = vision_client
         self._routine_items = routine_items
+        self._vision_exercises = vision_exercises
 
     def execute(self, *, owner_id: UUID, command: SessionLifecycleCommand) -> WorkoutSession:
         if not command.idempotency_key.strip():
@@ -454,7 +462,10 @@ class StartSessionVisionAnalysisUseCase(BaseSessionLifecycleUseCase):
                 return session
 
             exercise_key = _resolve_exercise_key(
-                routine_items=self._routine_items, owner_id=owner_id, session=session
+                routine_items=self._routine_items,
+                vision_exercises=self._vision_exercises,
+                owner_id=owner_id,
+                session=session,
             )
             # Deterministic idempotency key: retries or concurrent requests
             # for the same session must not create duplicate Vision

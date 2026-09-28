@@ -147,6 +147,12 @@ class RoutineItemLookup(Protocol):
     ) -> tuple[AcceptedRoutineItem, ...] | None: ...
 
 
+class VisionExerciseKeyLookup(Protocol):
+    """Resolves a product catalog exercise ID to Vision's canonical key."""
+
+    def get_vision_exercise_key(self, exercise_id: str) -> str | None: ...
+
+
 class UserProfileLookup(Protocol):
     """Read-only boundary onto the profiles module, scoped to retrieving
     user exclusions for challenge policy evaluation.

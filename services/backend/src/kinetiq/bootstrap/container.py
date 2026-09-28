@@ -167,7 +167,10 @@ def confirm_session_target() -> ConfirmSessionTargetUseCase:
 
 def start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
     return StartSessionVisionAnalysisUseCase(
-        DjangoSessionLifecycleRepository(), get_vision_rest_adapter(), DjangoRoutineItemLookup()
+        DjangoSessionLifecycleRepository(),
+        get_vision_rest_adapter(),
+        DjangoRoutineItemLookup(),
+        DjangoCatalogRepository(),
     )
 
 

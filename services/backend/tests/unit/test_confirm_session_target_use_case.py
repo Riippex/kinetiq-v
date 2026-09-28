@@ -136,6 +136,14 @@ class FakeRoutineItemLookup:
         return self._items
 
 
+class FakeVisionExerciseKeyLookup:
+    def __init__(self, keys: dict[str, str] | None = None) -> None:
+        self._keys = keys or {"bodyweight_squat": "bodyweight_squat"}
+
+    def get_vision_exercise_key(self, exercise_id: str) -> str | None:
+        return self._keys.get(exercise_id)
+
+
 class FakeVisionSessionAnalysisPort:
     def __init__(
         self,
@@ -146,6 +154,7 @@ class FakeVisionSessionAnalysisPort:
         self.candidates = candidates
         self.select_target_error = select_target_error
         self.create_analysis_calls = 0
+        self.create_analysis_exercise_keys: list[str] = []
         self.list_candidates_calls = 0
         self.select_target_calls: list[tuple[str, str, int]] = []
         self.ingest_frame_calls: list[tuple[str, str, int, float]] = []
@@ -160,6 +169,7 @@ class FakeVisionSessionAnalysisPort:
         idempotency_key: str,
     ) -> VisionAnalysisHandle:
         self.create_analysis_calls += 1
+        self.create_analysis_exercise_keys.append(exercise_key)
         return VisionAnalysisHandle(analysis_id="an_fake_1", epoch=1, state="AWAITING_SELECTION")
 
     def list_candidates(self, *, analysis_id: str) -> tuple[VisionCandidateInfo, ...]:
@@ -283,7 +293,10 @@ def test_start_vision_analysis_creates_and_persists_analysis() -> None:
     session = ready_session()
     vision = FakeVisionSessionAnalysisPort()
     use_case = StartSessionVisionAnalysisUseCase(
-        FakeSessionLifecycleRepository(session), vision, FakeRoutineItemLookup(ROUTINE_ITEMS)
+        FakeSessionLifecycleRepository(session),
+        vision,
+        FakeRoutineItemLookup(ROUTINE_ITEMS),
+        FakeVisionExerciseKeyLookup(),
     )
 
     started = use_case.execute(owner_id=session.owner_id, command=make_start_command(session))
@@ -294,6 +307,30 @@ def test_start_vision_analysis_creates_and_persists_analysis() -> None:
     assert vision.create_analysis_calls == 1
 
 
+def test_start_vision_analysis_resolves_catalog_id_to_canonical_vision_key() -> None:
+    session = ready_session()
+    vision = FakeVisionSessionAnalysisPort()
+    routine_items = (
+        AcceptedRoutineItem(
+            exercise_id="exercise-bodyweight-squat-v1",
+            repetitions=10,
+            duration_seconds=None,
+        ),
+    )
+    use_case = StartSessionVisionAnalysisUseCase(
+        FakeSessionLifecycleRepository(session),
+        vision,
+        FakeRoutineItemLookup(routine_items),
+        FakeVisionExerciseKeyLookup(
+            {"exercise-bodyweight-squat-v1": "bodyweight_squat"}
+        ),
+    )
+
+    use_case.execute(owner_id=session.owner_id, command=make_start_command(session))
+
+    assert vision.create_analysis_exercise_keys == ["bodyweight_squat"]
+
+
 def test_start_vision_analysis_retry_does_not_leak_a_second_analysis() -> None:
     """Regression test: retrying the exact same start command (same
     idempotency key) must resolve to the already-persisted analysis, not
@@ -301,7 +338,9 @@ def test_start_vision_analysis_retry_does_not_leak_a_second_analysis() -> None:
     session = ready_session()
     vision = FakeVisionSessionAnalysisPort()
     repo = FakeSessionLifecycleRepository(session)
-    use_case = StartSessionVisionAnalysisUseCase(repo, vision, FakeRoutineItemLookup(ROUTINE_ITEMS))
+    use_case = StartSessionVisionAnalysisUseCase(
+        repo, vision, FakeRoutineItemLookup(ROUTINE_ITEMS), FakeVisionExerciseKeyLookup()
+    )
 
     command = make_start_command(session)
     first = use_case.execute(owner_id=session.owner_id, command=command)
@@ -319,7 +358,10 @@ def test_start_vision_analysis_rejects_stale_revision_without_calling_vision() -
     session = ready_session()
     vision = FakeVisionSessionAnalysisPort()
     use_case = StartSessionVisionAnalysisUseCase(
-        FakeSessionLifecycleRepository(session), vision, FakeRoutineItemLookup(ROUTINE_ITEMS)
+        FakeSessionLifecycleRepository(session),
+        vision,
+        FakeRoutineItemLookup(ROUTINE_ITEMS),
+        FakeVisionExerciseKeyLookup(),
     )
 
     stale_command = SessionLifecycleCommand(
@@ -338,7 +380,10 @@ def test_start_vision_analysis_already_started_is_a_local_no_op() -> None:
     session = session_with_analysis(analysis_id="an_existing", epoch=3)
     vision = FakeVisionSessionAnalysisPort()
     use_case = StartSessionVisionAnalysisUseCase(
-        FakeSessionLifecycleRepository(session), vision, FakeRoutineItemLookup(ROUTINE_ITEMS)
+        FakeSessionLifecycleRepository(session),
+        vision,
+        FakeRoutineItemLookup(ROUTINE_ITEMS),
+        FakeVisionExerciseKeyLookup(),
     )
 
     result = use_case.execute(owner_id=session.owner_id, command=make_start_command(session))
@@ -512,7 +557,9 @@ def test_start_vision_analysis_fails_fast_when_lease_already_held() -> None:
     session = ready_session()
     vision = FakeVisionSessionAnalysisPort()
     repo = FakeSessionLifecycleRepository(session, lease_held=True)
-    use_case = StartSessionVisionAnalysisUseCase(repo, vision, FakeRoutineItemLookup(ROUTINE_ITEMS))
+    use_case = StartSessionVisionAnalysisUseCase(
+        repo, vision, FakeRoutineItemLookup(ROUTINE_ITEMS), FakeVisionExerciseKeyLookup()
+    )
 
     with pytest.raises(VisionOperationInProgressError):
         use_case.execute(owner_id=session.owner_id, command=make_start_command(session))

@@ -71,6 +71,13 @@ class DjangoCatalogRepository(CatalogRepository):
         except ExerciseRecord.DoesNotExist:
             return None
 
+    def get_vision_exercise_key(self, exercise_id: str) -> str | None:
+        return (
+            ExerciseRecord.objects.filter(code=exercise_id, vision_supported=True)
+            .values_list("vision_exercise_key", flat=True)
+            .first()
+        )
+
     def list_exercises(
         self, equipment: str | None = None, vision_supported: bool | None = None
     ) -> list[Exercise]:

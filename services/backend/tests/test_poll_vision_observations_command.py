@@ -47,6 +47,11 @@ class _FakeVisionSessionAnalysisPort:
         )
 
 
+class _FakeVisionExerciseKeyLookup:
+    def get_vision_exercise_key(self, exercise_id: str) -> str | None:
+        return "bodyweight_squat"
+
+
 class _FakeVisionObservationSourcePort:
     def __init__(self, page: VisionObservationsPage) -> None:
         self.page = page
@@ -72,6 +77,7 @@ def _fake_start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
         DjangoSessionLifecycleRepository(),
         _FakeVisionSessionAnalysisPort(),
         DjangoRoutineItemLookup(),
+        _FakeVisionExerciseKeyLookup(),
     )
 
 

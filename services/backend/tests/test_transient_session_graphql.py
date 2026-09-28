@@ -59,6 +59,11 @@ class _FakeVisionSessionAnalysisPort:
         )
 
 
+class _FakeVisionExerciseKeyLookup:
+    def get_vision_exercise_key(self, exercise_id: str) -> str | None:
+        return "bodyweight_squat"
+
+
 def _fake_confirm_session_target() -> ConfirmSessionTargetUseCase:
     return ConfirmSessionTargetUseCase(
         DjangoSessionLifecycleRepository(),
@@ -71,6 +76,7 @@ def _fake_start_session_vision_analysis() -> StartSessionVisionAnalysisUseCase:
         DjangoSessionLifecycleRepository(),
         _FakeVisionSessionAnalysisPort(),
         DjangoRoutineItemLookup(),
+        _FakeVisionExerciseKeyLookup(),
     )
 
 
