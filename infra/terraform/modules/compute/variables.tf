@@ -79,6 +79,16 @@ variable "django_secret_key_arn" {
   type        = string
 }
 
+variable "vision_service_endpoint" {
+  description = "Private HTTP endpoint for the Vision service"
+  type        = string
+}
+
+variable "vision_service_credential_arn" {
+  description = "Secrets Manager ARN containing the product-to-Vision service credential"
+  type        = string
+}
+
 variable "cognito_issuer_url" {
   description = "Cognito OIDC issuer URL"
   type        = string

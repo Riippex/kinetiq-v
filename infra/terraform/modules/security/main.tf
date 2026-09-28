@@ -114,6 +114,16 @@ resource "aws_security_group_rule" "ecs_elasticache_out" {
   description              = "Allow outbound to ElastiCache Redis on port 6379"
 }
 
+resource "aws_security_group_rule" "ecs_vision_out" {
+  type                     = "egress"
+  security_group_id        = aws_security_group.ecs_tasks.id
+  from_port                = 8000
+  to_port                  = 8000
+  protocol                 = "tcp"
+  source_security_group_id = var.vision_security_group_id
+  description              = "Allow backend commands to the private Vision service on port 8000"
+}
+
 # RDS PostgreSQL Security Group
 resource "aws_security_group" "rds" {
   name        = "${var.project}-${var.environment}-rds-sg"

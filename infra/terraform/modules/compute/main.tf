@@ -315,6 +315,7 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "MCP_OIDC_JWKS_URL", value = var.cognito_jwks_url },
         { name = "MCP_OIDC_REQUIRED_SCOPE", value = "kinetiq/coach" },
         { name = "MCP_OIDC_TOKEN_USE", value = "access" },
+        { name = "VISION_BASE_URL", value = var.vision_service_endpoint },
         # Derived from the same canonical origin as everything else --
         # never hardcoded to https:// when no HTTPS listener/edge exists.
         { name = "MCP_RESOURCE_URL", value = "${local.public_origin}/mcp" }
@@ -332,6 +333,10 @@ resource "aws_ecs_task_definition" "backend" {
         {
           name      = "REDIS_URL"
           valueFrom = "${var.redis_secret_arn}:redis_url::"
+        },
+        {
+          name      = "VISION_SERVICE_CREDENTIAL"
+          valueFrom = var.vision_service_credential_arn
         }
       ]
 

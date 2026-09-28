@@ -10,6 +10,12 @@ project     = "kinetiq-v"
 single_nat_gateway = true # Save ~$32/mo by using 1 NAT Gateway across subnets
 use_fargate_spot   = true # Save ~70% on ECS compute costs using Spot
 
+# Private product-to-Vision integration. Deploy Vision in this VPC first, then
+# use its Cloud Map endpoint and the exact Secrets Manager ARN it exposes.
+vision_service_endpoint              = "http://kinetiq-v-vision-staging.vision.internal:8000"
+vision_service_credential_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:kinetiq-v-vision/staging/service-credential-example"
+vision_security_group_id              = "sg-0123456789abcdef0"
+
 # Safe first deployment. Keep true for the initial apply so ECS does not try
 # to pull images before the new ECR repositories contain them. After pushing
 # both images and successfully running the migration task, change to false,

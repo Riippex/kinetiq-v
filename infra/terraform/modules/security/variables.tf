@@ -13,3 +13,8 @@ variable "vpc_id" {
   description = "The ID of the VPC"
   type        = string
 }
+
+variable "vision_security_group_id" {
+  description = "Security group attached to the private Vision ECS tasks"
+  type        = string
+}

@@ -141,6 +141,36 @@ variable "web_image_tag" {
   default     = "latest"
 }
 
+variable "vision_service_endpoint" {
+  description = "Private HTTP endpoint for the independently deployed Vision service"
+  type        = string
+
+  validation {
+    condition     = can(regex("^http://[^/]+:[0-9]+$", var.vision_service_endpoint))
+    error_message = "vision_service_endpoint must be a private HTTP origin including its port, for example http://vision.internal:8000."
+  }
+}
+
+variable "vision_service_credential_secret_arn" {
+  description = "Secrets Manager ARN containing the shared product-to-Vision service credential"
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$", var.vision_service_credential_secret_arn))
+    error_message = "vision_service_credential_secret_arn must be a Secrets Manager secret ARN."
+  }
+}
+
+variable "vision_security_group_id" {
+  description = "Security group attached to the private Vision ECS tasks"
+  type        = string
+
+  validation {
+    condition     = can(regex("^sg-[0-9a-f]+$", var.vision_security_group_id))
+    error_message = "vision_security_group_id must be an AWS security group ID."
+  }
+}
+
 variable "bootstrap_mode" {
   description = "Safe first-deployment mode: provision compute with ECS desired counts at zero and the media-cleanup schedule disabled until images and migrations are ready"
   type        = bool
