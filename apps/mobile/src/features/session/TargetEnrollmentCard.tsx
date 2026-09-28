@@ -16,6 +16,13 @@ interface Props {
   onSessionChange: (session: PreparedSession) => void;
 }
 
+interface CapturedEnrollmentFrame {
+  base64: string;
+  uri: string;
+  width: number;
+  height: number;
+}
+
 export function TargetEnrollmentCard({authorization, endpoint, session, onSessionChange}: Props) {
   const camera = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
@@ -29,6 +36,8 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
   const [capturedAspectRatio, setCapturedAspectRatio] = useState(3 / 4);
   const [pictureSize, setPictureSize] = useState<string | undefined>();
   const [cameraReady, setCameraReady] = useState(false);
+  const [cameraOpened, setCameraOpened] = useState(false);
+  const [pendingFrame, setPendingFrame] = useState<CapturedEnrollmentFrame | null>(null);
 
   async function configureCamera() {
     const sizes = (await camera.current?.getAvailablePictureSizesAsync()) ?? [];
@@ -55,20 +64,60 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
           return;
         }
       }
-      const result = await startSessionVisionAnalysis(endpoint, {
-        sessionId: session.id,
-        expectedRevision: session.revision,
-        idempotencyKey: `enrollment-${session.id}`,
+      setCameraOpened(true);
+    } catch {
+      setMessage('The camera could not be opened. Check the permission and try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function processEnrollmentFrame(picture: CapturedEnrollmentFrame) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      let activeSession = analysisSession;
+      if (!analysisStarted) {
+        const analysisResult = await startSessionVisionAnalysis(endpoint, {
+          sessionId: session.id,
+          expectedRevision: session.revision,
+          idempotencyKey: `enrollment-${session.id}`,
+        }, authorization);
+        if (!analysisResult.session) {
+          setMessage(
+            analysisResult.errors[0]?.message ??
+              'Vision is unavailable. Your frame is ready; retry when the service reconnects.',
+          );
+          return;
+        }
+        activeSession = analysisResult.session;
+        setAnalysisSession(activeSession);
+        setAnalysisStarted(true);
+        onSessionChange(activeSession);
+      }
+
+      const nextFrame = frameIndex + 1;
+      const result = await submitVisionEnrollmentFrame(endpoint, {
+        sessionId: activeSession.id,
+        imageBase64: picture.base64,
+        frameIndex: nextFrame,
+        timestampMs: Date.now(),
       }, authorization);
-      if (!result.session) {
-        setMessage(result.errors[0]?.message ?? 'Could not start Vision enrollment.');
+      if (result.errors.length) {
+        setMessage(result.errors[0].message);
         return;
       }
-      setAnalysisSession(result.session);
-      setAnalysisStarted(true);
-      onSessionChange(result.session);
+      setFrameIndex(nextFrame);
+      setCandidates(result.candidates);
+      if (!result.candidates.length) {
+        setMessage('No person was found. Keep your full body visible and retake the frame.');
+      } else if (result.candidates.length > 1) {
+        setMessage('Several people were found. Tap the box around you.');
+      } else {
+        setMessage('One person found. Tap the highlighted box to confirm it is you.');
+      }
     } catch {
-      setMessage('Could not reach Vision. Check the connection and try again.');
+      setMessage('The enrollment frame could not be processed. Try again.');
     } finally {
       setBusy(false);
     }
@@ -83,30 +132,18 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
         setMessage('The camera did not return a usable frame. Try again.');
         return;
       }
-      const nextFrame = frameIndex + 1;
-      const result = await submitVisionEnrollmentFrame(endpoint, {
-        sessionId: analysisSession.id,
-        imageBase64: picture.base64,
-        frameIndex: nextFrame,
-        timestampMs: Date.now(),
-      }, authorization);
-      if (result.errors.length) {
-        setMessage(result.errors[0].message);
-        return;
-      }
-      setFrameIndex(nextFrame);
-      setPreviewUri(picture.uri);
-      setCapturedAspectRatio(picture.width / picture.height);
-      setCandidates(result.candidates);
-      if (!result.candidates.length) {
-        setMessage('No person was found. Keep your full body visible and retake the frame.');
-      } else if (result.candidates.length > 1) {
-        setMessage('Several people were found. Tap the box around you.');
-      } else {
-        setMessage('One person found. Tap the highlighted box to confirm it is you.');
-      }
+      const captured = {
+        base64: picture.base64,
+        uri: picture.uri,
+        width: picture.width,
+        height: picture.height,
+      };
+      setPendingFrame(captured);
+      setPreviewUri(captured.uri);
+      setCapturedAspectRatio(captured.width / captured.height);
+      await processEnrollmentFrame(captured);
     } catch {
-      setMessage('The enrollment frame could not be processed. Try again.');
+      setMessage('The camera could not capture a frame. Try again.');
     } finally {
       setBusy(false);
     }
@@ -158,7 +195,7 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
         This frame is used only for this session enrollment and is not saved as a progress photo.
       </Text>
 
-      {!analysisStarted ? (
+      {!cameraOpened ? (
         <ActionButton
           disabled={busy}
           label={busy ? 'Starting…' : 'Open camera'}
@@ -199,21 +236,26 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
         </CameraView>
       )}
 
-      {analysisStarted ? (
+      {cameraOpened ? (
         <ActionButton
           disabled={busy || (!previewUri && !cameraReady)}
           label={
             busy
               ? 'Processing…'
-              : previewUri
-                ? 'Retake frame'
+              : previewUri && !analysisStarted
+                ? 'Retry Vision'
+                : previewUri
+                  ? 'Retake frame'
                 : cameraReady
                   ? 'Capture enrollment frame'
                   : 'Preparing camera…'
           }
           onPress={() => {
-            if (previewUri) {
+            if (previewUri && !analysisStarted && pendingFrame) {
+              void processEnrollmentFrame(pendingFrame);
+            } else if (previewUri) {
               setPreviewUri(null);
+              setPendingFrame(null);
               setCandidates([]);
               setMessage(null);
               setCameraReady(false);
