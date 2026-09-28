@@ -191,7 +191,12 @@ function AuthenticatedHome({
       if (res.errors.length) {
         setPairingMessage(res.errors[0].message);
       } else if (res.state) {
-        const displayName = res.state.deviceType === 'FIRE_TV' ? 'Fire TV' : 'Vega';
+        const displayName =
+          res.state.deviceType === 'FIRE_TV'
+            ? 'Fire TV'
+            : res.state.deviceType === 'VEGA_OS'
+              ? 'Vega'
+              : 'web';
         setPairingMessage(`Paired with your ${displayName} display.`);
       }
     } catch {
@@ -407,7 +412,7 @@ function AuthenticatedHome({
           <View style={styles.pairingSection} testID="pairing-section">
             <Text style={styles.athleteEyebrow}>PAIR A DISPLAY</Text>
             <Text style={styles.optionHelp}>
-              Enter the code shown on your Fire TV or Vega display to mirror this session.
+              Enter the code shown on your web, Fire TV, or Vega display to mirror this session.
             </Text>
             <TextInput
               accessibilityLabel="Display pairing code"

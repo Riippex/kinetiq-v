@@ -172,6 +172,7 @@ class DynamicChallengeStatusType(Enum):
 class DisplayDeviceTypeType(Enum):
     FIRE_TV = "FIRE_TV"
     VEGA_OS = "VEGA_OS"
+    WEB = "WEB"
 
 
 @strawberry.enum(name="DisplayPairingStatus")
@@ -536,7 +537,7 @@ class PrepareSessionInput:
     dynamic: DynamicSessionConfigurationInput | None = None
 
 
-@strawberry.input
+@strawberry.input(name="SessionCommand")
 class SessionCommandInput:
     session_id: strawberry.ID
     expected_revision: int

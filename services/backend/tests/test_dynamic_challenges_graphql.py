@@ -16,7 +16,7 @@ mutation PrepareDynamicSession($input: PrepareSessionInput!) {
 """
 
 START_SESSION = """
-mutation StartSession($command: SessionCommandInput!) {
+mutation StartSession($command: SessionCommand!) {
   startSession(command: $command) {
     session { id revision state }
     errors { code message field }

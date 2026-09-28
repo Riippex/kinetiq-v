@@ -26,7 +26,7 @@ mutation PrepareSession($input: PrepareSessionInput!) {
 """
 
 START_SESSION = """
-mutation StartSession($command: SessionCommandInput!) {
+mutation StartSession($command: SessionCommand!) {
   startSession(command: $command) {
     session {
       id
@@ -40,7 +40,7 @@ mutation StartSession($command: SessionCommandInput!) {
 
 FINISH_SESSION = """
 mutation FinishSession(
-  $command: SessionCommandInput!
+  $command: SessionCommand!
   $performedSets: [PerformedSetInput!]
   $observationCoverage: ObservationCoverageInput
   $feedback: SessionFeedbackInput
@@ -81,7 +81,7 @@ mutation FinishSession(
 
 RECORD_FEEDBACK = """
 mutation RecordSessionFeedback(
-  $command: SessionCommandInput!
+  $command: SessionCommand!
   $feedback: SessionFeedbackInput!
 ) {
   recordSessionFeedback(

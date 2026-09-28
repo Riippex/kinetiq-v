@@ -120,6 +120,21 @@ def test_issue_display_pairing_code_is_not_predictable(client: Client) -> None:
     assert state_data["sessionId"] is None
 
 
+def test_issue_web_display_pairing_code_uses_web_contract(client: Client) -> None:
+    code = _issue_code(client, "WEB")
+
+    assert code.startswith("WEB-")
+
+    state_resp = client.post(
+        "/graphql/",
+        data={"query": STATE_QUERY, "variables": {"code": code}},
+        content_type="application/json",
+    )
+    state_data = state_resp.json()["data"]["displaySessionState"]
+    assert state_data["deviceType"] == "WEB"
+    assert state_data["status"] == "UNPAIRED"
+
+
 def test_pair_display_device_with_real_session_and_transient_update(
     athlete: User,
 ) -> None:

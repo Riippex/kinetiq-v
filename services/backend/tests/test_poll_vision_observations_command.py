@@ -91,7 +91,7 @@ mutation PrepareSession($input: PrepareSessionInput!) {
 """
 
 START_SESSION = """
-mutation StartSession($command: SessionCommandInput!) {
+mutation StartSession($command: SessionCommand!) {
   startSession(command: $command) {
     session { id revision state }
     errors { code message field }
@@ -100,7 +100,7 @@ mutation StartSession($command: SessionCommandInput!) {
 """
 
 START_ANALYSIS = """
-mutation StartSessionVisionAnalysis($command: SessionCommandInput!) {
+mutation StartSessionVisionAnalysis($command: SessionCommand!) {
   startSessionVisionAnalysis(command: $command) {
     session { id revision state }
     errors { code message field }
@@ -109,7 +109,7 @@ mutation StartSessionVisionAnalysis($command: SessionCommandInput!) {
 """
 
 CONFIRM_TARGET = """
-mutation ConfirmSessionTarget($command: SessionCommandInput!, $targetPersonId: String!) {
+mutation ConfirmSessionTarget($command: SessionCommand!, $targetPersonId: String!) {
   confirmSessionTarget(command: $command, targetPersonId: $targetPersonId) {
     session { id revision state }
     errors { code message field }

@@ -81,7 +81,7 @@ def _confirm_target(
     of the split target-enrollment lifecycle) and then confirms a target,
     bumping the revision once for each of those two steps."""
     start_mutation = """
-    mutation StartSessionVisionAnalysis($command: SessionCommandInput!) {
+    mutation StartSessionVisionAnalysis($command: SessionCommand!) {
       startSessionVisionAnalysis(command: $command) {
         session { id revision }
         errors { code message field }
@@ -107,7 +107,7 @@ def _confirm_target(
     assert start_result.data["startSessionVisionAnalysis"]["errors"] == []
 
     confirm_mutation = """
-    mutation ConfirmSessionTarget($command: SessionCommandInput!, $targetPersonId: String!) {
+    mutation ConfirmSessionTarget($command: SessionCommand!, $targetPersonId: String!) {
       confirmSessionTarget(command: $command, targetPersonId: $targetPersonId) {
         session { id revision }
         errors { code message field }
@@ -289,7 +289,7 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
 
     # Start session
     start_mutation = """
-    mutation StartSession($command: SessionCommandInput!) {
+    mutation StartSession($command: SessionCommand!) {
       startSession(command: $command) {
         session { id revision state }
         errors { code message field }
@@ -311,7 +311,7 @@ def test_redis_loss_degrades_gracefully_and_restores_committed_state():
     # Finish session with committed performance
     finish_mutation = """
     mutation FinishSession(
-      $command: SessionCommandInput!
+      $command: SessionCommand!
       $performedSets: [PerformedSetInput!]
     ) {
       finishSession(command: $command, performedSets: $performedSets) {

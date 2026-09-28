@@ -8,6 +8,7 @@ from typing import Protocol
 class DisplayDeviceType(StrEnum):
     FIRE_TV = "FIRE_TV"
     VEGA_OS = "VEGA_OS"
+    WEB = "WEB"
 
 
 class DisplayPairingStatus(StrEnum):

@@ -125,7 +125,7 @@ mutation PrepareSession($input: PrepareSessionInput!) {
 """
 
 START_SESSION = """
-mutation StartSession($command: SessionCommandInput!) {
+mutation StartSession($command: SessionCommand!) {
   startSession(command: $command) {
     session {
       id
@@ -143,7 +143,7 @@ mutation StartSession($command: SessionCommandInput!) {
 """
 
 PAUSE_SESSION = """
-mutation PauseSession($command: SessionCommandInput!) {
+mutation PauseSession($command: SessionCommand!) {
   pauseSession(command: $command) {
     session {
       id
@@ -161,7 +161,7 @@ mutation PauseSession($command: SessionCommandInput!) {
 """
 
 RESUME_SESSION = """
-mutation ResumeSession($command: SessionCommandInput!) {
+mutation ResumeSession($command: SessionCommand!) {
   resumeSession(command: $command) {
     session {
       id
@@ -179,7 +179,7 @@ mutation ResumeSession($command: SessionCommandInput!) {
 """
 
 START_SESSION_VISION_ANALYSIS = """
-mutation StartSessionVisionAnalysis($command: SessionCommandInput!) {
+mutation StartSessionVisionAnalysis($command: SessionCommand!) {
   startSessionVisionAnalysis(command: $command) {
     session {
       id
@@ -192,7 +192,7 @@ mutation StartSessionVisionAnalysis($command: SessionCommandInput!) {
 """
 
 CONFIRM_SESSION_TARGET = """
-mutation ConfirmSessionTarget($command: SessionCommandInput!, $targetPersonId: String!) {
+mutation ConfirmSessionTarget($command: SessionCommand!, $targetPersonId: String!) {
   confirmSessionTarget(command: $command, targetPersonId: $targetPersonId) {
     session {
       id
@@ -210,7 +210,7 @@ mutation ConfirmSessionTarget($command: SessionCommandInput!, $targetPersonId: S
 """
 
 DISABLE_DYNAMIC_MODE = """
-mutation DisableDynamicMode($command: SessionCommandInput!) {
+mutation DisableDynamicMode($command: SessionCommand!) {
   disableDynamicMode(command: $command) {
     session {
       id
@@ -228,7 +228,7 @@ mutation DisableDynamicMode($command: SessionCommandInput!) {
 """
 
 FINISH_SESSION = """
-mutation FinishSession($command: SessionCommandInput!) {
+mutation FinishSession($command: SessionCommand!) {
   finishSession(command: $command) {
     session {
       id
@@ -246,7 +246,7 @@ mutation FinishSession($command: SessionCommandInput!) {
 """
 
 ABANDON_SESSION = """
-mutation AbandonSession($command: SessionCommandInput!) {
+mutation AbandonSession($command: SessionCommand!) {
   abandonSession(command: $command) {
     session {
       id

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { type Routine } from "@kinetiq/session-client";
 import { SessionPreparationDialog } from "@/features/session-preparation/SessionPreparationDialog";
 import { AuthControls } from "@/features/auth/AuthControls";
+import { WebDisplayCard } from "@/features/display-pairing/WebDisplayCard";
 import { OnboardingCard } from "@/features/onboarding/OnboardingCard";
 import { RoutinePlanningCard } from "@/features/routines/RoutinePlanningCard";
 
@@ -40,6 +41,7 @@ export default function Home() {
             <OnboardingCard />
             <RoutinePlanningCard onRoutineAccepted={setAcceptedRoutine} />
             <SessionPreparationDialog acceptedRoutine={acceptedRoutine} />
+            <WebDisplayCard />
           </div>
         </section>
 

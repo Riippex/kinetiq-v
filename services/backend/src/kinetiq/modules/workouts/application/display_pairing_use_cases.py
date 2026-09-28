@@ -48,7 +48,11 @@ class IssueDisplayPairingCodeUseCase:
     def execute(self, device_type: DisplayDeviceType) -> DisplayPairingCode:
         now = datetime.now(UTC)
         expires_at = now + timedelta(minutes=15)
-        prefix = "FIRE" if device_type == DisplayDeviceType.FIRE_TV else "VEGA"
+        prefix = {
+            DisplayDeviceType.FIRE_TV: "FIRE",
+            DisplayDeviceType.VEGA_OS: "VEGA",
+            DisplayDeviceType.WEB: "WEB",
+        }[device_type]
 
         # Always generate a real random code and never fall back to a
         # fixed, predictable default: a guessable pairing code would let

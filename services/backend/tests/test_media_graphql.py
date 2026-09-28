@@ -88,7 +88,7 @@ mutation DeletePhoto($photoId: ID!) {
 """
 
 FINISH_SESSION_MUTATION = """
-mutation FinishSession($command: SessionCommandInput!, $performedSets: [PerformedSetInput!]) {
+mutation FinishSession($command: SessionCommand!, $performedSets: [PerformedSetInput!]) {
   finishSession(command: $command, performedSets: $performedSets) {
     session {
       id
