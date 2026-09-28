@@ -38,6 +38,7 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraOpened, setCameraOpened] = useState(false);
   const [pendingFrame, setPendingFrame] = useState<CapturedEnrollmentFrame | null>(null);
+  const [cameraFacing, setCameraFacing] = useState<'back' | 'front'>('back');
 
   async function configureCamera() {
     const sizes = (await camera.current?.getAvailablePictureSizesAsync()) ?? [];
@@ -226,12 +227,24 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
         </View>
       ) : (
         <CameraView
-          facing="back"
+          facing={cameraFacing}
           onCameraReady={() => void configureCamera()}
           pictureSize={pictureSize}
           ref={camera}
           style={styles.cameraPreview}
         >
+          <Pressable
+            accessibilityLabel={`Use ${cameraFacing === 'back' ? 'front' : 'back'} camera`}
+            disabled={busy}
+            onPress={() => {
+              setCameraReady(false);
+              setPictureSize(undefined);
+              setCameraFacing(current => (current === 'back' ? 'front' : 'back'));
+            }}
+            style={({pressed}) => [styles.flipButton, pressed && styles.flipButtonPressed]}
+          >
+            <Text style={styles.flipButtonText}>Flip camera</Text>
+          </Pressable>
           <View style={styles.guide} />
         </CameraView>
       )}
@@ -287,6 +300,9 @@ const styles = StyleSheet.create({
   previewWrap: {borderRadius: 14, marginTop: 16, overflow: 'hidden', position: 'relative', width: '100%'},
   capturedPreview: {height: '100%', width: '100%'},
   cameraPreview: {borderRadius: 14, height: 360, marginTop: 16, overflow: 'hidden', width: '100%'},
+  flipButton: {backgroundColor: 'rgba(7, 11, 20, 0.82)', borderColor: '#A3FF12', borderRadius: 999, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 9, position: 'absolute', right: 12, top: 12, zIndex: 1},
+  flipButtonPressed: {opacity: 0.72},
+  flipButtonText: {color: '#F4F7FB', fontSize: 12, fontWeight: '800'},
   guide: {alignSelf: 'center', borderColor: '#A3FF12', borderRadius: 120, borderWidth: 2, height: 300, marginTop: 28, width: '72%'},
   candidateBox: {borderColor: '#A3FF12', borderWidth: 3, position: 'absolute'},
   confidence: {alignSelf: 'flex-start', backgroundColor: '#A3FF12', color: '#070B14', fontSize: 11, fontWeight: '800', paddingHorizontal: 5, paddingVertical: 2},
