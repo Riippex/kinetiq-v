@@ -1,12 +1,13 @@
 import {
   confirmSessionTarget,
+  startSession,
   startSessionVisionAnalysis,
   submitVisionEnrollmentFrame,
   type PreparedSession,
   type VisionCandidate,
 } from '@kinetiq/session-client';
 import {CameraView, useCameraPermissions} from 'expo-camera';
-import {useRef, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {Image, Pressable, StyleSheet, Text, View} from 'react-native';
 
 interface Props {
@@ -25,6 +26,8 @@ interface CapturedEnrollmentFrame {
 
 export function TargetEnrollmentCard({authorization, endpoint, session, onSessionChange}: Props) {
   const camera = useRef<CameraView>(null);
+  const streamingFrame = useRef(false);
+  const frameIndexRef = useRef(0);
   const [permission, requestPermission] = useCameraPermissions();
   const [analysisSession, setAnalysisSession] = useState(session);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
@@ -39,6 +42,51 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
   const [cameraOpened, setCameraOpened] = useState(false);
   const [pendingFrame, setPendingFrame] = useState<CapturedEnrollmentFrame | null>(null);
   const [cameraFacing, setCameraFacing] = useState<'back' | 'front'>('back');
+
+  useEffect(() => {
+    if (analysisSession.state !== 'ACTIVE' || !cameraReady) {
+      return;
+    }
+
+    let cancelled = false;
+    async function submitTrackingFrame() {
+      if (cancelled || streamingFrame.current) {
+        return;
+      }
+      streamingFrame.current = true;
+      try {
+        const picture = await camera.current?.takePictureAsync({base64: true, quality: 0.25});
+        if (!picture?.base64 || cancelled) {
+          return;
+        }
+        const nextFrame = frameIndexRef.current + 1;
+        const result = await submitVisionEnrollmentFrame(endpoint, {
+          sessionId: analysisSession.id,
+          imageBase64: picture.base64,
+          frameIndex: nextFrame,
+          timestampMs: Date.now(),
+        }, authorization);
+        if (result.errors.length) {
+          setMessage(result.errors[0].message);
+          return;
+        }
+        frameIndexRef.current = nextFrame;
+        setFrameIndex(nextFrame);
+        setMessage('Vision is tracking you. Keep your full body inside the guide.');
+      } catch {
+        setMessage('Vision lost the camera feed. Keep this screen open while we reconnect.');
+      } finally {
+        streamingFrame.current = false;
+      }
+    }
+
+    void submitTrackingFrame();
+    const interval = setInterval(() => void submitTrackingFrame(), 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [analysisSession.id, analysisSession.state, authorization, cameraReady, endpoint]);
 
   async function configureCamera() {
     const sizes = (await camera.current?.getAvailablePictureSizesAsync()) ?? [];
@@ -109,6 +157,7 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
         return;
       }
       setFrameIndex(nextFrame);
+      frameIndexRef.current = nextFrame;
       setCandidates(result.candidates);
       if (!result.candidates.length) {
         setMessage('No person was found. Keep your full body visible and retake the frame.');
@@ -168,9 +217,7 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
         setMessage(result.errors[0]?.message ?? 'Target confirmation failed.');
         return;
       }
-      setAnalysisSession(result.session);
-      onSessionChange(result.session);
-      setMessage('Target confirmed. Only this person will count toward the session.');
+      await activateSession(result.session);
     } catch {
       setMessage('Target confirmation failed. Try again.');
     } finally {
@@ -178,12 +225,80 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
     }
   }
 
-  if (analysisSession.targetPersonId) {
+  async function activateSession(confirmedSession: PreparedSession) {
+    const started = await startSession(endpoint, {
+      sessionId: confirmedSession.id,
+      expectedRevision: confirmedSession.revision,
+      idempotencyKey: `start-${confirmedSession.id}`,
+    }, authorization);
+    if (!started.session) {
+      setAnalysisSession(confirmedSession);
+      onSessionChange(confirmedSession);
+      setMessage(started.errors[0]?.message ?? 'Target confirmed, but the workout could not start.');
+      return;
+    }
+    const activeSession = {
+      ...started.session,
+      targetPersonId: started.session.targetPersonId ?? confirmedSession.targetPersonId,
+    };
+    setAnalysisSession(activeSession);
+    onSessionChange(activeSession);
+    setPreviewUri(null);
+    setPendingFrame(null);
+    setCandidates([]);
+    setCameraReady(false);
+    setMessage('Workout started. Preparing live body tracking…');
+  }
+
+  if (analysisSession.targetPersonId && analysisSession.state !== 'ACTIVE') {
     return (
       <View style={styles.card} testID="target-enrollment-confirmed">
         <Text style={styles.eyebrow}>VISION TARGET</Text>
         <Text style={styles.confirmed}>Target confirmed</Text>
         <Text style={styles.help}>Other people and animals are excluded from session progress.</Text>
+        <ActionButton
+          disabled={busy}
+          label={busy ? 'Starting workout…' : 'Start workout'}
+          onPress={() => {
+            setBusy(true);
+            setMessage(null);
+            void activateSession(analysisSession).finally(() => setBusy(false));
+          }}
+        />
+        {message ? <Text style={styles.message}>{message}</Text> : null}
+      </View>
+    );
+  }
+
+  if (analysisSession.state === 'ACTIVE') {
+    return (
+      <View style={styles.card} testID="vision-tracking-active">
+        <Text style={styles.eyebrow}>LIVE VISION</Text>
+        <Text style={styles.confirmed}>Workout active</Text>
+        <Text style={styles.help}>Only your confirmed target is evaluated. Keep this screen open.</Text>
+        <CameraView
+          facing={cameraFacing}
+          onCameraReady={() => void configureCamera()}
+          pictureSize={pictureSize}
+          ref={camera}
+          style={styles.cameraPreview}
+        >
+          <Pressable
+            accessibilityLabel={`Use ${cameraFacing === 'back' ? 'front' : 'back'} camera`}
+            onPress={() => {
+              setCameraReady(false);
+              setPictureSize(undefined);
+              setCameraFacing(current => (current === 'back' ? 'front' : 'back'));
+            }}
+            style={({pressed}) => [styles.flipButton, pressed && styles.flipButtonPressed]}
+          >
+            <Text style={styles.flipButtonText}>Flip camera</Text>
+          </Pressable>
+          <View style={styles.guide} />
+        </CameraView>
+        <Text style={styles.message}>
+          {message ?? (cameraReady ? `Tracking frame ${frameIndex}` : 'Preparing camera…')}
+        </Text>
       </View>
     );
   }

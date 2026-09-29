@@ -539,7 +539,7 @@ const prepareSessionMutation = `
 const startSessionMutation = `
   mutation StartSession($command: SessionCommand!) {
     startSession(command: $command) {
-      session { id revision state }
+      session { id revision state targetPersonId }
       errors { code message field }
     }
   }
