@@ -51,6 +51,8 @@ github_repository_owner_id = "111111111"
 # URLs) is derived from it over HTTPS -- see docs/runbooks/infrastructure-bootstrap.md
 # and infra/terraform/modules/compute/variables.tf.
 domain_name = "hackathon.kinetiq.example"
+# Opt in while developing locally with the same managed Cognito identities.
+enable_local_web_auth = false
 #
 # Alternative: bring your own already-issued certificate instead of Terraform
 # provisioning one (takes precedence over domain_name-driven issuance; domain_name

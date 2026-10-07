@@ -22,11 +22,17 @@ publish Terraform outputs: they may contain sensitive values. The helper prints
 no credentials, preserves existing local passwords, and never replaces the
 existing cloud configuration or mobile `.env.local`.
 
-Keep the existing Cognito callback/logout URLs and add these local URLs through
-the reviewed identity configuration before testing browser authentication:
+Set `enable_local_web_auth = true` in the ignored hackathon Terraform variables.
+This retains the existing Cognito callback/logout URLs and adds these local URLs
+through the reviewed identity configuration before testing browser authentication:
 
 - Callback: `http://localhost:3000/api/auth/callback/cognito`
 - Logout: `http://localhost:3000`
+
+During cloud suspension, do not apply the whole active Terraform environment.
+Update only the existing Cognito web client's callback/logout allowlists,
+preserving every other setting, and record the change privately. Reconcile the
+opt-in variable when applying the environment during the cloud rehearsal.
 
 The mobile OAuth callback remains its existing app scheme. Do not bypass token
 verification or substitute unsigned local tokens.
@@ -75,6 +81,30 @@ settings explicitly when building; retain the existing cloud `.env.local` for
 the final cloud build. The API base URL is compiled into the bundle, so changing
 a file alone does not update an installed release APK.
 
+Build the local Android APK with Node.js on PATH, `JAVA_HOME` pointing to JDK 17,
+and `ANDROID_HOME` pointing to the installed Android SDK:
+
+```powershell
+services/backend/.venv/Scripts/python.exe tools/build-local-android.py
+```
+
+The helper copies sources into a regular short directory (`C:\kv-local` on
+Windows, or a temporary directory on other hosts), installs the
+locked dependencies, and runs native prebuild and Gradle locally. It explicitly
+loads only the public local mobile settings; cloud dotenv files are not loaded.
+The result is `output/kinetiq-v-local-arm64.apk`, signed with the generated
+development key and labelled **Kinetiq V Local**. It uses the existing package
+and callback scheme and replaces the cloud app when installed with a compatible
+signing key. It is not a store release or an iOS build.
+
+The opt-in Expo config permits cleartext HTTP only for `127.0.0.1` and
+`localhost`; other hosts, including Cognito, require HTTPS. Cloud builds do not
+load that plugin. Generate cloud builds in a separate clean build directory so
+previous local native resources cannot leak into their manifest.
+
+For native Windows build failures, consult the
+[Reanimated Windows build guide](https://docs.swmansion.com/react-native-reanimated/docs/guides/building-on-windows/).
+
 For a connected device, reverse the ports. Bindings remain local to the computer:
 
 ```powershell
@@ -101,11 +131,11 @@ evidence.
 ## Cloud suspension and restoration
 
 Preserve Cognito, private media, Terraform state, images, model artifacts,
-restoration secrets and verified database backups. Do not run a full-stack
-destroy: it includes durable identity and media resources. Inventory both
-Terraform states, save immutable task definitions, disable scheduled work and
-autoscaling, and stop compute before removing disposable paid networking/cache
-resources. Inspect a saved Terraform plan and its dependency effects. A retained
+restoration secrets and verified database backups. Suspension preserves resources:
+save immutable task definitions, disable scheduled work and autoscaling, set ECS
+desired counts to zero, and stop RDS after taking a verified snapshot. Preserve
+networking and cache resources as requested by the owner; they continue billing.
+Inventory both Terraform states and inspect any future restoration plan. A retained
 stopped RDS instance restarts automatically after seven days and still charges
 for storage; a suspension is not a promise of zero cost.
 

@@ -15,11 +15,16 @@ locals {
   # on `module.identity` (Cognito issuer/JWKS/client id) and `module.storage`
   # (bucket id) -- feeding an ALB-derived value back into either would be a
   # module cycle. var.domain_name is a plain string known upfront, so it is
-  # what OAuth callbacks and S3 CORS are derived from instead. Local-dev-only
-  # localhost defaults live solely in the identity/storage modules' own
-  # variables, for direct, non-hackathon-root use of those modules.
-  web_callback_urls    = ["https://${var.domain_name}/api/auth/callback/cognito"]
-  web_logout_urls      = ["https://${var.domain_name}"]
+  # what OAuth callbacks and S3 CORS are derived from instead. Local browser
+  # authentication is explicitly opt-in and retains the deployed callbacks.
+  web_callback_urls = concat(
+    ["https://${var.domain_name}/api/auth/callback/cognito"],
+    var.enable_local_web_auth ? ["http://localhost:3000/api/auth/callback/cognito"] : []
+  )
+  web_logout_urls = concat(
+    ["https://${var.domain_name}"],
+    var.enable_local_web_auth ? ["http://localhost:3000"] : []
+  )
   cors_allowed_origins = ["https://${var.domain_name}"]
 }
 

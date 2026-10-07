@@ -171,6 +171,12 @@ variable "vision_security_group_id" {
   }
 }
 
+variable "enable_local_web_auth" {
+  description = "Allow localhost:3000 OAuth callback/logout URLs alongside the deployed web origin for local development"
+  type        = bool
+  default     = false
+}
+
 variable "bootstrap_mode" {
   description = "Safe first-deployment mode: provision compute with ECS desired counts at zero and the media-cleanup schedule disabled until images and migrations are ready"
   type        = bool
