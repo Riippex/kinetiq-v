@@ -70,11 +70,14 @@ class S3MediaStorageAdapter(MediaStoragePort):
         bucket_name: str,
         region: str = "us-east-1",
         endpoint_url: str | None = None,
+        public_endpoint_url: str | None = None,
     ) -> None:
         self._bucket = bucket_name
         self._region = region
         self._endpoint_url = endpoint_url
+        self._public_endpoint_url = public_endpoint_url
         self._client: Any = None
+        self._signing_client: Any = None
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -87,10 +90,21 @@ class S3MediaStorageAdapter(MediaStoragePort):
             )
         return self._client
 
+    def _get_signing_client(self) -> Any:
+        if not self._public_endpoint_url:
+            return self._get_client()
+        if self._signing_client is None:
+            import boto3  # type: ignore[import-untyped]
+
+            self._signing_client = boto3.client(
+                "s3", region_name=self._region, endpoint_url=self._public_endpoint_url
+            )
+        return self._signing_client
+
     def generate_upload_url(
         self, *, s3_key: str, content_type: str, byte_length: int, ttl_seconds: int = 900
     ) -> str:
-        client = self._get_client()
+        client = self._get_signing_client()
         # ContentLength is part of the signed request, so S3 rejects a PUT whose
         # body is not exactly the declared size. Finalization still verifies the
         # stored size and type, which is the check that does not depend on the
@@ -108,7 +122,7 @@ class S3MediaStorageAdapter(MediaStoragePort):
         return str(url)
 
     def generate_download_url(self, *, s3_key: str, ttl_seconds: int = 900) -> str:
-        client = self._get_client()
+        client = self._get_signing_client()
         url = client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self._bucket, "Key": s3_key},

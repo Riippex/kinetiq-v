@@ -338,6 +338,7 @@ def get_media_storage() -> MediaStoragePort:
         bucket_name=django_settings.MEDIA_S3_BUCKET,
         region=django_settings.MEDIA_S3_REGION,
         endpoint_url=getattr(django_settings, "MEDIA_S3_ENDPOINT_URL", None),
+        public_endpoint_url=getattr(django_settings, "MEDIA_S3_PUBLIC_ENDPOINT_URL", None),
     )
 
 

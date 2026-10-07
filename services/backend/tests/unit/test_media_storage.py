@@ -105,6 +105,36 @@ def test_s3_storage_adapter_reads_object_info() -> None:
     mock_client.head_object.assert_called_with(Bucket="my-bucket", Key="photos/user/1.png")
 
 
+def test_public_media_signing_does_not_change_internal_object_operations() -> None:
+    adapter = S3MediaStorageAdapter(
+        bucket_name="local-bucket",
+        endpoint_url="http://media:9000",
+        public_endpoint_url="http://127.0.0.1:9000",
+    )
+    internal = MagicMock()
+    signing = MagicMock()
+    internal.head_object.return_value = {"ContentLength": 3, "ContentType": "image/jpeg"}
+    signing.generate_presigned_url.return_value = "http://127.0.0.1:9000/signed"
+    adapter._client = internal
+    adapter._signing_client = signing
+
+    assert (
+        adapter.generate_upload_url(s3_key="photo.jpg", content_type="image/jpeg", byte_length=3)
+        == "http://127.0.0.1:9000/signed"
+    )
+    assert adapter.generate_download_url(s3_key="photo.jpg") == "http://127.0.0.1:9000/signed"
+    info = adapter.get_object_info(s3_key="photo.jpg")
+    assert info is not None
+    assert info.content_length == 3
+    adapter.delete_object(s3_key="photo.jpg")
+    assert signing.generate_presigned_url.call_count == 2
+    internal.generate_presigned_url.assert_not_called()
+    signing.head_object.assert_not_called()
+    signing.delete_object.assert_not_called()
+    internal.head_object.assert_called_once_with(Bucket="local-bucket", Key="photo.jpg")
+    internal.delete_object.assert_called_once_with(Bucket="local-bucket", Key="photo.jpg")
+
+
 def test_s3_storage_adapter_delete_and_failure_is_not_swallowed() -> None:
     adapter = S3MediaStorageAdapter(bucket_name="my-bucket")
     mock_client = MagicMock()
