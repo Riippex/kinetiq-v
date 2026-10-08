@@ -50,10 +50,7 @@ def test_canonical_catalog_seeds_idempotently_with_vision_contract() -> None:
     assert len(vision_exercises) == 4
     vision_keys = {ex.vision_exercise_key for ex in vision_exercises}
     assert vision_keys == {"bodyweight_squat", "push_up", "plank", "glute_bridge"}
-    assert (
-        repo.get_vision_exercise_key("exercise-bodyweight-squat-v1")
-        == "bodyweight_squat"
-    )
+    assert repo.get_vision_exercise_key("exercise-bodyweight-squat-v1") == "bodyweight_squat"
 
     unsupported_exercises = repo.list_exercises(vision_supported=False)
     assert len(unsupported_exercises) == 1

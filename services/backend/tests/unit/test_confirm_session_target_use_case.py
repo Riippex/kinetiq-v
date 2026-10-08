@@ -321,9 +321,7 @@ def test_start_vision_analysis_resolves_catalog_id_to_canonical_vision_key() -> 
         FakeSessionLifecycleRepository(session),
         vision,
         FakeRoutineItemLookup(routine_items),
-        FakeVisionExerciseKeyLookup(
-            {"exercise-bodyweight-squat-v1": "bodyweight_squat"}
-        ),
+        FakeVisionExerciseKeyLookup({"exercise-bodyweight-squat-v1": "bodyweight_squat"}),
     )
 
     use_case.execute(owner_id=session.owner_id, command=make_start_command(session))

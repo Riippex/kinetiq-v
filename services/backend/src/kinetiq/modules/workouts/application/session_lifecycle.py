@@ -387,9 +387,7 @@ def _resolve_exercise_key(
     exercise_id = items[0].exercise_id
     exercise_key = vision_exercises.get_vision_exercise_key(exercise_id)
     if exercise_key is None:
-        raise ValueError(
-            f"Exercise '{exercise_id}' is not configured for Vision analysis"
-        )
+        raise ValueError(f"Exercise '{exercise_id}' is not configured for Vision analysis")
     return exercise_key
 
 

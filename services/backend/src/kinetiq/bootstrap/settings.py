@@ -156,9 +156,7 @@ AUTH_USER_MODEL = "kinetiq_identity.User"
 COGNITO_ISSUER_URL = os.getenv("COGNITO_ISSUER_URL", "")
 COGNITO_JWKS_URL = os.getenv("COGNITO_JWKS_URL", "")
 COGNITO_ALLOWED_CLIENT_IDS = [
-    item.strip()
-    for item in os.getenv("COGNITO_ALLOWED_CLIENT_IDS", "").split(",")
-    if item.strip()
+    item.strip() for item in os.getenv("COGNITO_ALLOWED_CLIENT_IDS", "").split(",") if item.strip()
 ]
 
 # Private S3 media settings
