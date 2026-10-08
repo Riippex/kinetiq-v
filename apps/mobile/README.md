@@ -18,3 +18,10 @@ EXPO_PUBLIC_COGNITO_MOBILE_CLIENT_ID=public-client-id
 ```
 
 The access token is sent directly to Django as a bearer credential. The app refreshes it before expiry and revokes the current session during sign-out.
+
+The native intent hook maps the exact `kinetiq://callback` and `kinetiq://logout`
+returns to the home screen before routing. AuthSession independently receives
+the original link and validates the authorization response through PKCE; the
+router neither exchanges codes nor establishes a session. OAuth query parameters
+are not propagated into router state. Other deep links remain unchanged.
+See [Expo native intent routing](https://docs.expo.dev/router/advanced/native-intent/).
