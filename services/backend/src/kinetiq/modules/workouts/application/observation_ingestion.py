@@ -79,6 +79,7 @@ def _to_transient_update(
         ),
         pose_confidence=pose_confidence,
         visibility_status=_map_visibility_status(observation),
+        timestamp=observation.timestamp_utc,
     )
 
 

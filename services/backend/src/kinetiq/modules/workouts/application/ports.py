@@ -305,6 +305,7 @@ class VisionObservationInfo:
     hold_elapsed_seconds: float | None = None
     hold_confidence: float | None = None
     last_repetition_confidence: float | None = None
+    timestamp_utc: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

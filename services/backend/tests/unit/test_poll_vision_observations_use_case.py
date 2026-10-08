@@ -178,6 +178,7 @@ def observation(
     session_id: str = str(SESSION_ID),
     target_person_id: str = TARGET_PERSON_ID,
     exercise_key: str = "push_up",
+    timestamp_utc: str | None = None,
 ) -> VisionObservationInfo:
     return VisionObservationInfo(
         session_id=session_id,
@@ -190,6 +191,7 @@ def observation(
         reason_code="OK",
         confirmed_repetitions=confirmed_repetitions,
         last_repetition_confidence=last_repetition_confidence,
+        timestamp_utc=timestamp_utc,
     )
 
 
@@ -198,7 +200,11 @@ def test_publishes_new_observations_and_advances_cursor() -> None:
     page = VisionObservationsPage(
         observations=(
             observation(
-                epoch=2, sequence=6, confirmed_repetitions=3, last_repetition_confidence=0.9
+                epoch=2,
+                sequence=6,
+                confirmed_repetitions=3,
+                last_repetition_confidence=0.9,
+                timestamp_utc="2026-10-08T20:00:00Z",
             ),
             observation(
                 epoch=2, sequence=7, confirmed_repetitions=4, last_repetition_confidence=0.92
@@ -226,6 +232,7 @@ def test_publishes_new_observations_and_advances_cursor() -> None:
     assert len(store.published) == 2
     assert store.published[0].current_repetitions == 3
     assert store.published[0].pose_confidence == 0.9
+    assert store.published[0].timestamp == "2026-10-08T20:00:00Z"
     assert repo.advance_calls == [(session.owner_id, session.id, "2:5", "2:7")]
     assert repo.poll_lease_acquire_calls == 1
     assert repo.poll_lease_release_calls == 1

@@ -1,5 +1,6 @@
 import {
   confirmSessionTarget,
+  fetchTransientSessionState,
   startSession,
   startSessionVisionAnalysis,
   submitVisionEnrollmentFrame,
@@ -9,6 +10,7 @@ import {
 import {CameraView, useCameraPermissions} from 'expo-camera';
 import {useEffect, useRef, useState} from 'react';
 import {Image, Pressable, StyleSheet, Text, View} from 'react-native';
+import {visionTrackingMessage} from './visionTrackingMessage';
 
 interface Props {
   authorization: string;
@@ -72,9 +74,13 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
         }
         frameIndexRef.current = nextFrame;
         setFrameIndex(nextFrame);
-        setMessage('Vision is tracking you. Keep your full body inside the guide.');
+        const status = await fetchTransientSessionState(endpoint, analysisSession.id, authorization);
+        if (cancelled) return;
+        setMessage(status.errors[0]?.message ?? visionTrackingMessage(status.transient));
       } catch {
-        setMessage('Vision lost the camera feed. Keep this screen open while we reconnect.');
+        if (!cancelled) {
+          setMessage('Could not send the camera frame or retrieve the Vision result. Retrying…');
+        }
       } finally {
         streamingFrame.current = false;
       }
@@ -294,7 +300,7 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
           >
             <Text style={styles.flipButtonText}>Flip camera</Text>
           </Pressable>
-          <View style={styles.guide} />
+          <View pointerEvents="none" style={styles.guide} />
         </CameraView>
         <Text style={styles.message}>
           {message ?? (cameraReady ? `Tracking frame ${frameIndex}` : 'Preparing camera…')}
@@ -360,7 +366,7 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
           >
             <Text style={styles.flipButtonText}>Flip camera</Text>
           </Pressable>
-          <View style={styles.guide} />
+          <View pointerEvents="none" style={styles.guide} />
         </CameraView>
       )}
 

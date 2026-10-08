@@ -68,6 +68,7 @@ def test_poll_observations_carries_identity_through_to_the_application_layer() -
     assert observation.exercise_key == "goblet_squat"
     assert observation.epoch == 2
     assert observation.sequence == 6
+    assert observation.timestamp_utc == dto.timestamp_utc
     assert observation.confirmed_repetitions == 1
     assert result.next_cursor == "2:6"
     assert result.has_more is False

@@ -68,6 +68,22 @@ services:
       - ../kinetiq-v-vision/model-manifests:/app/model-manifests:ro
       - ../kinetiq-v-vision/contracts:/app/contracts:ro
       - ../kinetiq-v-vision/weights:/app/weights:ro
+  vision-observer:
+    image: ${LOCAL_BACKEND_IMAGE:-kinetiq-v-backend:local}
+    env_file: .env.development-local
+    environment:
+      DATABASE_URL: postgresql://kinetiq:${LOCAL_POSTGRES_PASSWORD}@postgres:5432/kinetiq
+      REDIS_URL: redis://:${LOCAL_REDIS_PASSWORD}@redis:6379/0
+      VISION_BASE_URL: http://vision:8000
+    # Same backend use case as the cloud worker; no synthetic observations.
+    command: ["sh", "-c", "while true; do python manage.py poll_vision_observations --limit 100; sleep 2; done"]
+    volumes:
+      - ./services/backend/src:/app/src:ro
+      - ./contracts:/app/contracts:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      vision: {condition: service_started}
   web:
     image: kinetiq-v-web:local-dev
     build:

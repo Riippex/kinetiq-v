@@ -67,6 +67,14 @@ behavior; those remain cloud qualification checks. Use development media only.
 Open `http://localhost:3000`. Backend is at `http://127.0.0.1:8000/graphql/`
 and Vision readiness is at `http://127.0.0.1:8001/ready`.
 
+The `vision-observer` process runs the backend's existing observation polling
+command every two seconds and publishes validated results to Redis. The phone
+reads these results while sending camera frames; a successful upload alone does
+not establish visible body tracking. Missing or older-than-ten-second results
+show a waiting message, while partial and lost visibility explain the framing
+problem. This feedback does not automatically change the persisted workout state
+to paused or establish exercise accuracy.
+
 Check readiness and actual local media operations:
 
 ```powershell

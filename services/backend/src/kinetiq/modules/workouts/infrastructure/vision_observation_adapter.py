@@ -30,6 +30,7 @@ class VisionRestObservationAdapter:
                 exercise_key=observation.exercise_key,
                 epoch=observation.epoch,
                 sequence=observation.sequence,
+                timestamp_utc=observation.timestamp_utc,
                 tracking_state=observation.tracking_state,
                 visibility_state=observation.visibility_state,
                 reason_code=observation.reason_code,
