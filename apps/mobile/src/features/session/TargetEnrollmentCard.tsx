@@ -57,7 +57,11 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
       }
       streamingFrame.current = true;
       try {
-        const picture = await camera.current?.takePictureAsync({base64: true, quality: 0.25});
+        const picture = await camera.current?.takePictureAsync({
+          base64: true,
+          quality: 0.25,
+          shutterSound: false,
+        });
         if (!picture?.base64 || cancelled) {
           return;
         }
@@ -283,6 +287,8 @@ export function TargetEnrollmentCard({authorization, endpoint, session, onSessio
         <Text style={styles.confirmed}>Workout active</Text>
         <Text style={styles.help}>Only your confirmed target is evaluated. Keep this screen open.</Text>
         <CameraView
+          animateShutter={false}
+          flash="off"
           facing={cameraFacing}
           onCameraReady={() => void configureCamera()}
           pictureSize={pictureSize}
